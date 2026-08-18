@@ -811,6 +811,18 @@ class PositionEngine:
                     if state.current_x > 35.0:
                         forward_pull = 0.25 + (state.current_x - 35.0) / 70.0 * 0.20
                         state.current_x += (state.home_x - state.current_x) * forward_pull
+                # Checkpoint 24 — byline retreat. Carries and runs can push a
+                # winger onto the goal line (x≈100+), and since nothing ever
+                # pulled him back, he CAMPED there — every disposal from the
+                # corner flag is a cross/cutback by definition, which is what
+                # inflated winger cross counts to 20-30/match. A real winger
+                # operates from the cutback station (5-15m off the line):
+                # beyond x≈94 he drifts back toward it.
+                if state.position in ("LW", "RW"):
+                    if attacks_right and state.current_x > 94.0:
+                        state.current_x -= (state.current_x - 90.0) * 0.35
+                    elif not attacks_right and state.current_x < 11.0:
+                        state.current_x += (15.0 - state.current_x) * 0.35
 
         # Checkpoint 6 — line cohesion: apply AFTER individual drift so
         # defensive/midfield lines pull toward their own line-mates' average

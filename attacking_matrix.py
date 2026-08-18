@@ -196,12 +196,18 @@ def shot_score(
 def lane_clearance(
     x: float, y: float, tx: float, ty: float,
     defenders: Optional[List[Any]], position_engine,
+    block_dist: float = LANE_BLOCK_DIST,
+    clear_dist: float = LANE_CLEAR_DIST,
 ) -> float:
     """
     How clear is the corridor from (x, y) to (tx, ty)?
     Uses the minimum perpendicular distance from any outfield defender to the
-    carrier→target segment: ≤1.2m => 0 (blocked), ≥3m => 1, linear between.
-    No spatial info => 1 (unblocked).
+    carrier→target segment: ≤block_dist => 0 (blocked), ≥clear_dist => 1,
+    linear between. No spatial info => 1 (unblocked).
+    Checkpoint 25: the execution path passes a tighter block_dist (0.8m) —
+    the 1.2m planning radius is right for DECISIONS (avoid the corridor) but
+    too punishing for RESOLUTION (a defender only reacts to what is truly
+    within his reach).
     """
     if position_engine is None or not defenders:
         return 1.0
@@ -223,11 +229,11 @@ def lane_clearance(
             best = dist
     if best is None:
         return 1.0
-    if best <= LANE_BLOCK_DIST:
+    if best <= block_dist:
         return 0.0
-    if best >= LANE_CLEAR_DIST:
+    if best >= clear_dist:
         return 1.0
-    return (best - LANE_BLOCK_DIST) / (LANE_CLEAR_DIST - LANE_BLOCK_DIST)
+    return (best - block_dist) / (clear_dist - block_dist)
 
 
 def network_zone(dist: float) -> str:
@@ -466,6 +472,15 @@ class AttackingMatrix:
                 winger_profile = position_engine.winger_registry.get(tm.name)
                 if winger_profile is not None:
                     danger = winger_profile.danger_zone_score(tx, ty, attacks_right)
+                    # Checkpoint 24 — do NOT feed the corner-camping winger:
+                    # the feed loop (bonus → receives at the goal line →
+                    # box-bound disposal stamped as a cross) is what kept
+                    # winger cross counts at 20-30/match. The cutback
+                    # station is reachable; the goal line is not.
+                    goal_line = 88.0 if attacks_right else 17.0
+                    cutback_station = (tx > goal_line) if attacks_right else (tx < goal_line)
+                    if cutback_station:
+                        danger = 0.0
                     winger_flank_bonus = danger * 0.12
 
             # Checkpoint 6.2 — midfield geometric coverage: reward midfielders
@@ -512,6 +527,18 @@ class AttackingMatrix:
             ellipse = position_engine.ball_centric_weight(tm.name, x, y)
 
             value = lane * (0.45 * progress + 0.35 * freedom + 0.20 * depth + same_flank_bonus + winger_flank_bonus + midfield_coverage_bonus + false_nine_bonus)
+            # Checkpoint 24 — a WIDE carrier playing INTO the box is the
+            # cross mechanism's job; the generic pass path must stop aiming
+            # there or every disposal gets stamped (and counted) as a cross.
+            flank_carrier = (
+                (carrier.position in ("LW", "LB") and y < 24)
+                or (carrier.position in ("RW", "RB") and y > 44)
+            )
+            if flank_carrier:
+                box_line = 88.0 if attacks_right else 17.0
+                in_box = (tx > box_line) if attacks_right else (tx < box_line)
+                if in_box:
+                    value *= 0.12
             value *= (ELLIPSE_COMPOSE_FLOOR + (1.0 - ELLIPSE_COMPOSE_FLOOR) * ellipse)
 
             opts.append(_Option(

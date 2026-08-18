@@ -227,12 +227,16 @@ def test_cross_active_danger_high_some_minute():
     assert samples, "threat engine recorded no danger samples"
     peak = max(max(h, a) for _, h, a in samples)
     assert peak >= 75.0, f"cross trigger never forced danger >= 75 (peak {peak})"
-    # Sanity: the averaged per-minute report also peaks high (>= 70).
+    # Sanity: the averaged per-minute report also peaks high. Checkpoint 24
+    # lowered the bar from 70 to 60: with a REALISTIC cross volume (3-5 per
+    # match instead of 20-30) the minute average dilutes a single 75-spike
+    # alongside the other touches; 60+ still marks the cross clearly on the
+    # momentum chart.
     report = engine.threat.report()
     home, away = engine.config.home_team, engine.config.away_team
     away_danger = [v for _, v in report[away]["danger_timeline"]]
     home_danger = [v for _, v in report[home]["danger_timeline"]]
-    assert max(away_danger + home_danger) >= 70.0
+    assert max(away_danger + home_danger) >= 60.0
 
 
 def test_aerial_clearance_routing_uses_metadata():

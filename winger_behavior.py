@@ -100,8 +100,12 @@ BYLINE_X_ATTACKING = 105.0
 BYLINE_X_DEFENDING = 0.0
 
 # Crossing zone: attacking third + wide
-CROSS_ZONE_X_ATTACKING = 70.0
-CROSS_ZONE_X_DEFENDING = 35.0
+# Checkpoint 24 — the crossing zone is the byline corridor, not the entire
+# final third. At 70.0 a winger who had barely entered the attacking third
+# was "in the cross zone", which is what turned wingers into cross-machines
+# (12-35 deliveries/match vs a real winger's 2-6).
+CROSS_ZONE_X_ATTACKING = 82.0
+CROSS_ZONE_X_DEFENDING = 23.0
 
 # Box entry: the wide channels of the penalty area (x within ~16m of goal)
 BOX_ENTRY_X_ATTACKING = 89.0
@@ -546,11 +550,13 @@ class WingerBehaviorEngine:
             - their byline instinct beats the random roll
             - scaled down as stamina drops
         """
-        cross_x = _attacks_right_cross_zone_x(attacks_right)
+        # Checkpoint 24 — the drive gate uses the attacking third (x>70);
+        # the tightened cross zone (82) governs DELIVERY only, otherwise
+        # the tight zone would starve the corridor of drives entirely.
         if attacks_right:
-            in_att_third = x > cross_x
+            in_att_third = x > 70.0
         else:
-            in_att_third = x < cross_x
+            in_att_third = x < 35.0
         if not in_att_third or not profile.in_flank_channel(y, anchor_y):
             return False
 
@@ -618,11 +624,12 @@ class WingerBehaviorEngine:
             - scaled down as stamina drops (a tired winger is less likely
               to commit to a sharp diagonal cut)
         """
-        cross_x = _attacks_right_cross_zone_x(attacks_right)
+        # Checkpoint 24 — same attacking-third gate as the drive decision
+        # (the tightened cross zone governs delivery only).
         if attacks_right:
-            in_att_third = x > cross_x
+            in_att_third = x > 70.0
         else:
-            in_att_third = x < cross_x
+            in_att_third = x < 35.0
         if not in_att_third or not profile.in_flank_channel(y, anchor_y):
             return False
 

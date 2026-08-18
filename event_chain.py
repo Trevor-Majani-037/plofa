@@ -42,6 +42,7 @@ from position_engine import PositionEngine, ELLIPSE_COMPOSE_FLOOR
 from attacking_matrix import (
     AttackingMatrix,
     nearest_defender_dist,
+    lane_clearance,
 )
 from typing_extensions import TypedDict
 from winger_behavior import (
@@ -67,6 +68,7 @@ from pressing_profiles import (
     engagement_allows,
     cover_shadow_clearance,
     cover_shadow_blocked,
+    in_cover_shadow,
     COVER_SHADOW_BLOCK_THRESHOLD,
 )
 from threat_engine import (
@@ -79,6 +81,11 @@ from threat_engine import (
     apply_width_bias,
     own_goal_probability,
 )
+
+# Checkpoint 25 — pass-execution reaction radius: a defender only cuts out a
+# ball genuinely within reach (0.8m), tighter than the 1.2m planning radius
+# the decision layer uses to AVOID corridors.
+LANE_REACTION_DIST = 0.8
 
 # Lazy import to avoid circular dependency
 _soul_applicator = None
@@ -646,7 +653,21 @@ class PossessionChain(BaseChain):
                     last_player, x, team_profile, is_micro=True
                 )
                 advance = carry_dist * (adv_ratio - 0.30)
+                # Checkpoint 24 — the micro-carry was a 55%-per-step,
+                # always-successful forward escalator: wingers received at
+                # the edge and WALKED to the goal line untouched, then every
+                # disposal from there stamped as a cross (20-30/match).
+                # In traffic the dribbler steps sideways or gets stopped;
+                # the byline cap keeps him at the cutback station; stepping
+                # into a defender risks the dispossession real dribblers
+                # suffer constantly.
+                if last_player.position in ("LW", "RW"):
+                    deep = (x > 85.0) if attacks_right else (x < 20.0)
+                    if deep:
+                        advance *= 0.4   # he pulls up at the cutback station
                 end_cx = cls.clamp_x(x + (advance if attacks_right else -advance), attacks_right)
+                if last_player.position in ("LW", "RW"):
+                    end_cx = min(end_cx, 97.0) if attacks_right else max(end_cx, 8.0)
                 # Checkpoint 18 wiring — a winger's micro-carry is steered
                 # back onto its flank channel (small noise + touchline bias)
                 # instead of being a pure random lateral walk (the old source
@@ -661,18 +682,39 @@ class PossessionChain(BaseChain):
                     end_cy = y + (0.5 - random.random()) * 6
                 end_cy = max(2, min(66, end_cy))
 
+                # Stepping into an occupied defender ends the run sometimes.
+                micro_lost = False
+                if position_engine is not None and def_players:
+                    nearest_at_end = min(
+                        (math.hypot(position_engine.get_position(d.name)[0] - end_cx,
+                                    position_engine.get_position(d.name)[1] - end_cy)
+                         for d in def_players if getattr(d, 'position', None) != 'GK'),
+                        default=99.0,
+                    )
+                    if nearest_at_end < 2.5 and random.random() < 0.30:
+                        micro_lost = True
+
                 result.add(cls.make_event(
                     minute, EventType.CARRY, attacking_team, last_player.name,
                     phase, game_state,
                     location_x=x, location_y=y,
                     end_x=end_cx, end_y=end_cy,
-                    outcome=True,
+                    outcome=not micro_lost,
                     metadata={
                         "progressive": False,
                         "distance": round(carry_dist, 1),
                         "micro_carry": True,
                     }
                 ))
+                if micro_lost:
+                    result.add(cls.make_event(
+                        minute, EventType.DISPOSSESSED, attacking_team, last_player.name,
+                        phase, game_state,
+                        location_x=end_cx, location_y=end_cy,
+                        outcome=False,
+                    ))
+                    result.possession_lost = True
+                    break
                 x, y = end_cx, end_cy
 
             # ── 2. PRESSURE CHECK ──────────────────────────────────
@@ -777,6 +819,7 @@ class PossessionChain(BaseChain):
             forced_end = None
             matrix_meta = None
             regression_mode = None    # None | "drop_to_gk" | "recycle" | "wing_switch" | "circulation"
+            wide_combo_mode = False   # Checkpoint 24: wide combination pass
             phase_decision = None
 
             if position_engine is not None:
@@ -938,6 +981,32 @@ class PossessionChain(BaseChain):
                             attacks_right,
                         )
 
+            # ── CHECKPOINT 24: WIDE COMBINATION OVERRIDE ────────────
+            # The matrix's option values are progress/depth-biased, so for a
+            # WIDE carrier it kept choosing box-seekers and far runners —
+            # geometrically stamped as crosses (20-25/match) and long balls.
+            # A real winger's default with the ball on the flank is the
+            # short game. Intercept here (shoot decisions have already
+            # broken out above; through balls fire later and still can).
+            if (forced_receiver is None or
+                    (matrix_decision is not None and matrix_decision.is_pass) or
+                    (phase_decision is not None
+                     and getattr(phase_decision.directive, "value", "") == "progress")):
+                if (position_engine is not None
+                        and last_player.position in ("LW", "RW", "LB", "RB")
+                        and regression_mode is None):
+                    _combo_target = cls._pick_wide_combo_target(
+                        last_player, players, x, y,
+                        position_engine, def_players, attacks_right,
+                    )
+                    if _combo_target is not None:
+                        forced_receiver = _combo_target
+                        _ctx, _cty = position_engine.get_position(_combo_target.name)
+                        forced_end = cls._pass_destination_to_target(
+                            _ctx, _cty, attacks_right)
+                        wide_combo_mode = True
+                        matrix_decision = None
+
             # The keeper on the ball is a distribution touch — force the pass.
             gk_distribution = (last_player.position == "GK")
 
@@ -978,6 +1047,11 @@ class PossessionChain(BaseChain):
                 )
                 raw_advance = carry_dist * adv_ratio
                 new_x = cls.clamp_x(x + (raw_advance if attacks_right else -raw_advance), attacks_right)
+                # Checkpoint 24 — a winger carry ends at the cutback station,
+                # never ON the goal line; beyond ~97 the ball is out or the
+                # fullback has forced the corner.
+                if last_player.position in ("LW", "RW"):
+                    new_x = min(new_x, 97.0) if attacks_right else max(new_x, 8.0)
                 if winger_drive_mode == "byline":
                     # Drive the touchline→byline corridor: hug the line while
                     # advancing (the modern winger's runway).
@@ -1004,7 +1078,28 @@ class PossessionChain(BaseChain):
 
                 if hasattr(last_player, "dna"):
                     dribble_success_rate = DNAFactory.get_dribble_success_rate(last_player.dna)
-                    carry_prob = 0.78 + dribble_success_rate * 0.15
+                    # Checkpoint 24 — carries were near-invincible
+                    # (0.78 + 0.15·skill ≈ 93-98%), so every winger drive
+                    # reached the byline and fed the cross trigger. Real
+                    # carriers lose the ball constantly against a set block:
+                    # Doku completes barely half his take-ons. Success now
+                    # scales with the nearest defender's distance and gets
+                    # harder the deeper into the block the carry goes.
+                    carry_prob = 0.58 + dribble_success_rate * 0.12
+                    if position_engine is not None and def_players:
+                        nearest_def = min(
+                            (math.hypot(position_engine.get_position(d.name)[0] - x,
+                                        position_engine.get_position(d.name)[1] - y)
+                             for d in def_players if getattr(d, 'position', None) != 'GK'),
+                            default=99.0,
+                        )
+                        if nearest_def < 2.5:
+                            carry_prob -= 0.22
+                        elif nearest_def < 5.0:
+                            carry_prob -= 0.10
+                    if (x > 72) if attacks_right else (x < 33):
+                        carry_prob -= 0.08  # final third: no free rides through a set block
+                    carry_prob = max(0.30, min(0.90, carry_prob))
                     carry_prob = _get_soul_applicator().modify_dribble_success(last_player, carry_prob)
                     carry_success = random.random() < carry_prob
                 else:
@@ -1040,6 +1135,26 @@ class PossessionChain(BaseChain):
             else:
                 receiver = forced_receiver
                 if receiver is None:
+                    # ── CHECKPOINT 24: WIDE COMBINATION PASS ─────────
+                    # A wide carrier in the final third who isn't crossing,
+                    # shooting or taking his man on plays the SHORT game:
+                    # cutback to the edge, lateral to the CAM, recycle to
+                    # the overlapping fullback. This is 80% of a real
+                    # winger's pass map (Doku: 37/39 short, 95%) — without
+                    # it the engine's only wide outcomes were crosses and
+                    # long diagonals. Byline drivers combine less (they'd
+                    # rather carry/cross); combinators combine more.
+                    if (position_engine is not None
+                            and last_player.position in ("LW", "RW", "LB", "RB")
+                            and regression_mode is None and not gk_distribution):
+                        _combo_target = cls._pick_wide_combo_target(
+                            last_player, players, x, y,
+                            position_engine, def_players, attacks_right,
+                        )
+                        if _combo_target is not None:
+                            receiver = _combo_target
+                            wide_combo_mode = True
+                if receiver is None:
                     if gk_distribution:
                         receiver = cls._pick_gk_distribution(
                             last_player, players, x, y, team_profile,
@@ -1073,7 +1188,7 @@ class PossessionChain(BaseChain):
                 # the Checkpoint 23 circulation web is exactly how the real
                 # Modrics of the world play).
                 if (receiver is not None and position_engine is not None
-                        and regression_mode is None):
+                        and regression_mode is None and not wide_combo_mode):
                     _soul = _get_soul_applicator().get_soul(last_player)
                     if (_soul is not None
                             and getattr(_soul.archetype, 'name', '') == 'ATTACKING_PROPHET'
@@ -1115,11 +1230,22 @@ class PossessionChain(BaseChain):
                             long_intent = True
                             if abs(_ry - y) > 15.0:
                                 is_switch = True
+                elif wide_combo_mode:
+                    # Checkpoint 24 — the wide combination pass (cutback /
+                    # short lateral / recycle to the overlapping fullback):
+                    # deliberately short and safe, never progressive-flagged.
+                    is_switch = False
+                    is_prog = False
+                    long_intent = False
                 else:
                     long_intent = cls._should_be_long_pass(last_player, x, team_profile)
                     prog_zone = (35 < x < 80) if attacks_right else (25 < x < 70)
                     is_prog   = cls._should_be_progressive(last_player, x, team_profile, prog_zone)
                     is_switch = random.random() < last_player.dna.tendencies.switches_play
+                    # Checkpoint 24 — wingers get switched TO, they don't
+                    # orchestrate. Their far-side hail-mary is a rarity.
+                    if last_player.position in ("LW", "RW"):
+                        is_switch = is_switch and random.random() < 0.35
 
                 # ── CHECKPOINT 14: PHASE TELEMETRY STAMP ──────────────
                 # Every pass is stamped with the tactical phase it was played
@@ -1183,10 +1309,6 @@ class PossessionChain(BaseChain):
                     result.possession_lost = True
                     break
 
-                success = cls._pass_success(last_player, long_intent, under_pressure,
-                                            receiver=receiver, marking=marking,
-                                            confidence=last_player.dna.form.confidence)
-
                 pass_dist = cls._pass_distance(last_player, x, long_intent, is_prog, under_pressure, team_profile)
 
                 if forced_end is not None:
@@ -1203,6 +1325,42 @@ class PossessionChain(BaseChain):
                         receiver, x, y, pass_dist,
                         position_engine, attacks_right,
                     )
+
+                # Checkpoint 25 — evaluate the corridor BEFORE rolling success.
+                # Lane geometry was previously only a *selection* input; a
+                # pass played through a defender's cover shadow completed at
+                # full rate, so line-breakers were free. Now the corridor's
+                # proximity model cuts completion (a ball through a defender's
+                # feet is cut out ~70%, one 3m clear is untouched), and a
+                # fully body-blocked failure resolves as a real INTERCEPTION
+                # by the nearest defender. Long balls and switches travel
+                # OVER the lines — exempt by design.
+                lane_mult = 1.0
+                interceptor = None
+                pass_len = math.hypot(end_px - x, end_py - y)
+                # Only medium/long ground balls travel far enough to BE a
+                # line-breaking risk. Short combinations into a marked man
+                # already fail via the marking penalty + space battle —
+                # taxing them again here would double-count the marker.
+                if (position_engine is not None and def_players
+                        and not long_intent and pass_len >= 10.0):
+                    lane_cl = lane_clearance(
+                        x, y, end_px, end_py, def_players, position_engine,
+                        block_dist=LANE_REACTION_DIST)
+                    if lane_cl < 1.0:
+                        # A ball through a defender's feet still squeaks
+                        # through more often than not — reaction speed is
+                        # not omniscience — so the floor is 0.70, not 0.30.
+                        lane_mult = 0.75 + 0.25 * lane_cl
+                        if lane_cl <= 0.0:
+                            interceptor = cls._lane_interceptor(
+                                x, y, end_px, end_py, def_players,
+                                position_engine)
+
+                success = cls._pass_success(last_player, long_intent, under_pressure,
+                                            receiver=receiver, marking=marking,
+                                            confidence=last_player.dna.form.confidence,
+                                            lane_mult=lane_mult)
 
                 if is_switch and long_intent:
                     etype = EventType.SWITCH_OF_PLAY
@@ -1361,6 +1519,20 @@ class PossessionChain(BaseChain):
 
                 else:
                     # Failed pass — log miscontrol/turnover
+                    if interceptor is not None:
+                        # Checkpoint 25 — the lane choked the pass: credit the
+                        # shadowing defender with a real INTERCEPTION at the
+                        # point his cone caught the ball, instead of the ball
+                        # silently teleporting back to the passer as a turnover.
+                        idf, ix, iy = interceptor
+                        result.add(cls.make_event(
+                            minute, EventType.INTERCEPTION, idf.team_name, idf.name,
+                            phase, game_state,
+                            secondary_player=last_player.name,
+                            location_x=ix, location_y=iy,
+                            outcome=True,
+                            metadata={"intercepted_pass_from": last_player.name},
+                        ))
                     result.add(cls.make_event(
                         minute, EventType.TURNOVER, attacking_team, last_player.name,
                         phase, game_state,
@@ -1495,6 +1667,21 @@ class PossessionChain(BaseChain):
                                 attempt_rate,
                                 last_player.dna.tendencies.attacks_fullback_1v1 * 0.85
                             )
+                            # Checkpoint 24 — an isolated fullback standing
+                            # 5-8m off IS the engagement a touchline winger
+                            # attacks (he doesn't wait to be grabbed). Doku
+                            # attempts ~10 take-ons per 90; requiring a
+                            # defender inside 5m starved attempts to ~1-5.
+                            if fb is not None and fb_dist < 7.0:
+                                defender_engaged = True
+                                if nearest_defender is None or fb_dist < min_dist:
+                                    nearest_defender = fb
+                                    min_dist = fb_dist
+                                attempt_rate = max(
+                                    attempt_rate,
+                                    last_player.dna.tendencies.attacks_fullback_1v1
+                                    * (0.6 + 0.5 * winger_profile.isolation_thirst)
+                                )
                 
                 if random.random() < attempt_rate and defender_engaged:
                     # Dribble vs nearest engaged defender
@@ -1520,6 +1707,9 @@ class PossessionChain(BaseChain):
                         # TRUE SUCCESS: Beat defender, maintained control
                         drb_adv = random.uniform(3, 8)
                         end_drb_x = cls.clamp_x(x + (drb_adv if attacks_right else -drb_adv), attacks_right)
+                        if last_player.position in ("LW", "RW"):
+                            # Checkpoint 24 — same byline cap as carries.
+                            end_drb_x = min(end_drb_x, 97.0) if attacks_right else max(end_drb_x, 8.0)
                         # Checkpoint 18 — a beating winger dribble continues the
                         # drive/cut shape instead of a random lateral wander.
                         _d_mode, _d_anchor, _d_bias = cls._winger_carry_steering(
@@ -1582,8 +1772,14 @@ class PossessionChain(BaseChain):
                         result.possession_lost = True
 
             # ── 7. CROSS (wide players near byline) ────────────────
-            cross_zone = x > 72 if attacks_right else x < 33
-            cross_prob = 0.28  # default cross probability
+            # Checkpoint 24 — real wingers deliver 2-6 crosses per 90, not
+            # 12-35. The trigger zone is the byline corridor (x>80), and the
+            # per-touch delivery roll is an order of magnitude lower: a
+            # winger's default in the wide final third is to COMBINE (short
+            # lateral/cutback) or carry — the cross is the exception, driven
+            # by the winger's own cross_instinct via should_cross().
+            cross_zone = x > 80 if attacks_right else x < 25
+            cross_prob = 0.07  # default cross probability
             # ── CHECKPOINT 18: MODERN WINGER CROSS TIMING ──────────
             # Modern wingers (Saka, Vini, Salah) deliver from the dangerous
             # wide crossing zone — the touchline→byline corridor. Their cross
@@ -1598,9 +1794,9 @@ class PossessionChain(BaseChain):
                     if WingerBehaviorEngine.should_cross(
                         winger_profile, x, y, attacks_right, under_pressure
                     ):
-                        cross_prob = 0.55  # winger instinct says deliver now
+                        cross_prob = 0.25  # winger instinct says deliver now
                     else:
-                        cross_prob = 0.12  # winger carries on instead
+                        cross_prob = 0.04  # winger carries on instead
             if (not result.possession_lost and cross_zone
                     and last_player.position in ("LW", "RW", "LB", "RB")
                     and random.random() < cross_prob):
@@ -2254,11 +2450,106 @@ class PossessionChain(BaseChain):
         return drive_mode, anchor_y, bias
 
     @classmethod
+    def _pick_wide_combo_target(
+        cls,
+        carrier: PlayerProfile,
+        players: List[PlayerProfile],
+        x: float, y: float,
+        position_engine,
+        def_players: Optional[List[PlayerProfile]],
+        attacks_right: bool,
+    ) -> Optional[PlayerProfile]:
+        """
+        Checkpoint 24 — the wide combination pass. A wide carrier (winger or
+        fullback) in the final-third flank channel looks for the short game:
+        cutback to the penalty-spot/edge area, lateral to the CAM/CM, or a
+        recycle to the overlapping fullback. These are the passes that make
+        up the dense flank web of a real winger's map (Doku, Saka, Vini).
+
+        Archetype-modulated: byline drivers (traditional wingers) combine
+        less often — their instinct is to carry and deliver; inverted and
+        playmaking wide men combine more. Returns None when no credible
+        short option exists (the caller falls back to normal selection).
+        """
+        in_flank = (y < 24) if carrier.position in ("LW", "LB") else (y > 44)
+        if not in_flank:
+            return None
+        final_third = (x > 70) if attacks_right else (x < 35)
+        middle_third = (x > 45) if attacks_right else (x < 60)
+        if not middle_third:
+            return None  # deep in own half the wide man's pass is structural
+
+        wprof = position_engine.winger_registry.get(carrier.name)
+        byline = wprof.byline_instinct if wprof is not None else 0.55
+        if final_third:
+            combo_prob = 0.78 - 0.40 * byline
+        else:
+            combo_prob = 0.62 - 0.25 * byline
+        if random.random() > combo_prob:
+            return None
+
+        sign = 1.0 if attacks_right else -1.0
+        role_w = {"CAM": 1.20, "CM": 1.10, "CDM": 0.90, "LB": 1.05, "RB": 1.05,
+                  "ST": 0.60, "CF": 0.60, "CB": 0.50, "LW": 0.15, "RW": 0.15,
+                  "GK": 0.0}
+        same_side_fb = {"LW": "LB", "LB": "LB", "RW": "RB", "RB": "RB"}[carrier.position]
+
+        candidates: List[PlayerProfile] = []
+        weights: List[float] = []
+        for t in players:
+            if t.name == carrier.name:
+                continue
+            w = role_w.get(t.position, 0.4)
+            if w <= 0.0:
+                continue
+            tx, ty = position_engine.get_position(t.name)
+            d = math.hypot(tx - x, ty - y)
+            if d < 3.0 or d > 24.0:
+                continue
+            ahead = (tx - x) * sign
+            if ahead > 8.0:
+                continue  # beyond that it's a through ball, not a combination
+            # A wide-origin pass INTO the box is a cross/cutback by provider
+            # definition — real wingers play 2-4 of those a match (they're
+            # the cross mechanism's job), not 20+. Keep a trickle only.
+            box_line = 88.0 if attacks_right else 17.0
+            if (tx > box_line) if attacks_right else (tx < box_line):
+                w *= 0.15
+            # marking: skip smothered targets, discount pressed ones
+            nearest_def = 99.0
+            if def_players:
+                nearest_def = min(
+                    (math.hypot(position_engine.get_position(dp.name)[0] - tx,
+                                position_engine.get_position(dp.name)[1] - ty)
+                     for dp in def_players if getattr(dp, 'position', None) != 'GK'),
+                    default=99.0,
+                )
+            if nearest_def < 2.5:
+                continue
+            if nearest_def < 4.0:
+                w *= 0.5
+            if t.position == same_side_fb:
+                w *= 1.25  # the overlap/underlap recycle
+            w *= 1.0 / (1.0 + d / 9.0)
+            if abs(ty - y) >= 3.0:
+                w *= 1.30  # laterals and cutback diagonals are the shape
+            candidates.append(t)
+            weights.append(w)
+        if not candidates:
+            return None
+        return random.choices(candidates, weights=weights, k=1)[0]
+
+    @classmethod
     def _should_be_long_pass(cls, player: PlayerProfile, x: float, profile) -> bool:
         from match_engine import TeamStyle
         # Handle both TeamProfile and EffectiveTactics
         if hasattr(profile, 'style') and profile.style == TeamStyle.ROUTE_ONE:
             return random.random() < 0.55
+        # Checkpoint 24 — wingers RECEIVE switches and diagonals; they almost
+        # never LAUNCH them (Doku: 1 long ball per 90). A winger trying to
+        # hit a 35m ball is the quarterback's job description, not his.
+        if getattr(player, "position", "") in ("LW", "RW"):
+            return random.random() < (0.05 if x < 40 else 0.03)
         if x < 40:
             return random.random() < 0.20
         return random.random() < 0.12
@@ -2268,7 +2559,8 @@ class PossessionChain(BaseChain):
                        receiver: Optional[PlayerProfile] = None,
                        chemistry=None,
                        marking: float = 0.0,
-                       confidence: Optional[float] = None) -> bool:
+                       confidence: Optional[float] = None,
+                       lane_mult: float = 1.0) -> bool:
         prob = DNAFactory.get_pass_accuracy(player.dna, is_long=is_long, under_pressure=under_pressure)
         # Chemistry modifier: if both players have chemistry data, multiply
         # pass accuracy by the chemistry multiplier (0.90x to 1.14x).
@@ -2288,8 +2580,45 @@ class PossessionChain(BaseChain):
                 conf_val = confidence / 100.0
             resilience = 0.55 + conf_val * 0.45    # 0.55 (low conf) .. 1.0 (high conf)
             prob *= max(0.62, 1.0 - marking * 0.38 * (1.30 - resilience))
+        # Checkpoint 25 — the pass LANE bites in execution, not just in
+        # target selection. Until now a pass through a defender's cover
+        # shadow completed at the same rate as an open one — line-breaking
+        # balls were free. A choked corridor cuts completion sharply.
+        prob *= lane_mult
         prob = _get_soul_applicator().modify_pass_accuracy(player, prob)
         return random.random() < prob
+
+    @classmethod
+    def _lane_interceptor(cls, x: float, y: float, ex: float, ey: float,
+                          def_players, position_engine):
+        """The defender standing ON the pass lane who cuts the ball out.
+
+        Returns (defender, intercept_x, intercept_y) at his projection
+        point on the corridor, or None when nobody is within
+        LANE_REACTION_DIST. The interception belongs to the man whose body
+        the carrier tried to play through.
+        """
+        if position_engine is None or not def_players:
+            return None
+        seg_len = math.hypot(ex - x, ey - y)
+        if seg_len < 1e-6:
+            return None
+        best = None
+        for d in def_players:
+            if getattr(d, "position", None) == "GK":
+                continue
+            dx, dy = position_engine.get_position(d.name)
+            t = ((dx - x) * (ex - x) + (dy - y) * (ey - y)) / (seg_len * seg_len)
+            t = max(0.0, min(1.0, t))
+            px = x + t * (ex - x)
+            py = y + t * (ey - y)
+            dist = math.hypot(dx - px, dy - py)
+            if dist <= LANE_REACTION_DIST and (best is None or dist < best[0]):
+                best = (dist, d, px, py)
+        if best is None:
+            return None
+        _, d, px, py = best
+        return d, px, py
 
     @staticmethod
     def _second_last_defender_x(

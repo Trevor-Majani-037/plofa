@@ -77,6 +77,8 @@ PITCH_Y: float = 68.0
 THIRD_DEPTH: float = 35.0          # one third of the pitch (105/3)
 WING_LINE: float = 20.0            # y < WING_LINE or y > PITCH_Y - WING_LINE = wide
 FINAL_THIRD_X: float = 70.0        # attacking third starts 35m from opponent goal
+BOX_LINE_X_ATTACKING: float = 88.5  # penalty area edge (105 - 16.5)
+BOX_LINE_X_DEFENDING: float = 16.5
 
 # Deep roles that are legitimate "reset anchors" — they sit behind the ball
 # and can recycle possession or hand it to the keeper.
@@ -309,7 +311,14 @@ class PossessionPhaseEngine:
                 # (GK ≤ ~45m) and this is the sequence that produces the
                 # 15-30 touch keeper lines against pressing sides. Under
                 # pressure the reset to the keeper is forced outright.
-                if gk_reset and (under_pressure or nx < 55.0):
+                #
+                # Checkpoint 24 — wingers are exempt: a winger launching a
+                # 40-60m diagonal back to his own keeper is not a pattern of
+                # play, it's a giveaway. The shut-down winger's reset is the
+                # SHORT ball to his overlapping fullback or the nearest
+                # midfielder (the anchor pick below), or patience.
+                if (gk_reset and carrier_role not in ("LW", "RW")
+                        and (under_pressure or nx < 55.0)):
                     if under_pressure or random.random() < self._gk_recycle_rate():
                         return PossessionDecision(
                             PossessionPhase.REGROUP_BUILD_UP,
@@ -318,13 +327,24 @@ class PossessionPhaseEngine:
                             reason="wing_blocked_structural_reset",
                         )
                 if reset is not None:
+                    # Checkpoint 24 — a winger's "nearest backward anchor"
+                    # can be a CB 50-70m away when the whole structure has
+                    # pushed up around him: launching that bomb back is not
+                    # football. Beyond ~30m the shut-down winger recirculates
+                    # instead (short support pass via the circulation web).
+                    if (carrier_role in ("LW", "RW")
+                            and math.hypot(reset.x - ball_x, reset.y - ball_y) > 30.0):
+                        return PossessionDecision(
+                            current_phase, TacticalDirective.SUSTAIN_CIRCULATION,
+                            reason="wing_blocked_no_near_anchor",
+                        )
                     return PossessionDecision(
                         PossessionPhase.REGROUP_BUILD_UP,
                         TacticalDirective.RECYCLE_BACKWARD,
                         target=reset.name,
                         reason="tactical_recycle_backward",
                     )
-                if gk_reset:
+                if gk_reset and carrier_role not in ("LW", "RW"):
                     return PossessionDecision(
                         PossessionPhase.REGROUP_BUILD_UP,
                         TacticalDirective.EMERGENCY_DROP_TO_GK,
@@ -359,6 +379,7 @@ class PossessionPhaseEngine:
                         current_phase, under_pressure):
                     target = self._pick_circulation_target(
                         teammates, ball_x, ball_y, attacks_right,
+                        carrier_role=carrier_role,
                     )
                     if target is not None:
                         return PossessionDecision(
@@ -459,6 +480,7 @@ class PossessionPhaseEngine:
         ball_x: float,
         ball_y: float,
         attacks_right: bool,
+        carrier_role: Optional[str] = None,
     ) -> Optional[TeammateSnapshot]:
         """
         Choose the support-angle receiver for a tempo-circulation pass.
@@ -492,6 +514,14 @@ class PossessionPhaseEngine:
             ahead = (t.x - ball_x) * sign
             if ahead > CIRCULATION_AHEAD_TOLERANCE_M:
                 continue
+            # Checkpoint 24 — for WIDE carriers the box-bound "support" ball
+            # is the cross mechanism's job; circulating into the box just
+            # stamped Wingers' ordinary passes as crosses (20+/match).
+            if carrier_role in ("LW", "RW", "LB", "RB"):
+                box_line = BOX_LINE_X_ATTACKING if attacks_right else BOX_LINE_X_DEFENDING
+                in_box = (t.x > box_line) if attacks_right else (t.x < box_line)
+                if in_box:
+                    continue
             w = CIRCULATION_ROLE_WEIGHT.get(t.role, 0.8)
             w *= 1.0 / (1.0 + d / 9.0)        # short passes dominate
             w *= 1.0 - 0.7 * t.marking         # free men get the ball
