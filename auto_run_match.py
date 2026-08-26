@@ -58,22 +58,34 @@ class _TeamEntry(TypedDict):
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 12, 29) # Year, Month, Day
-MATCHDAY     = 20 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 8, 23) # Year, Month, Day
+MATCHDAY     = 1 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "Triumpher"
-AWAY_TEAM  = "Uditon"
+HOME_TEAM  = "Lige-8"
+AWAY_TEAM  = "Red Wolves"
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = ""
-CAPACITY  = 100_000
+VENUE     = "West 1977 City"
+CAPACITY  = 65_000
 
 # ── Referee ────────────────────────────────────────────────────────────
-REFEREE    = "Marcus Osei"
-STRICTNESS = 0.0 # 0.0 = very lenient  |  1.0 = very strict
+REFEREE    = "Jofart Eli"
+STRICTNESS = 0.1 # 0.0 = very lenient  |  1.0 = very strict
+
+#PLOFA LEAGUE REFS FOR 26/27 SEASON (9, 1/MATCH, TOTAL 9)
+#Marcus Osei (0.3),
+#Juri Yuresh (0.0), 
+#Eric Vanam (0.2), 
+#Daniel Liu (0.0), 
+#Ashley Mantu (0.1),
+#Feriza Maria (0.0),
+#William Hurte (0.0),
+#Jofart Eli (0.1),
+#Carlos Caper (0.1),
+
 
 # ── Conditions ─────────────────────────────────────────────────────────
 WEATHER    = "clear"   # clear | rain | wind | fog
@@ -111,10 +123,15 @@ SOUL_PLAYERS: dict[str, PlayerSoul] = {
          archetype=SoulArchetype.DEFENSIVE_PURIST,
          pillars=GreatnessPillars(hardwork=0.99, talent=0.87, luck=0.96),
      ),
+    "Francis Bonadi": PlayerSoul(
+        "Francis Bonadi",
+         archetype=SoulArchetype.WALL,
+         pillars=GreatnessPillars(hardwork=0.90, talent=0.90, luck=0.89),
+     ),
     "Zachery Worth": PlayerSoul(
          "Zachery Worth",
          archetype=SoulArchetype.WIDE_DESTROYER,
-         pillars=GreatnessPillars(hardwork=0.72, talent=0.99, luck=0.99)
+         pillars=GreatnessPillars(hardwork=0.83, talent=0.99, luck=0.99)
      ),
     "Danso Potwemi": PlayerSoul(
          "Danso Potwemi",
@@ -215,7 +232,7 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
     "Natrican": {
         "home_color": "#FA6807",
         "away_color": "#002244",
-        "style":         TeamStyle.ULTRA_ATTACKING,
+        "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.DIRECT,
         "intensity":     Intensity.MEDIUM,
     },
@@ -252,14 +269,14 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#F5A623",
         "style":         TeamStyle.BALANCED,
         "playing_style": PlayingStyle.LOW_BLOCK,
-        "intensity":     Intensity.LOW,
+        "intensity":     Intensity.HIGH,
     },
     "Justice": {
         "home_color": "#2C3E50",
         "away_color": "#E74C3C",
         "style":         TeamStyle.BALANCED,
         "playing_style": PlayingStyle.PATIENT_BUILD_UP,
-        "intensity":     Intensity.LOW,
+        "intensity":     Intensity.HIGH,
     },
     "Tryox City": {
         "home_color": "#1ABC9C",
@@ -272,7 +289,7 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "home_color": "#8E44AD",
         "away_color": "#ECF0F1",
         "style":         TeamStyle.DEFENSIVE,
-        "playing_style": PlayingStyle.PATIENT_BUILD_UP,
+        "playing_style": PlayingStyle.COUNTER,
         "intensity":     Intensity.VERY_HIGH,
     },
     "Trendboys": {
@@ -301,14 +318,14 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#EA09AA",
         "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.COUNTER,
-        "intensity":     Intensity.LOW,
+        "intensity":     Intensity.MEDIUM,
     },
     "Ganester":{
         "home_color": "#EAF207",
         "away_color": "#0F22CD",
         "style":         TeamStyle.ROUTE_ONE,
         "playing_style": PlayingStyle.PATIENT_BUILD_UP,
-        "intensity":     Intensity.LOW,
+        "intensity":     Intensity.MEDIUM,
     },
     "Rodice": {
         "home_color": "#0B3E0C",
@@ -684,6 +701,46 @@ def run():
         manager_stubbornness=MANAGER_STUBBORNNESS,
     )
     sub_controller.MAX_SUBS = MAX_SUBS
+
+    # Register pre-planned tactical sub minutes.
+    # Format: {player_OFF_name: minute_they_come_off}
+    # Built from starters' sub_out_minute and from bench sub_in_minute
+    # (inferring the player going off by finding a starter in the same
+    # position group who doesn't already have a sub scheduled).
+    tactical_schedule: Dict[str, int] = {}
+    for p in home_squad["starters"] + away_squad["starters"]:
+        if getattr(p, "sub_out_minute", None):
+            tactical_schedule[p.name] = p.sub_out_minute
+    for bench, starters in [
+        (home_squad["substitutes"], home_squad["starters"]),
+        (away_squad["substitutes"], away_squad["starters"]),
+    ]:
+        for sub_p in bench:
+            sm = getattr(sub_p, "sub_in_minute", None)
+            if sm is None and hasattr(sub_p, "dna"):
+                sm = getattr(sub_p.dna, "sub_in_minute", None)
+            if not sm:
+                continue
+            # Find a starter in the same position group who isn't already
+            # scheduled to come off, and pair them with this bench player.
+            sub_pos = getattr(sub_p, "position",
+                              getattr(getattr(sub_p, "dna", None), "position", "CM"))
+            adj = {
+                "ST": ["CF", "LW", "RW", "CAM"], "CF": ["ST", "CAM", "LW", "RW"],
+                "LW": ["RW", "CAM", "ST", "LB"], "RW": ["LW", "CAM", "ST", "RB"],
+                "CAM": ["CM", "LW", "RW", "ST"], "CM": ["CAM", "CDM", "LW", "RW"],
+                "CDM": ["CM", "CB"], "LB": ["RB", "CB", "LW"],
+                "RB": ["LB", "CB", "RW"], "CB": ["CDM", "LB", "RB"], "GK": ["GK"],
+            }.get(sub_pos, [])
+            candidates = [
+                s for s in starters
+                if getattr(s, "position",
+                           getattr(getattr(s, "dna", None), "position", "CM")) in ([sub_pos] + adj)
+                and s.name not in tactical_schedule
+            ]
+            if candidates:
+                tactical_schedule[candidates[0].name] = sm
+    sub_controller.register_tactical_schedule(tactical_schedule)
 
     # ── Simulate ──────────────────────────────────────────────
     print(f"\n  ⚽ Simulating...\n")

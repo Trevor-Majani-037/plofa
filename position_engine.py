@@ -44,9 +44,14 @@ from enum import Enum
 from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_Y, CENTER_Y
 from winger_behavior import (
     WingerRegistry,
+    WingerBehaviorEngine,
     LEFT_TOUCHLINE_ANCHOR_Y,
     RIGHT_TOUCHLINE_ANCHOR_Y,
 )
+from fullback_behavior import FullbackRegistry, FullbackBehaviorEngine
+from midfielder_behavior import MidfieldRegistry, MidfielderBehaviorEngine
+from striker_behavior import StrikerRegistry, StrikerBehaviorEngine
+from block_awareness import HalfSpaceMagnet
 
 if TYPE_CHECKING:
     from match_engine import TeamProfile, MatchPhase, GameState
@@ -293,6 +298,11 @@ class PlayerSpatialState:
     # Last minute they were actively involved (for staleness checks)
     last_active_minute: int = 0
 
+    # Movement vector (m/min), EMA-smoothed each minute from net drift deltas.
+    # Feeds velocity-aware pitch-control influence (Checkpoint 26 wiring).
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
+
     # ── MOVEMENT ACCUMULATORS (real distance, not authored fiction) ──
     # Reset every minute by PositionEngine.pop_minute_activity(). Two
     # separate sources are tracked because they have different meaning:
@@ -307,6 +317,23 @@ class PlayerSpatialState:
     minute_touch_count: int = 0
     minute_peak_touch_jump: float = 0.0   # largest single touch-to-touch move this minute
     minute_drift_distance: float = 0.0
+
+    # ── PHYSICS-DERIVED MOVEMENT (from PossessionEpisode trace) ──────
+    # These are populated by record_physics_distance() and reset each minute.
+    physics_distance_m: float = 0.0
+    physics_sprint_count: float = 0.0
+    physics_high_speed_sprint_count: float = 0.0
+    physics_top_speed_mps: float = 0.0
+
+    # ── WIDE-RUN CONTINUITY (Checkpoint 32b) ──────────────────────
+    # A cached run target the player travels toward at a pace-capped rate
+    # each minute, so wide runs flow as trajectories instead of snapping.
+    # run_mode is one of: None | "byline" | "cut" | "box" | "overlap" |
+    # "underlap" | "tuck". top_speed_mpm bounds the per-minute step (m).
+    run_target_x: float = 0.0
+    run_target_y: float = 0.0
+    run_mode: Optional[str] = None
+    top_speed_mpm: float = 9.0
 
     def __post_init__(self):
         self.current_x = self.home_x
@@ -399,6 +426,26 @@ class PositionEngine:
         # Checkpoint 18 — modern winger registry: per-winger spatial profiles
         # (touchline anchor, flank commitment, byline instinct, isolation thirst).
         self.winger_registry: WingerRegistry = WingerRegistry()
+        # Checkpoint 32 — modern fullback registry: per-fullback spatial
+        # profiles (flank commitment, advance/overlap/underlap/tuck instincts,
+        # hold discipline, duel aggression, recovery urgency) built from the
+        # fullback DNA archetypes in player_dna.
+        self.fullback_registry: FullbackRegistry = FullbackRegistry()
+        # Checkpoint 33 — midfielder (CM/CAM) and striker (ST/CF) registries:
+        # per-player spatial profiles built from the DNA archetypes in
+        # player_dna (box_to_box / deep_playmaker / progressive_midfielder /
+        # classic_ten / shadow_striker, and poacher / target_man /
+        # complete_striker / deep_lying_striker / speedster_striker).
+        self.midfield_registry: MidfieldRegistry = MidfieldRegistry()
+        self.striker_registry: StrikerRegistry = StrikerRegistry()
+        # Checkpoint 29 — live opponent block shapes, refreshed per minute by
+        # MatchEngine after _update_block_shapes(). Consumed by drift_minute's
+        # HalfSpaceMagnet integration (in-possession half-space occupation).
+        self._block_context: Tuple[Optional[object], Optional[object]] = (None, None)
+
+    def set_block_context(self, home_block, away_block) -> None:
+        """Refresh the per-minute block shapes used by drift_minute's magnet."""
+        self._block_context = (home_block, away_block)
 
     def initialize_team(self, team_name: str, players: List, profile: "TeamProfile",
                         attacks_right: bool = True):
@@ -433,6 +480,7 @@ class PositionEngine:
                 player_name=name, position=pos, team=team_name,
                 home_x=home_x, home_y=home_y, drift_tolerance=tol,
                 geometric_awareness=self._geometric_awareness_for(p),
+                top_speed_mpm=self._pace_mpm_for(p),
             )
             if name not in self.team_rosters[team_name]:
                 self.team_rosters[team_name].append(name)
@@ -440,6 +488,12 @@ class PositionEngine:
         # Checkpoint 18 — register all wingers' spatial profiles (touchline
         # anchor, flank commitment, byline instinct, isolation thirst).
         self.winger_registry.register_team(players)
+        # Checkpoint 32 — register all fullbacks' spatial profiles
+        # (flank commitment, advance/overlap/underlap/tuck instincts).
+        self.fullback_registry.register_team(players)
+        # Checkpoint 33 — register midfielders (CM/CAM) and strikers (ST/CF).
+        self.midfield_registry.register_team(players)
+        self.striker_registry.register_team(players)
 
     def register_substitute(self, team_name: str, player, profile: "TeamProfile" = None):
         """Called when a sub comes on — gives them a fresh home position."""
@@ -461,10 +515,16 @@ class PositionEngine:
             player_name=name, position=pos, team=team_name,
             home_x=home_x, home_y=home_y, drift_tolerance=tol,
             geometric_awareness=self._geometric_awareness_for(player),
+            top_speed_mpm=self._pace_mpm_for(player),
         )
         self.team_rosters.setdefault(team_name, []).append(name)
         # Checkpoint 18 — register the sub's winger profile if they're a winger.
         self.winger_registry.register_player(player)
+        # Checkpoint 32 — register the sub's fullback profile if they're a FB.
+        self.fullback_registry.register_player(player)
+        # Checkpoint 33 — register midfielder / striker profile if applicable.
+        self.midfield_registry.register_player(player)
+        self.striker_registry.register_player(player)
 
     @staticmethod
     def _drift_tolerance_for(position: str, player) -> float:
@@ -498,6 +558,17 @@ class PositionEngine:
             if val is not None:
                 return max(0.0, min(100.0, val))
         return 50.0
+
+    @staticmethod
+    def _pace_mpm_for(player) -> float:
+        """Top sprint speed in metres per simulation-minute (pace 50→~6.5, 95→~13).
+
+        Bounds the per-minute run-step so wide runners travel at a
+        realistic rate instead of teleporting (Checkpoint 32b continuity).
+        """
+        phys = getattr(getattr(player, "dna", None), "physical", None)
+        pace = getattr(phys, "pace", 65.0) if phys is not None else 65.0
+        return max(6.0, min(13.0, 6.0 + (pace - 50.0) / 45.0 * 7.0))
 
     # ── LIVE UPDATES ──────────────────────────────────────────
 
@@ -536,7 +607,13 @@ class PositionEngine:
                     if state.position in ("LW", "RW"):
                         wp = self.winger_registry.get(player_name)
                         if wp is not None:
-                            pull = 0.25 + 0.20 * wp.flank_commitment
+                            # Checkpoint 31: 0.25+0.20c left ~58% of every
+                            # infield touch uncorrected, so the heat map kept
+                            # the RM/LM half-space band (|y-c|≈15-17 vs an
+                            # anchor at |y-c|=24). A real winger's first
+                            # action after receiving infield is to rip back
+                            # out to the touchline — pull hard.
+                            pull = 0.40 + 0.35 * wp.flank_commitment
                     state.current_y += (anchor_y - state.current_y) * pull
             self._anchor_gk_in_own_box(state)
 
@@ -592,19 +669,51 @@ class PositionEngine:
             if name in self.states
         }
 
+    # EMA smoothing for the velocity E-field feed (0.6 = strong current-minute weight)
+    _VELOCITY_EMA_ALPHA: float = 0.6
+
     def accumulate_drift_from_snapshot(
         self, team_name: str, before: Dict[str, Tuple[float, float]]
     ):
         """Diff current positions against a prior snapshot and add the
         real net distance moved to each player's minute_drift_distance.
+        Also folds the signed delta into the player's velocity EMA, so the
+        motion-aware pitch control field sees stable movement vectors.
         Call AFTER drift_minute / defensive_block / attacking_crash have
         all run for this team this minute."""
+        a = self._VELOCITY_EMA_ALPHA
         for name, (px, py) in before.items():
             state = self.states.get(name)
             if state is None:
                 continue
-            dist = ((state.current_x - px) ** 2 + (state.current_y - py) ** 2) ** 0.5
+            dx, dy = state.current_x - px, state.current_y - py
+            dist = (dx * dx + dy * dy) ** 0.5
             state.minute_drift_distance += dist
+            state.velocity_x = (1 - a) * state.velocity_x + a * dx
+            state.velocity_y = (1 - a) * state.velocity_y + a * dy
+
+    def record_physics_distance(
+        self,
+        player_name: str,
+        distance_m: float = 0.0,
+        sprint_count: float = 0.0,
+        high_speed_sprint_count: float = 0.0,
+        top_speed_mps: float = 0.0,
+    ) -> None:
+        """
+        Accumulate physics-derived movement stats from PossessionEpisode trace.
+
+        These are additive with the existing touch/drift accumulators and
+        are reset each minute by pop_minute_activity().
+        """
+        state = self.states.get(player_name)
+        if state is None:
+            return
+        state.physics_distance_m += float(distance_m)
+        state.physics_sprint_count += float(sprint_count)
+        state.physics_high_speed_sprint_count += float(high_speed_sprint_count)
+        if float(top_speed_mps) > state.physics_top_speed_mps:
+            state.physics_top_speed_mps = float(top_speed_mps)
 
     def pop_minute_activity(self, player_name: str) -> Dict[str, float]:
         """
@@ -627,12 +736,20 @@ class PositionEngine:
                                classification (a big single jump between
                                two touches implies fast movement between
                                them, unlike a slow accumulation).
+            physics_distance_m            — true distance from physics trace.
+            physics_sprint_count          — sprint segments from physics trace.
+            physics_high_speed_sprint_count — high-speed sprint segments.
+            physics_top_speed_mps         — max observed speed from physics trace.
         """
         state = self.states.get(player_name)
         if state is None:
             return {
                 "distance_touch": 0.0, "distance_drift": 0.0,
                 "distance_total": 0.0, "touches": 0, "peak_touch_jump": 0.0,
+                "physics_distance_m": 0.0,
+                "physics_sprint_count": 0.0,
+                "physics_high_speed_sprint_count": 0.0,
+                "physics_top_speed_mps": 0.0,
             }
         out = {
             "distance_touch": round(state.minute_touch_distance, 2),
@@ -640,11 +757,19 @@ class PositionEngine:
             "distance_total": round(state.minute_touch_distance + state.minute_drift_distance, 2),
             "touches": state.minute_touch_count,
             "peak_touch_jump": round(state.minute_peak_touch_jump, 2),
+            "physics_distance_m": round(state.physics_distance_m, 2),
+            "physics_sprint_count": round(state.physics_sprint_count, 1),
+            "physics_high_speed_sprint_count": round(state.physics_high_speed_sprint_count, 1),
+            "physics_top_speed_mps": round(state.physics_top_speed_mps, 2),
         }
         state.minute_touch_distance = 0.0
         state.minute_touch_count = 0
         state.minute_peak_touch_jump = 0.0
         state.minute_drift_distance = 0.0
+        state.physics_distance_m = 0.0
+        state.physics_sprint_count = 0.0
+        state.physics_high_speed_sprint_count = 0.0
+        state.physics_top_speed_mps = 0.0
         return out
 
     # Line groupings for Checkpoint 6 team-shape cohesion
@@ -666,6 +791,32 @@ class PositionEngine:
         "ST": 0.80, "CF": 0.80,
     }
 
+    # Checkpoint 31 — Median ball-proximity bands (team IN possession).
+    # Elite midfielders sit one passing tier away from the ball carrier:
+    # far enough to stretch the opponent's block, close enough for a
+    # secure pass under pressure (the ~5.9m receive cushion from
+    # StatsBomb 360 lives INSIDE this macro-distance). Bands are the
+    # observed median distance-from-ball ranges per position:
+    #   CDM 12-16m  — anchor / recycling option, just outside pressing
+    #                 cover shadows, keeping passing lines alive.
+    #   CM  14-18m  — balances overload support vs macro half-space
+    #                 positioning and final-third advances.
+    #   LB/RB       — high variance: 18-25m preserving structural width
+    #                 on the weak side, tightened to 12-15m on their own
+    #                 flank in build-up when acting as a direct
+    #                 progressive passing outlet.
+    BALL_PROXIMITY_BAND: Dict[str, tuple] = {
+        "CDM": (12.0, 16.0),
+        "CM": (14.0, 18.0),
+        # CAM deliberately excluded: his home already sits where the ball
+        # usually is, so the band anchor (which pulls radial/behind the
+        # ball) fights his pocket-roam targets. _cam_pocket_roam owns the
+        # #10's in-possession movement instead.
+        "LB": (18.0, 25.0),
+        "RB": (18.0, 25.0),
+    }
+    BALL_PROXIMITY_FULLBACK_OUTLET = (12.0, 15.0)
+
     def drift_minute(
         self,
         team_name: str,
@@ -677,6 +828,7 @@ class PositionEngine:
         ball_x: Optional[float] = None,
         ball_y: Optional[float] = None,
         opponent_players: Optional[List] = None,
+        danger_level: float = 0.0,
     ):
         """
         Called once per minute per team. Every player NOT touched THIS
@@ -715,13 +867,32 @@ class PositionEngine:
         # fullback/winger genuinely swings shape while a CB/CDM barely does.
         base_shape_shift = 3.5 if in_possession else -3.0
 
-        # Checkpoint 21 — the drift pull is the ONLY mechanism that returns
-        # non-involved players to their formation post, and it runs ONCE per
-        # minute while touch-events can pin a player to the ball 8-15 times
-        # per minute. At the old 0.30-0.45 pull a winger dragged to the
-        # centre was still ~15m off his touchline after a full minute. Raise
-        # the floor so the formation re-asserts itself within ~2-3 minutes.
+        # ── CHECKPOINT 25: BALL-SIDE SQUEEZE WHEN DEFENDING ──────────
+        # Below the defensive_block danger threshold the unit still shifts
+        # laterally toward the ball every minute, graded by danger — real
+        # defensive shape "slides across with the ball" continuously, not
+        # only when a live threat forces it. Excludes wing anchors (LW/RW/
+        # LB/RB) so the squeeze never fights the touchline anchoring.
+        # Checkpoint 31b — CAM joined: the #10 must track the ball laterally
+        # when defending too, not stand frozen on his home marker.
+        BALL_SQUEEZE_POSITIONS = ("GK", "CB", "CDM", "CM", "CAM")
+        squeeze_max = 0.30
+        squeeze_shift = (
+            squeeze_max * max(0.0, min(1.0, danger_level / 100.0))
+            if (not in_possession and ball_y is not None) else 0.0
+        )
+
         press_pull = 0.45 + getattr(profile, "press_intensity", 0.5) * 0.15
+        attacks_right = self.team_attacks_right.get(team_name, True)
+
+        # Checkpoint 29 — the OPPONENT's block this team orbits when in
+        # possession. Home attacks right → opponent is the away team →
+        # away_block (mirrored for the away side), same rule the pass
+        # selection layer uses.
+        opp_block = None
+        if in_possession:
+            ctx_home_block, ctx_away_block = self._block_context
+            opp_block = ctx_away_block if attacks_right else ctx_home_block
 
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
@@ -729,7 +900,49 @@ class PositionEngine:
                 continue
 
             player_shape_shift = base_shape_shift * self.SHAPE_SHIFT_SCALE.get(state.position, 1.0)
-            effective_home_x = max(4.0, min(101.0, state.home_x + chase_shift + player_shape_shift))
+            effective_home_x = state.home_x + chase_shift + player_shape_shift
+
+            # ── CHECKPOINT 30: FORWARD BUILD-UP DROP ───────────────────
+            # A real forward is not a static tower. When the team builds from
+            # the back he drops into the half-space to receive, creating a
+            # passing lane and pulling a defender out of shape. The drop is
+            # baked into effective_home_x so the normal drift pull naturally
+            # moves him there — no extra post-pass override needed.
+            if (
+                in_possession
+                and ball_x is not None
+                and state.position in ("LW", "ST", "RW")
+            ):
+                if attacks_right:
+                    if ball_x < 38.0:
+                        effective_home_x = min(effective_home_x, 58.0 if state.position == "ST" else 62.0)
+                    elif ball_x < 62.0:
+                        effective_home_x = min(effective_home_x, 66.0 if state.position == "ST" else 70.0)
+                else:
+                    if ball_x > 67.0:
+                        effective_home_x = max(effective_home_x, 47.0 if state.position == "ST" else 43.0)
+                    elif ball_x > 43.0:
+                        effective_home_x = max(effective_home_x, 39.0 if state.position == "ST" else 35.0)
+
+            effective_home_x = max(4.0, min(101.0, effective_home_x))
+            effective_home_y = state.home_y
+
+            # ── CHECKPOINT 31: MEDIAN BALL-PROXIMITY BAND ───────────
+            # In possession, radially adjust the anchor so its distance
+            # from the ball sits inside the position's median band. The
+            # drift then converges there naturally instead of fighting
+            # a separate correction force.
+            if (
+                in_possession
+                and ball_x is not None and ball_y is not None
+                and state.position in self.BALL_PROXIMITY_BAND
+            ):
+                effective_home_x, effective_home_y = (
+                    self._band_adjusted_anchor(
+                        state, effective_home_x, effective_home_y,
+                        ball_x, ball_y, attacks_right,
+                    )
+                )
 
             if state.last_active_minute == minute:
                 # Checkpoint 6.1 fix: this used to be a hard `continue` —
@@ -750,7 +963,11 @@ class PositionEngine:
 
             # Temporarily drift toward the (possibly shifted) home
             state.current_x += (effective_home_x - state.current_x) * press_pull
-            state.current_y += (state.home_y - state.current_y) * press_pull
+            state.current_y += (effective_home_y - state.current_y) * press_pull
+
+            # Checkpoint 25 — slide the block laterally toward the ball.
+            if squeeze_shift > 0.0 and state.position in BALL_SQUEEZE_POSITIONS:
+                state.current_y += (ball_y - state.current_y) * squeeze_shift
 
         # ── CHECKPOINT 18: MODERN WINGER FLANK + FORWARD ANCHORING ──
         # Wingers are touchline-hugging flank attackers, NOT drifting #10s.
@@ -786,7 +1003,11 @@ class PositionEngine:
                 winger_profile = self.winger_registry.get(name)
                 commitment = winger_profile.flank_commitment if winger_profile is not None else 0.85
             else:
-                commitment = 0.75
+                # Checkpoint 32 — DNA-driven: a defensive_fullback snaps
+                # back to his channel harder than an inverted_fullback,
+                # who tolerates being infield during build-up.
+                fb_profile = self.fullback_registry.get(name)
+                commitment = fb_profile.flank_commitment if fb_profile is not None else 0.75
             if flank_drift > 8.0:
                 pull = (0.45 if in_possession else 0.30) * (0.5 + commitment * 0.5)
             elif flank_drift > 4.0:
@@ -824,6 +1045,71 @@ class PositionEngine:
                     elif not attacks_right and state.current_x < 11.0:
                         state.current_x += (15.0 - state.current_x) * 0.35
 
+        # ── FRONTLINE TRACKING-BACK OUT OF POSSESSION ─────────────
+        # Wingers and strikers are not parked in the final third when the
+        # team is defending. Out of possession they retreat toward the
+        # midfield band so the frontline stays connected to the rest of
+        # the shape instead of becoming isolated islands.
+        if not in_possession:
+            for name in self.team_rosters.get(team_name, []):
+                state = self.states.get(name)
+                if state is None or state.position not in ("LW", "ST", "RW"):
+                    continue
+                if attacks_right:
+                    if state.current_x <= 65.0:
+                        continue
+                    target_x = 62.0 if state.position == "ST" else 65.0
+                    pull = 0.20 if state.position == "ST" else 0.25
+                else:
+                    if state.current_x >= 40.0:
+                        continue
+                    target_x = 43.0 if state.position == "ST" else 40.0
+                    pull = 0.20 if state.position == "ST" else 0.25
+                state.current_x += (target_x - state.current_x) * pull
+
+        # ── CHECKPOINT 32: FULLBACK ADVANCE / TUCK / RECOVER ──────
+        # Consume the FullbackBehaviorEngine so overlaps, underlaps and
+        # inverted tucks actually HAPPEN in the drift, instead of the
+        # profiles sitting unused in the registry. In possession, when the
+        # ball is live on (or near) his flank, the fullback may take an
+        # outside overlap, an inside underlap, or — inverted FB in build-up
+        # — step into the midfield pocket. Out of possession, if the ball is
+        # turned over behind him on his flank, he sprints back (recovery).
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position not in ("LB", "RB"):
+                continue
+            fb_profile = self.fullback_registry.get(name)
+            if fb_profile is None:
+                continue
+            # A fullback who was just involved this minute keeps his touch
+            # coordinates authoritative (same rule as the winger forward
+            # anchor above).
+            if state.last_active_minute == minute:
+                continue
+            anchor_y = state.home_y
+
+            if in_possession:
+                # Continuous overlap/underlap/tuck runs are now handled by
+                # _wide_run_step (pace-capped + shape-aware) at the end of
+                # drift_minute, so they flow as trajectories instead of
+                # snapping here.
+                continue
+            else:
+                # Recovery: caught upfield, ball behind on his flank.
+                if ball_x is None or ball_y is None:
+                    continue
+                if FullbackBehaviorEngine.should_recovery_sprint(
+                        fb_profile, state.current_x, state.current_y,
+                        ball_x, ball_y, attacks_right, anchor_y=anchor_y):
+                    state.current_x += (state.home_x - state.current_x) * 0.30
+                    state.current_y += (state.home_y - state.current_y) * 0.30
+
+        # Checkpoint 31 — median ball-proximity bands: applied INSIDE the
+        # drift below by radially adjusting each CDM/CM/LB/RB anchor so the
+        # ordinary home drift itself converges inside the band (a post-hoc
+        # nudge always lost to the much stronger home pull).
+
         # Checkpoint 6 — line cohesion: apply AFTER individual drift so
         # defensive/midfield lines pull toward their own line-mates' average
         # position, representing a back four/midfield three shifting as a
@@ -831,11 +1117,38 @@ class PositionEngine:
         # only to their own personal home position.
         self._apply_line_cohesion(team_name)
 
+        # Checkpoint 27 — formation graph physics: one spring iteration over
+        # neighbor-pair edges (CB-CB, CDM-CM, flank pairs...) so pairs move
+        # as coordinated units, plus min-separation repulsion so team-mates
+        # don't cluster. Defending tightens springs (block as a unit);
+        # attacking loosens them so runners can break shape.
+        self._graph_relaxation(team_name, in_possession)
+
+        # ── CHECKPOINT 29: HALF-SPACE MAGNET (post-cohesion) ─────────
+        # Applied AFTER line cohesion and graph relaxation because both
+        # average midfielders back toward their line's center — which
+        # washed the magnet out when it was folded into the drift target
+        # (A/B: half-space occupancy unchanged). Blending the live
+        # position here lets the orbital web's NODES sit in the
+        # half-space channels the pass-selection layer aims at.
+        if in_possession and opp_block is not None:
+            self._apply_half_space_magnet(team_name, opp_block)
+
         # Checkpoint 6.2 — midfield geometric coverage (Enzo/Rice/Pedri):
         # in possession, midfielders with high geometric_awareness drift
         # to cover vacant half-spaces when teammates are isolated.
         if in_possession:
             self._midfielder_geometric_coverage(team_name, minute=minute)
+
+            # Checkpoint 31b — #10 pocket roaming: the CAM's home already
+            # sits where the ball usually is, so the proximity band has
+            # nothing to correct for him; give him an explicit roaming
+            # behaviour one tier ahead of the carrier instead.
+            if ball_x is not None and ball_y is not None:
+                self._cam_pocket_roam(
+                    team_name, ball_x, ball_y,
+                    self.team_attacks_right.get(team_name, True), minute,
+                )
 
             # Checkpoint 19 — attacker space runs (ST/LW/RW/GK):
             # in possession, attackers with high geometric_awareness run
@@ -849,6 +1162,455 @@ class PositionEngine:
                     attacks_right=self.team_attacks_right.get(team_name, True),
                     minute=minute,
                 )
+
+            # Checkpoint 32b — continuous, shape-aware wide runs (wingers +
+            # fullbacks) replace the old per-minute positional snap with a
+            # cached run target travelled at a pace-capped rate, bending off
+            # opponent pressure (counter-press awareness).
+            self._wide_run_step(
+                team_name, minute, ball_x, ball_y,
+                self.team_attacks_right.get(team_name, True),
+                opponent_players or [],
+            )
+
+            # Checkpoint 33 — continuous, shape-aware midfield + striker runs.
+            self._midfield_run_step(
+                team_name, minute, ball_x, ball_y,
+                self.team_attacks_right.get(team_name, True),
+                opponent_players or [],
+            )
+            self._striker_run_step(
+                team_name, minute, ball_x, ball_y,
+                self.team_attacks_right.get(team_name, True),
+                opponent_players or [],
+            )
+
+    def _opponent_pressure_at(
+        self, x: float, y: float,
+        opponents: Optional[List], ball_x: float, ball_y: float,
+        attacks_right: bool,
+    ) -> float:
+        """
+        Rough counter-press pressure at (x, y): inverse-distance sum of
+        nearby opponents (and the loose ball). 0 (open lane) → ~1 (trap).
+        Used by _wide_run_step to check a runner off a pressing trap.
+        """
+        if not opponents:
+            return 0.0
+        s = 0.0
+        for o in opponents:
+            oname = getattr(o, "name", None)
+            if oname is None:
+                continue
+            ox, oy = self.get_position(oname)
+            d = math.hypot(ox - x, oy - y)
+            if d < 25.0:
+                s += (25.0 - d) / 25.0
+        if ball_x is not None and ball_y is not None:
+            db = math.hypot(ball_x - x, ball_y - y)
+            if db < 18.0:
+                s += (18.0 - db) / 18.0 * 0.6
+        return min(1.0, s / 2.5)
+
+    def _wide_run_step(
+        self,
+        team_name: str, minute: int,
+        ball_x: Optional[float], ball_y: Optional[float],
+        attacks_right: bool, opponent_players: Optional[List],
+    ) -> None:
+        """
+        Checkpoint 32b — CONTINUOUS, SHAPE-AWARE wide runs.
+
+        For each winger/fullback NOT just involved this minute, decide a
+        run target from the behavior engines (winger: byline drive / cut
+        inside / box entry; fullback: overlap / underlap / tuck). The
+        target is cached on the player's spatial state and the player
+        travels toward it at a pace-capped rate (top_speed_mpm), so a run
+        unfolds as a smooth trajectory across minutes instead of jumping.
+        If the target cell sits under opponent pressure (a counter-press
+        trap), the target is bent back toward home/width so the runner
+        checks his run rather than sprinting into pressure.
+
+        Runs are only FIRED on a genuine behavior-engine decision; when no
+        run is on, the cached target is cleared and the player simply
+        settles via the normal flank/forward/home pulls — so static
+        circulation is untouched.
+        """
+        sign = 1.0 if attacks_right else -1.0
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position not in ("LW", "RW", "LB", "RB"):
+                continue
+            if state.last_active_minute == minute:
+                continue  # touch coordinates are authoritative
+            if ball_x is None or ball_y is None:
+                state.run_mode = None
+                continue
+
+            anchor_y = state.home_y
+            pos = state.position
+            target = None
+            mode = None
+
+            if pos in ("LW", "RW"):
+                wp = self.winger_registry.get(name)
+                if wp is not None:
+                    x, y = state.current_x, state.current_y
+                    if WingerBehaviorEngine.should_drive_byline(
+                            wp, x, y, attacks_right,
+                            defenders=opponent_players, position_engine=self,
+                            anchor_y=anchor_y):
+                        mode = "byline"
+                        tx = min(max(x + sign * 14.0, 70.0), 98.0) if attacks_right \
+                            else max(min(x + sign * 14.0, 35.0), 7.0)
+                        ty = y + (anchor_y - y) * 0.40
+                        target = (tx, ty)
+                    elif WingerBehaviorEngine.should_cut_inside(
+                            wp, x, y, attacks_right,
+                            defenders=opponent_players, position_engine=self,
+                            anchor_y=anchor_y):
+                        mode = "cut"
+                        tx = min(x + sign * 10.0, 92.0) if attacks_right \
+                            else max(x + sign * 10.0, 13.0)
+                        half_y = anchor_y + (CENTER_Y - anchor_y) * 0.55
+                        target = (tx, half_y)
+                    elif WingerBehaviorEngine.should_enter_box(
+                            wp, x, y, attacks_right,
+                            ball_on_opposite_flank=abs(ball_y - anchor_y) > 18.0):
+                        mode = "box"
+                        tx = min(max(x + sign * 6.0, 80.0), 96.0) if attacks_right \
+                            else max(min(x + sign * 6.0, 25.0), 9.0)
+                        ty = WingerBehaviorEngine.back_post_target_y(wp, ball_y)
+                        target = (tx, ty)
+            else:  # LB / RB
+                fb = self.fullback_registry.get(name)
+                if fb is not None:
+                    tucking = (fb.tuck_instinct > 0.30
+                               and fb.in_tuck_zone(ball_x, attacks_right))
+                    may_advance = FullbackBehaviorEngine.should_advance(
+                        fb, state.current_x, state.current_y, attacks_right,
+                        ball_x, ball_y, in_possession=True, anchor_y=anchor_y,
+                    )
+                    if tucking or may_advance:
+                        m = FullbackBehaviorEngine.choose_advance_mode(
+                            fb, state.current_x, state.current_y, attacks_right,
+                            ball_x, ball_y, defenders=opponent_players,
+                            position_engine=self, anchor_y=anchor_y,
+                        )
+                        if m in ("overlap", "underlap", "tuck"):
+                            mode = m
+                            target = fb.advance_run_target(
+                                state.current_x, state.current_y, attacks_right,
+                                anchor_y=anchor_y, mode=m,
+                            )
+
+            if target is None:
+                state.run_mode = None
+                continue
+
+            # ── SHAPE-AWARE: bend the run off a counter-press trap ──
+            tx, ty = target
+            press = self._opponent_pressure_at(
+                tx, ty, opponent_players, ball_x, ball_y, attacks_right)
+            if press > 0.55:
+                tx = tx + (state.home_x - tx) * 0.35
+                ty = ty + (anchor_y - ty) * 0.30
+                target = (tx, ty)
+
+            # ── CONTINUITY: pace-capped travel toward cached target ──
+            state.run_target_x, state.run_target_y, state.run_mode = (
+                target[0], target[1], mode)
+            dx = target[0] - state.current_x
+            dy = target[1] - state.current_y
+            dist = math.hypot(dx, dy)
+            if dist < 1e-4:
+                continue
+            step = min(dist, state.top_speed_mpm)
+            state.current_x += dx / dist * step
+            state.current_y += dy / dist * step
+
+    def _midfield_run_step(
+        self,
+        team_name: str, minute: int,
+        ball_x: Optional[float], ball_y: Optional[float],
+        attacks_right: bool, opponent_players: Optional[List],
+    ) -> None:
+        """
+        Checkpoint 33 — CONTINUOUS, SHAPE-AWARE central-midfield runs (CM).
+
+        CMs decide a run from the MidfielderBehaviorEngine: drop to receive
+        (pivot), carry forward through the lines, or a late box arrival.
+        The target is cached and travelled at a pace-capped rate (same
+        machinery as the wide runs), bending off opponent pressure.
+
+        CAMs are NOT handled here — their between-the-lines movement is
+        owned by _cam_pocket_roam (made registry-aware below), to avoid
+        double-moving them.
+        """
+        sign = 1.0 if attacks_right else -1.0
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position != "CM":
+                continue
+            if state.last_active_minute == minute:
+                continue
+            if ball_x is None or ball_y is None:
+                state.run_mode = None
+                continue
+            prof = self.midfield_registry.get(name)
+            if prof is None:
+                continue
+            anchor_y = state.home_y
+            x, y = state.current_x, state.current_y
+            target = None
+            mode = None
+
+            m = MidfielderBehaviorEngine.decide_run(
+                prof, x, y, attacks_right, ball_x, ball_y,
+                in_possession=True, defenders=opponent_players,
+                position_engine=self, anchor_y=anchor_y,
+            )
+            if m == "drop":
+                target = prof.drop_target(attacks_right, anchor_y)
+                mode = "drop"
+            elif m == "carry":
+                tx = min(max(x + sign * 12.0, 30.0), 82.0)
+                ty = (CENTER_Y + HALF_SPACE_WIDTH_M * 0.5) if anchor_y <= CENTER_Y \
+                    else (CENTER_Y - HALF_SPACE_WIDTH_M * 0.5)
+                target = (tx, ty)
+                mode = "carry"
+            elif m == "late":
+                target = prof.box_arrival_target(ball_x, ball_y, attacks_right)
+                mode = "late"
+
+            if target is None:
+                state.run_mode = None
+                continue
+
+            tx, ty = target
+            press = self._opponent_pressure_at(
+                tx, ty, opponent_players, ball_x, ball_y, attacks_right)
+            if press > 0.55:
+                tx = tx + (state.home_x - tx) * 0.35
+                ty = ty + (anchor_y - ty) * 0.30
+                target = (tx, ty)
+
+            state.run_target_x, state.run_target_y, state.run_mode = (
+                target[0], target[1], mode)
+            dx = target[0] - state.current_x
+            dy = target[1] - state.current_y
+            dist = math.hypot(dx, dy)
+            if dist < 1e-4:
+                continue
+            step = min(dist, state.top_speed_mpm)
+            state.current_x += dx / dist * step
+            state.current_y += dy / dist * step
+
+    def _striker_run_step(
+        self,
+        team_name: str, minute: int,
+        ball_x: Optional[float], ball_y: Optional[float],
+        attacks_right: bool, opponent_players: Optional[List],
+    ) -> None:
+        """
+        Checkpoint 33 — CONTINUOUS, SHAPE-AWARE striker runs (ST/CF).
+
+        Strikers decide a run from the StrikerBehaviorEngine: run in
+        behind the last line, drop to link (hold-up), or attack a post
+        channel in the box. Cached + pace-capped + pressure-bent, same as
+        the other run steps. (Strikers are also nudged by _attacker_space_run;
+        this adds the archetype-specific, decision-gated runs on top.)
+        """
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position not in ("ST", "CF"):
+                continue
+            if state.last_active_minute == minute:
+                continue
+            if ball_x is None or ball_y is None:
+                state.run_mode = None
+                continue
+            prof = self.striker_registry.get(name)
+            if prof is None:
+                continue
+            anchor_y = state.home_y
+            x, y = state.current_x, state.current_y
+            m = StrikerBehaviorEngine.decide_run(
+                prof, x, y, attacks_right, ball_x, ball_y,
+                in_possession=True, defenders=opponent_players,
+                position_engine=self, anchor_y=anchor_y,
+            )
+            target = None
+            mode = None
+            if m == "behind":
+                target = prof.run_behind_target(attacks_right, anchor_y)
+                mode = "behind"
+            elif m == "hold":
+                target = prof.hold_up_target(ball_x, ball_y, attacks_right)
+                mode = "hold"
+            elif m == "box":
+                target = prof.box_arrival_target(ball_x, ball_y, attacks_right)
+                mode = "box"
+
+            if target is None:
+                state.run_mode = None
+                continue
+
+            tx, ty = target
+            press = self._opponent_pressure_at(
+                tx, ty, opponent_players, ball_x, ball_y, attacks_right)
+            if press > 0.55:
+                tx = tx + (state.home_x - tx) * 0.35
+                ty = ty + (anchor_y - ty) * 0.30
+                target = (tx, ty)
+
+            state.run_target_x, state.run_target_y, state.run_mode = (
+                target[0], target[1], mode)
+            dx = target[0] - state.current_x
+            dy = target[1] - state.current_y
+            dist = math.hypot(dx, dy)
+            if dist < 1e-4:
+                continue
+            step = min(dist, state.top_speed_mpm)
+            state.current_x += dx / dist * step
+            state.current_y += dy / dist * step
+
+    def _band_adjusted_anchor(
+        self, state, hx: float, hy: float,
+        ball_x: float, ball_y: float, attacks_right: bool,
+    ):
+        """
+        Checkpoint 31 — Median Proximity by Position (team in possession).
+
+        Returns the anchor (hx, hy) rescaled radially about the ball so its
+        distance sits inside the position's median band:
+
+          CDM 12-16m — immediate anchor / recycling option, hovering just
+              outside pressing cover shadows to keep passing lines alive.
+          CM  14-18m — one passing tier away: far enough to stretch the
+              block, close enough for a secure pass under pressure (the
+              ~5.9m StatsBomb receive cushion lives INSIDE this macro-
+              distance).
+          LB/RB      — high variance. Weak side / advanced ball: width
+              wins, anchor untouched. Own flank + build-up zone: tightened
+              to 12-15m as a direct progressive passing outlet.
+
+        Radial scaling preserves direction from the ball, so lateral
+        structure (touchline channels, line shape) is respected — only the
+        distance changes.
+        """
+        lo, hi = self.BALL_PROXIMITY_BAND[state.position]
+        if state.position in ("LB", "RB"):
+            on_own_flank = abs(ball_y - state.home_y) < 22.0
+            ball_in_build_zone = (
+                ball_x < 62.0 if attacks_right else ball_x > 43.0
+            )
+            if not (on_own_flank and ball_in_build_zone):
+                return hx, hy
+            lo, hi = self.BALL_PROXIMITY_FULLBACK_OUTLET
+
+        dx = hx - ball_x
+        dy = hy - ball_y
+        d = math.hypot(dx, dy)
+        if lo <= d <= hi:
+            return hx, hy
+        if d < 1e-6:
+            # Anchor coincides with the ball carrier: step goal-side of it
+            # so the midfielder never collapses onto the ball.
+            back = -1.0 if attacks_right else 1.0
+            return max(4.0, min(101.0, ball_x + back * lo)), hy
+        target_d = lo if d < lo else hi
+        s = target_d / d
+        ax = max(4.0, min(101.0, ball_x + dx * s))
+        ay = max(2.0, min(66.0, ball_y + dy * s))
+        return ax, ay
+
+    # Checkpoint 31b — roaming patterns the #10 cycles through while his
+    # team has the ball: (metres ahead of ball, lateral offset from ball).
+    # Runs beyond the carrier, sits on his shoulder in the pocket, drops
+    # deep to link play — the alternating excursions are what generate a
+    # real #10's ground coverage, not a fixed radius around the ball.
+    CAM_ROAM_PATTERNS = (
+        (22.0, -18.0),   # run beyond, left half-space
+        (13.0, 12.0),    # pocket on his shoulder, right
+        (-6.0, -8.0),    # drop deep to link, central-left
+        (18.0, 16.0),    # third-man run, right half-space
+        (-10.0, 14.0),   # deep drop, wide right (rotate out)
+    )
+
+    def _cam_pocket_roam(
+        self, team_name: str, ball_x: float, ball_y: float,
+        attacks_right: bool, minute: int,
+    ):
+        """
+        Checkpoint 31b — #10 pocket roaming in possession.
+
+        A CAM doesn't hold a fixed post: he floats in the pockets between
+        the opponent's midfield and defensive lines, one passing tier
+        (~13m) ahead of the carrier, switching half-spaces as the ball
+        moves. Without this the CAM sat glued to his static home marker
+        (66,34) — by far the lowest-movement outfielder in the sim, since
+        his home is already where the ball usually is (the proximity band
+        alone has nothing to correct).
+
+        Targets are deterministic per (minute, player) so runs stay
+        reproducible under a fixed seed.
+        """
+        dir_x = 1.0 if attacks_right else -1.0
+        patterns = self.CAM_ROAM_PATTERNS
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position != "CAM":
+                continue
+            # Checkpoint 31b — a #10 who just released the ball starts his
+            # next run IMMEDIATELY; don't fully exempt touched minutes or
+            # the hub of a possession team never roams at all. Half strength
+            # keeps the recorded touch coordinates dominant while still
+            # modelling the after-release movement.
+            if state.last_active_minute == minute:
+                pull_mult = 0.5
+            else:
+                pull_mult = 1.0
+            seed_v = sum((i + 1) * ord(c) for i, c in enumerate(name))
+            dx_ahead, dy = patterns[(minute + seed_v) % len(patterns)]
+            tx = max(25.0, min(94.0, ball_x + dir_x * dx_ahead))
+            ty = max(6.0, min(62.0, ball_y + dy))
+            # Checkpoint 33 — registry-aware CAM bias. A shadow striker
+            # (high late_box_instinct) is pulled further forward into the
+            # goal-side seam instead of hovering in the classic #10 pocket;
+            # a classic ten keeps the standard pocket roam.
+            cam_prof = self.midfield_registry.get(name)
+            if cam_prof is not None and cam_prof.late_box_instinct > 0.50:
+                tx = max(45.0, min(96.0, ball_x + dir_x * 26.0))
+                ty = ball_y + (CENTER_Y - ball_y) * 0.15
+            awareness_bonus = max(0.0, min(0.12, (state.geometric_awareness - 50.0) / 350.0))
+            pull = (0.40 + awareness_bonus) * pull_mult
+            state.current_x += (tx - state.current_x) * pull
+            state.current_y += (ty - state.current_y) * pull
+
+    def _apply_half_space_magnet(self, team_name: str, opp_block) -> None:
+        """
+        Checkpoint 29 — physical half-space occupation against a compact block.
+
+        Runs AFTER line cohesion and graph relaxation (both average
+        midfielders back toward their line's center, which washed the
+        magnet out when folded into the drift target). HalfSpaceMagnet
+        gates to CAM/CM/CF, compact blocks, accessible channels and the
+        player's current side of the pitch; the pull is tempered so the
+        channel is a gravitation, not a teleport.
+        """
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None:
+                continue
+            tx, ty = HalfSpaceMagnet.drift_target(
+                state,
+                (state.current_x, state.current_y),
+                opp_block,
+                (state.current_x, state.current_y),
+            )
+            state.current_x += (tx - state.current_x) * 0.55
+            state.current_y += (ty - state.current_y) * 0.55
 
     def _apply_line_cohesion(self, team_name: str, pull_strength: float = 0.12):
         """
@@ -993,7 +1755,9 @@ class PositionEngine:
             - the team is IN possession, and
             - the player's geometric_awareness > 50.
         """
-        attack_positions = {"ST", "CF", "LW", "RW", "CAM"}
+        # GK is included so the "step up as a back-pass outlet" branch below
+        # actually runs — it was dead code while GK was excluded from this set.
+        attack_positions = {"ST", "CF", "LW", "RW", "CAM", "GK"}
         attackers = []
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
@@ -1031,6 +1795,10 @@ class PositionEngine:
             best_target = None
             best_score = -1.0
 
+            # CK28 — cached pitch-control space targets for this attacker,
+            # computed once per run; the candidate loops apply them.
+            _st_targets = self._space_targets(team_name, ax, ay)
+
             # Candidate run targets depend on position
             if a.position in ("ST", "CF"):
                 # Strikers: run behind the defence, into the box, or into half-spaces
@@ -1047,7 +1815,9 @@ class PositionEngine:
                         )
                         # Prefer half-spaces
                         half_space = ty < 22.0 or ty > 46.0
-                        # Penalty if too close to defenders
+                                                    # Penalty if too close to defenders; flat bonus for
+                            # distances beyond sprint reach — living space (CK26)
+                        min_d = None
                         def_penalty = 1.0
                         if def_players and position_engine is not None:
                             min_d = min(
@@ -1062,7 +1832,10 @@ class PositionEngine:
                                 def_penalty = 0.3
                             elif min_d < 10.0:
                                 def_penalty = 0.6
-                        score = (1.0 if between else 0.4) * (1.6 if half_space else 1.0) * def_penalty
+                        score = ((1.0 if between else 0.4) * (1.6 if half_space else 1.0)
+                                 * def_penalty * self._living_space_bonus(min_d))
+                        # CK28 — target quality from cached pitch-control field
+                        score *= self._space_bonus(_st_targets, tx, ty)
                         candidates.append((score, tx, ty))
                 if candidates:
                     candidates.sort(key=lambda c: -c[0])
@@ -1126,20 +1899,32 @@ class PositionEngine:
                         # cut-inside option (stay wide until the last moment)
                         y_dist_from_flank = abs(ty - flank_y)
                         y_factor = max(0.3, 1.0 - y_dist_from_flank / 40.0)
-                        # Penalty if marked
+                        # Penalty if marked; bonus when the mark is beyond
+                        # sprint reach — living space (CK26)
                         def_penalty = 1.0
                         if is_marked:
                             def_penalty = 0.5
-                        score = (1.0 + forward_score * 2.0) * flank_weight * y_factor * def_penalty
+                        score = ((1.0 + forward_score * 2.0) * flank_weight * y_factor
+                                 * def_penalty
+                                 * self._living_space_bonus(min_def_dist)
+                                 * self._space_bonus(_st_targets, tx, ty))   # CK28
                         candidates.append((score, tx, ty))
                 if candidates:
                     candidates.sort(key=lambda c: -c[0])
                     best_target = (candidates[0][1], candidates[0][2])
 
             elif a.position == "GK":
-                # GK: step up to become a passing option when ball is in opponent's half
-                if in_opp_half and ball_x > 60.0 if attacks_right else ball_x < 45.0:
-                    tx = max(35.0, min(70.0, ball_x - 15.0))
+                # GK: step up to become a passing option when ball is in opponent's half.
+                # Old form `in_opp_half and ball_x > 60.0 if attacks_right else ball_x < 45.0`
+                # parsed as a conditional expression and dropped the in_opp_half guard
+                # whenever attacking left — evaluate direction first, then the gate.
+                eligible = (
+                    in_opp_half and (ball_x > 60.0 if attacks_right else ball_x < 45.0)
+                )
+                if eligible:
+                    # GK stays goal-side of the play in both attack directions.
+                    dx_back = -15.0 if attacks_right else 15.0
+                    tx = max(35.0, min(70.0, ball_x + dx_back))
                     ty = max(20.0, min(48.0, ball_y + random.uniform(-5, 5)))
                     best_target = (tx, ty)
 
@@ -1150,6 +1935,144 @@ class PositionEngine:
                     effective_pull = pull_strength * max(0.2, awareness_factor)
                     a.current_x += (tx - a.current_x) * effective_pull
                     a.current_y += (ty - a.current_y) * effective_pull
+
+        # ── CHECKPOINT 26: PHYSICS — LIVING SPACE ─────────────────
+    # Defenders have a finite sprint reach (SPRINT_REACH ~ a defender
+    # covering ~8m). Beyond that gap the target escapes the mark, so
+    # candidate scores get a flat bonus — turning the old hard threshold
+    # penalties into smooth "living space" physics.
+    SPRINT_REACH: float = 8.0
+    REACH_BONUS_SLOPE: float = 45.0   # bonus saturates at reach+45m (~1.4x)
+
+    @staticmethod
+    def _living_space_bonus(min_def_dist: Optional[float]) -> float:
+        if min_def_dist is None:
+            return 1.0
+        return 1.0 + max(0.0, (min_def_dist - PositionEngine.SPRINT_REACH)
+                         / PositionEngine.REACH_BONUS_SLOPE)
+
+    # ── CHECKPOINT 27: FORMATION GRAPH PHYSICS ─────────────────────
+    # Formation as a force graph: nodes = players, edges are the formation
+    # neighbor pairs below. Each edge springs the pair toward the rest
+    # length implied by their HOME positions, with role-pair stiffness
+    # (CB-CB tight twin-springs, CAM-mid loose, wing-fullback flanks mid).
+    # Out of possession springs tighten (block moves as one unit); in
+    # possession they slacken so runners can break shape.
+    GRAPH_EDGE_SPECS = (
+        (("CB",), ("CB",), 0.14),
+        (("LB", "RB"), ("CB",), 0.08),
+        (("CDM", "CM"), ("CDM", "CM"), 0.10),
+        (("CAM",), ("CDM", "CM"), 0.06),
+        (("ST", "CF"), ("CAM", "CDM", "CM"), 0.05),
+        (("LW", "RW"), ("LB", "RB"), 0.07),
+    )
+    MATCH_SIDE_PAIRS = {frozenset({"LW", "LB"}), frozenset({"RW", "RB"})}
+    MIN_SEPARATION: float = 4.0
+    MIN_SEPARATION_PUSH: float = 0.08
+
+    # ── CHECKPOINT 28: SPACE-CREATION TARGET WIRING ──────────────────
+    # The physics already hands a live pitch-control field to the engine
+    # (CK26). Below, candidate run targets score an extra bonus when the
+    # field's space_creation_targets nominate an uncontrolled high-xT cell
+    # nearby — greedy run quality informed by actual open space, not just
+    # hard-coded direction multipliers.
+    SPACE_WINDOW: float = 20.0   # reach within which a candidate bonus decays
+
+    def _space_targets(self, team_name: str, ax: float, ay: float):
+        """Cached pitch-control space targets for one attacker, or []."""
+        field = getattr(self, "pitch_control_field", None)
+        result = getattr(self, "pitch_control_result", None)
+        if field is None or result is None:
+            return []
+        team = "home" if self.team_attacks_right.get(team_name, True) else "away"
+        try:
+            targets = field.space_creation_targets(result, team, ax, ay)
+        except Exception:
+            return []
+        return targets
+
+    def _space_bonus(self, targets, tx: float, ty: float) -> float:
+        """1.0 + normalized nearest-target score, decayed by distance."""
+        if not targets:
+            return 1.0
+        best = None
+        best_dist = float("inf")
+        for t in targets:
+            d = math.hypot(t.x - tx, t.y - ty)
+            if d < best_dist:
+                best_dist, best = d, t.score
+        if best is None or best_dist > self.SPACE_WINDOW:
+            return 1.0
+        max_score = max(t.score for t in targets) or 1.0
+        norm = best / max_score
+        return 1.0 + norm * max(0.0, 1.0 - best_dist / self.SPACE_WINDOW)
+
+    def _graph_relaxation(self, team_name: str, in_possession: bool):
+        """One iteration of formation-graph spring physics per drift."""
+        roster = self.team_rosters.get(team_name, [])
+        if len(roster) < 2:
+            return
+        phase_mult = 0.6 if in_possession else 1.4
+
+        # Pair resolution: derive SPRING edges from the specs (role pairs),
+        # filtering wing-fullback pairs to the same side of the pitch.
+        edges = []
+        seen = set()
+        for(grp_a, grp_b, stiffness) in self.GRAPH_EDGE_SPECS:
+            for na in roster:
+                sa = self.states.get(na)
+                if sa is None or sa.position not in grp_a:
+                    continue
+                for nb in roster:
+                    sb = self.states.get(nb)
+                    if sb is None or nb <= na or sb.position not in grp_b:
+                        continue
+                    pair_key = frozenset({na, nb})
+                    if pair_key in seen:
+                        continue
+                    # Same-side gate for flank pairs: LW-LB / RW-RB only
+                    if frozenset({sa.position, sb.position}) in self.MATCH_SIDE_PAIRS:
+                        if (sa.home_y - 34.0) * (sb.home_y - 34.0) < 0:
+                            continue
+                    seen.add(pair_key)
+                    rest = math.hypot(sa.home_x - sb.home_x, sa.home_y - sb.home_y)
+                    edges.append((na, nb, stiffness, rest))
+
+        # Apply springs: symmetric forces on both endpoints.
+        for na, nb, stiffness, rest in edges:
+            sa, sb = self.states[na], self.states[nb]
+            dx = sb.current_x - sa.current_x
+            dy = sb.current_y - sa.current_y
+            dist = math.hypot(dx, dy)
+            if dist < 1e-6:
+                continue
+            err = dist - rest
+            k = stiffness * phase_mult
+            fx = k * err * (dx / dist)
+            fy = k * err * (dy / dist)
+            sa.current_x += fx * 0.5
+            sa.current_y += fy * 0.5
+            sb.current_x -= fx * 0.5
+            sb.current_y -= fy * 0.5
+
+        # Global min-separation repulsion: team-mates resist clustering.
+        for i, na in enumerate(roster):
+            sa = self.states.get(na)
+            if sa is None:
+                continue
+            for nb in roster[i + 1:]:
+                sb = self.states.get(nb)
+                if sb is None:
+                    continue
+                dx = sb.current_x - sa.current_x
+                dy = sb.current_y - sa.current_y
+                dist = math.hypot(dx, dy)
+                if dist < self.MIN_SEPARATION and dist > 1e-6:
+                    push = (self.MIN_SEPARATION - dist) / dist * 0.5
+                    sa.current_x -= dx * push * self.MIN_SEPARATION_PUSH
+                    sa.current_y -= dy * push * self.MIN_SEPARATION_PUSH
+                    sb.current_x += dx * push * self.MIN_SEPARATION_PUSH
+                    sb.current_y += dy * push * self.MIN_SEPARATION_PUSH
 
     # ── CHECKPOINT 9: DANGER-AWARE DEFENSIVE BLOCK ──────────────
     # The defensive unit's COORDINATED answer to a live threat: when out of
@@ -1468,6 +2391,52 @@ class PositionEngine:
         roster = self.team_rosters.get(team_name, [])
         if player_name in roster:
             roster.remove(player_name)
+
+    # ── CHECKPOINT 26: MOTION-AWARE PITCH CONTROL FEED ───────────────
+    # Velocity-aware pitch control lives here: each minute, after drift
+    # runs, match_engine calls update_pitch_control() and the cached
+    # field+result is then consumed (e.g. by winger half-space openness).
+    # PlayerInfluenceInput defaults (vx=vy=0) mean legacy callers of the
+    # field are unaffected; this engine forwards live velocity vectors.
+
+    def influence_inputs(self, team_name: str) -> List:
+        """Build velocity-carrying PlayerInfluenceInput rows for a team."""
+        from pitch_control import PlayerInfluenceInput
+        rows = []
+        for name in self.team_rosters.get(team_name, []):
+            st = self.states.get(name)
+            if st is None:
+                continue
+            rows.append(PlayerInfluenceInput(
+                name=name,
+                team=team_name,
+                position=st.position,
+                x=st.current_x,
+                y=st.current_y,
+                pace=60.0,
+                vx=st.velocity_x,
+                vy=st.velocity_y,
+                is_goalkeeper=(st.position == "GK"),
+            ))
+        return rows
+
+    def update_pitch_control(self, home_team: str, away_team: str, minute: int = 0):
+        """Recompute and cache the motion-aware field from live positions."""
+        from pitch_control import PitchControlField
+        if self._pc_field is None:
+            self._pc_field = PitchControlField()
+        home_players = self.influence_inputs(home_team)
+        away_players = self.influence_inputs(away_team)
+        if not home_players or not away_players:
+            return
+        self.pitch_control_result = self._pc_field.compute(
+            home_players, away_players, minute=minute,
+        )
+        self.pitch_control_field = self._pc_field
+
+    pitch_control_result: Optional = None
+    pitch_control_field: Optional = None
+    _pc_field = None
 
 
 # ─────────────────────────────────────────────

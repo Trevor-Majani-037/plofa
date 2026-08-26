@@ -32,7 +32,7 @@ from datetime import date, datetime
 
 
 ADDITIVE_STATS = {
-    "goals", "assists", "own_goals", "open_play_goals", "headed_goals",
+    "goals", "assists", "own_goals", "open_play_goals", "headed_goals", "left_foot_goals", "right_foot_goals",
     "open_play_assists", "setpiece_assists", "pen_goals", "pen_missed",
     "shots_on_target", "shots_off_target", "shots_blocked_att",
     "hit_woodwork", "shots_inside_box", "shots_outside_box",
@@ -76,6 +76,10 @@ ADDITIVE_STATS = {
     "sca", "gca", "packing_passes", "zone14_entries", "deep_completions",
     "chipped_passes", "headed_passes",
     "minutes_played",
+    "pressed_sequences", "ppda", "shot_ending_carries", "goal_ending_carries",
+    "chance_creating_carries", "assist_carries", "carry_chains",
+    "ball_progression_chains", "dangerous_possessions", "total_sequences",
+    "total_carries",
 }
 
 SUM_ONLY_FLOAT_STATS = {
@@ -84,6 +88,7 @@ SUM_ONLY_FLOAT_STATS = {
     "carry_distance", "progressive_carry_distance", "dribble_distance",
     "distance_covered",
     "progressive_pass_distance", "xT", "gpa", "pva", "epa",
+    "carry_directness_sum", "carry_directness_count",
 }
 
 # Peak values — season aggregate is the single best (max) across matches,
@@ -143,6 +148,7 @@ PER90_STATS = {
     "through_balls_att", "switches_of_play", "passes_completed",  "short_passes_att", "short_passes_comp",
         "long_passes_att", "long_passes_comp", "touches_opp_box", "possession_won",
     "chipped_passes", "headed_passes",
+    "shot_ending_carries", "chance_creating_carries", "assist_carries",
 }
 
 BOOLEAN_COUNT_FIELDS = {
@@ -231,6 +237,15 @@ ALL_LEADERBOARD_CATS = [
     ("most_woodwork", "hit_woodwork", "Hit Woodwork"),
     ("most_pen_goals", "pen_goals", "Penalty Goals"),
     ("most_pen_missed", "pen_missed", "Penalties Missed"),
+    ("most_shot_ending_carries", "shot_ending_carries", "Shot-Ending Carries"),
+    ("most_goal_ending_carries", "goal_ending_carries", "Goal-Ending Carries"),
+    ("most_chance_creating_carries", "chance_creating_carries", "Chance-Creating Carries"),
+    ("most_assist_carries", "assist_carries", "Assist Carries"),
+    ("best_carry_directness", "carry_directness", "Carry Directness"),
+    ("most_carry_chains", "carry_chains", "Carry Chains"),
+    ("most_ball_progression_chains", "ball_progression_chains", "Ball Progression Chains"),
+    ("most_dangerous_possessions", "dangerous_possessions", "Dangerous Possessions"),
+    ("most_pressed_sequences", "pressed_sequences", "Pressed Sequences"),
 ]
 
 
@@ -454,6 +469,20 @@ class SeasonStatsAccumulator:
             val = total.get(stat, 0)
             if isinstance(val, (int, float)):
                 total[f"{stat}_per90"] = round((val / mins) * 90, 2)
+
+        # Carry directness: weighted average across matches (sum of per-match
+        # averages weighted by carry count, or simple average of match averages).
+        cd_sum = total.get("carry_directness_sum", 0.0)
+        cd_cnt = total.get("carry_directness_count", 0)
+        if cd_cnt > 0:
+            total["carry_directness"] = round(cd_sum / cd_cnt, 3)
+        else:
+            total["carry_directness"] = None
+
+        # Players per possession: simple average across matches played.
+        ppp_sum = total.get("players_per_possession", 0.0)
+        matches = total.get("matches_played", 1) or 1
+        total["players_per_possession"] = round(ppp_sum / matches, 2)
 
         ratings = total.get("ratings_list", [])
         if ratings:

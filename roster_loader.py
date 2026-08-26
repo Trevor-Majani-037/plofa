@@ -79,6 +79,7 @@ FORMATION_SLOTS = {
     "3-5-2":   ["GK", "CB", "CB", "CB", "LB", "RB", "CDM","CM", "CM", "ST", "ST"],
     "5-3-2":   ["GK", "CB", "CB", "CB", "LB", "RB", "CDM","CM", "CM", "ST", "ST"],
     "5-4-1":   ["GK", "CB", "CB", "CB", "LB", "RB", "CM", "CM", "LW", "RW", "ST"],
+    "4-5-1":   ["GK", "CB", "CB", "LB", "RB", "CM", "CM", "CM", "CM", "CAM", "ST"],
 }
 
 
@@ -265,7 +266,7 @@ class RosterLoader:
         third_team  = [p for p in eligible if not p.is_first_team and not p.is_second_team]
 
         # Select starting XI
-        starters, used = self._fill_starting_xi(slots, first_team, second_team, third_team, notes)
+        starters, used = self._fill_starting_xi(slots, first_team, second_team, third_team, eligible, notes)
 
         # Build bench
         used_names = {p.name for p in used}
@@ -399,13 +400,21 @@ class RosterLoader:
         - Has LM + RM                  → 4-4-2
         - Has CAM (no LM/RM)           → 4-2-3-1
         - CDM only (no CAM, no LM/RM)  → 4-3-3
+        - No wingers at all            → 3-5-2 or 4-5-1
         """
         first = [p for p in players if p.is_first_team]
         all_eligible = players
 
         raw_positions = {p.pos for p in first}
+        engine_positions = {p.engine_pos for p in first}
         has_lwb = "LWB" in raw_positions
         has_rwb = "RWB" in raw_positions
+
+        # Count available wingers/fullbacks across all eligible players
+        has_any_winger = any(
+            p.engine_pos in ("LW", "RW", "LB", "RB") or p.engine_other_pos in ("LW", "RW", "LB", "RB")
+            for p in all_eligible
+        )
 
         if has_lwb or has_rwb:
             # 3-back system — determine variant
@@ -430,11 +439,23 @@ class RosterLoader:
         else:
             # 4-back system
             first_positions = [p.pos for p in first]
+            first_engine = [p.engine_pos for p in first]
             has_lm  = "LM" in first_positions
             has_rm  = "RM" in first_positions
             has_cam = "CAM" in first_positions
             has_cdm = "CDM" in first_positions
             cdm_count = first_positions.count("CDM")
+            cm_count  = first_positions.count("CM")
+            st_count  = first_positions.count("ST") + first_positions.count("CF")
+
+            # No wingers available → use no-winger formation
+            if not has_any_winger:
+                if st_count >= 2 and cm_count >= 2:
+                    return "3-5-2"
+                elif cm_count >= 4:
+                    return "4-5-1"
+                else:
+                    return "3-5-2"  # fallback for no wingers
 
             if has_lm and has_rm:
                 return "4-4-2"
@@ -443,7 +464,7 @@ class RosterLoader:
             elif has_cdm:
                 return "4-3-3"
             else:
-                return "4-3-3"  # fallback
+                return "4-4-2"  # fallback to 4-4-2 when we have wingers but no clear structure
 
     # ── SQUAD SELECTION ──────────────────────────────────────────
 
@@ -475,6 +496,7 @@ class RosterLoader:
         first_team: List[PlayerRecord],
         second_team: List[PlayerRecord],
         third_team: List[PlayerRecord],
+        all_eligible: List[PlayerRecord],
         notes: List[str],
     ) -> Tuple[List[PlayerRecord], List[PlayerRecord]]:
         """
@@ -482,9 +504,37 @@ class RosterLoader:
         Priority: First-Team → Second-Team → Third-Team (last resort).
         Returns (starters_list, all_used_list).
         """
+        # Deduplicate input pools by name to prevent the same player being
+        # selectable from multiple teams or from duplicate Excel rows.
+        def dedup(players: List[PlayerRecord]) -> List[PlayerRecord]:
+            seen: set = set()
+            out: List[PlayerRecord] = []
+            for p in players:
+                if p.name not in seen:
+                    seen.add(p.name)
+                    out.append(p)
+            return out
+
+        first_team  = dedup(first_team)
+        second_team = dedup(second_team)
+        third_team  = dedup(third_team)
+
+        # Also deduplicate across the combined eligible list so a player
+        # present in both first_team and second_team cannot be selected twice.
+        combined_seen: set = set()
+        combined: List[PlayerRecord] = []
+        for p in first_team + second_team + third_team:
+            if p.name not in combined_seen:
+                combined_seen.add(p.name)
+                combined.append(p)
+        first_team  = [p for p in combined if p in first_team]
+        second_team = [p for p in combined if p in second_team]
+        third_team  = [p for p in combined if p in third_team]
+
         starters   = []
         used       = []
         used_names = set()
+        filled_indices = set()
 
         # Build pools grouped by engine position
         def make_pool(players: List[PlayerRecord]) -> Dict[str, List[PlayerRecord]]:
@@ -501,7 +551,7 @@ class RosterLoader:
         st_pool = make_pool(second_team)
         tt_pool = make_pool(third_team)
 
-        for slot in slots:
+        for i, slot in enumerate(slots):
             # Try First-Team first
             chosen = self._pick_from_pool(ft_pool, slot, used_names)
             if not chosen:
@@ -519,12 +569,13 @@ class RosterLoader:
                 starters.append(chosen)
                 used.append(chosen)
                 used_names.add(chosen.name)
+                filled_indices.add(i)
             else:
                 notes.append(f"❗ No player available for slot {slot}")
 
         if len(starters) < len(slots):
             missing = len(slots) - len(starters)
-            unfilled_slots = [s for i, s in enumerate(slots) if i >= len(starters)]
+            unfilled_slots = [slots[i] for i in range(len(slots)) if i not in filled_indices]
             remaining = [p for p in first_team + second_team + third_team
                          if p.name not in used_names]
             for slot in unfilled_slots:
@@ -577,6 +628,45 @@ class RosterLoader:
                     f"after fallback ({len(starters)}/{len(slots)} players selected)."
                 )
 
+        # Deduplicate starters by name (defensive: Excel may contain duplicate
+        # rows that survived earlier filtering).
+        seen_names: set = set()
+        unique_starters: List[PlayerRecord] = []
+        for p in starters:
+            if p.name not in seen_names:
+                seen_names.add(p.name)
+                unique_starters.append(p)
+        if len(unique_starters) != len(starters):
+            missing = len(starters) - len(unique_starters)
+            notes.append(
+                f"🔧 Removed {missing} duplicate starter(s) from XI; "
+                f"re-checking GK count."
+            )
+            starters = unique_starters
+            used = list(starters)
+            used_names = {p.name for p in starters}
+
+            # Try to fill any slots lost to deduplication from remaining eligible players.
+            if len(starters) < len(slots):
+                unfilled_indices = [i for i in range(len(slots)) if i >= len(starters)]
+                for idx in unfilled_indices:
+                    if idx >= len(slots):
+                        break
+                    slot = slots[idx]
+                    remaining_pool = [
+                        p for p in all_eligible
+                        if p.name not in used_names
+                        and (slot == "GK" or p.engine_pos != "GK")
+                    ]
+                    if remaining_pool:
+                        replacement = max(remaining_pool, key=lambda p: p.market_value)
+                        starters.append(replacement)
+                        used.append(replacement)
+                        used_names.add(replacement.name)
+                        notes.append(
+                            f"🔧 Filled duplicate-vacated {slot} with {replacement.name}"
+                        )
+
         gk_slots = sum(1 for s in slots if s == "GK")
         gk_starters = sum(1 for p in starters if p.engine_pos == "GK")
         if gk_slots != gk_starters:
@@ -585,7 +675,108 @@ class RosterLoader:
                 f"Starters: {[(p.name, p.engine_pos) for p in starters]}"
             )
 
+        # Resolve duplicate flank positions (LW, RW, LB, RB) using
+        # OTHER POS and foot preference
+        starters = self._resolve_flank_duplicates(
+            starters, slots, all_eligible, notes
+        )
+        used = list(starters)
+
         return starters, used
+
+    def _find_bench_flank_replacement(
+        self,
+        all_eligible: List[PlayerRecord],
+        needed_slot: str,
+        used_names: set,
+    ) -> Optional[PlayerRecord]:
+        """Find a bench player who can play the needed slot."""
+        candidates = [
+            p for p in all_eligible
+            if p.name not in used_names
+            and (p.engine_pos == needed_slot or p.engine_other_pos == needed_slot)
+        ]
+        if not candidates:
+            return None
+
+        if needed_slot in ("LW", "LB"):
+            left_footed = [p for p in candidates if p.foot_lower == "left"]
+            both_footed = [p for p in candidates if p.foot_lower == "both"]
+            candidates = left_footed + both_footed + [p for p in candidates if p.foot_lower == "right"]
+        elif needed_slot in ("RW", "RB"):
+            right_footed = [p for p in candidates if p.foot_lower == "right"]
+            both_footed = [p for p in candidates if p.foot_lower == "both"]
+            candidates = right_footed + both_footed + [p for p in candidates if p.foot_lower == "left"]
+
+        candidates.sort(key=lambda p: p.market_value, reverse=True)
+        return candidates[0]
+
+    def _resolve_flank_duplicates(
+        self,
+        starters: List[PlayerRecord],
+        slots: List[str],
+        all_eligible: List[PlayerRecord],
+        notes: List[str],
+    ) -> List[PlayerRecord]:
+        """Ensure starting XI has at most 1 LW, 1 RW, 1 LB, 1 RB.
+
+        Uses OTHER POS and foot preference to swap out-of-position flank
+        players with bench players who can fill the correct slot.
+        """
+        flank_positions = {"LW", "RW", "LB", "RB"}
+
+        pos_counts = {}
+        for p in starters:
+            pos_counts[p.engine_pos] = pos_counts.get(p.engine_pos, 0) + 1
+
+        duplicates = [pos for pos in flank_positions if pos_counts.get(pos, 0) > 1]
+        if not duplicates:
+            return starters
+
+        used_names = {p.name for p in starters}
+
+        for dup_pos in duplicates:
+            correct_slot_idx = None
+            for i, s in enumerate(slots):
+                if s == dup_pos:
+                    correct_slot_idx = i
+                    break
+
+            if correct_slot_idx is None:
+                continue
+
+            correct_slot_player = starters[correct_slot_idx]
+            dup_players = [p for p in starters if p.engine_pos == dup_pos]
+
+            if correct_slot_player.engine_pos == dup_pos:
+                out_of_position = [
+                    p for p in dup_players if p.name != correct_slot_player.name
+                ]
+            else:
+                out_of_position = dup_players
+
+            for oop_player in out_of_position:
+                oop_slot_idx = starters.index(oop_player)
+                actual_slot = slots[oop_slot_idx] if oop_slot_idx < len(slots) else None
+
+                if not actual_slot:
+                    continue
+
+                replacement = self._find_bench_flank_replacement(
+                    all_eligible, actual_slot, used_names
+                )
+                if replacement:
+                    idx = starters.index(oop_player)
+                    starters[idx] = replacement
+                    used_names.add(replacement.name)
+                    used_names.discard(oop_player.name)
+                    notes.append(
+                        f"🔄 Fixed duplicate {dup_pos}: swapped {oop_player.name} "
+                        f"(out-of-position at {actual_slot}) for {replacement.name} "
+                        f"({replacement.engine_pos})"
+                    )
+
+        return starters
 
     def _pick_from_pool(
         self,
@@ -593,16 +784,43 @@ class RosterLoader:
         slot: str,
         used_names: set,
     ) -> Optional[PlayerRecord]:
-        """Pick the best available player for a slot from a pool."""
+        """Pick the best available player for a slot from a pool.
+        
+        Preference order:
+        1. Primary-position match (engine_pos == slot)
+        2. Secondary-position match (engine_other_pos == slot)
+        3. For flank positions: foot preference (left-footed for LB/LW,
+           right-footed for RB/RW, both-footed always preferred)
+        4. Market value (highest first)
+        """
         candidates = [
             p for p in pool.get(slot, [])
             if p.name not in used_names
         ]
         if not candidates:
             return None
-        # Sort by market value desc (proxy for quality) then take best
-        candidates.sort(key=lambda p: p.market_value, reverse=True)
-        return candidates[0]
+
+        primary = [p for p in candidates if p.engine_pos == slot]
+        secondary = [p for p in candidates if p.engine_pos != slot]
+        pool_candidates = primary if primary else candidates
+
+        if len(pool_candidates) > 1 and slot in ("LW", "RW", "LB", "RB"):
+            left_side = slot in ("LW", "LB")
+            preferred_foot = "left" if left_side else "right"
+            foot_best = []
+            foot_good = []
+            foot_rest = []
+            for p in pool_candidates:
+                if p.foot_lower == "both":
+                    foot_best.append(p)
+                elif p.foot_lower == preferred_foot:
+                    foot_good.append(p)
+                else:
+                    foot_rest.append(p)
+            pool_candidates = foot_best + foot_good + foot_rest
+
+        pool_candidates.sort(key=lambda p: p.market_value, reverse=True)
+        return pool_candidates[0]
 
     def _build_bench(
         self,

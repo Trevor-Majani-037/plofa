@@ -191,7 +191,64 @@ class ChanceCreationLedger:
         for shot in shots:
             self.records.append(self._analyze_shot(shot))
         self._aggregate()
+        self._count_explicit_chance_events(shots)
+        self._finalize_shot_assists()
         return self
+
+    def _count_explicit_chance_events(self, shots: List["_ShotCandidate"]) -> None:
+        """Supplement the ledger with CHANCE_CREATED / BIG_CHANCE_CREATED
+        events that the event chain emitted directly, but ONLY for shots that
+        the backward scan missed (no setup pass found). This avoids double-
+        counting when both the explicit event and the setup pass exist."""
+        blank = {
+            "shot_assists": 0, "goal_assists": 0, "assists": 0,
+            "chances_created": 0, "big_chances_created": 0,
+            "open_play_cc": 0, "setpiece_cc": 0,
+            "open_play_shot_assists": 0, "setpiece_shot_assists": 0,
+            "open_play_assists": 0, "setpiece_assists": 0,
+            "xa": 0.0, "xa_open_play": 0.0, "xa_setpiece": 0.0,
+            "second_assists": 0, "sca": 0,
+            "fantasy_assists": 0, "shots_faced_by_creation": 0,
+        }
+        # Shots that already have a creator from the setup-pass scan.
+        covered: Set[str] = set()
+        for r in self.records:
+            if r.creator:
+                covered.add((r.minute, r.shooter))
+        for e in self.timeline:
+            if e.event_type not in (EventType.CHANCE_CREATED, EventType.BIG_CHANCE_CREATED):
+                continue
+            creator = getattr(e, "player", None) or ""
+            shooter = getattr(e, "secondary_player", None) or ""
+            if not creator or not shooter:
+                continue
+            shot_key = (getattr(e, "minute", 0) or 0, shooter)
+            if shot_key in covered:
+                continue
+            meta = getattr(e, "metadata", None) or {}
+            is_big = e.event_type == EventType.BIG_CHANCE_CREATED or bool(meta.get("is_big_chance"))
+            situation = getattr(e, "situation", None)
+            situation_str = situation.name if situation is not None else ""
+            is_open = situation_str not in ("CORNER", "CROSSED_FREEKICK", "DIRECT_FREEKICK", "PENALTY")
+            p = self.per_player.setdefault(creator, dict(blank))
+            p["chances_created"] = p.get("chances_created", 0) + 1
+            if is_big:
+                p["big_chances_created"] = p.get("big_chances_created", 0) + 1
+            if is_open:
+                p["open_play_cc"] = p.get("open_play_cc", 0) + 1
+            else:
+                p["setpiece_cc"] = p.get("setpiece_cc", 0) + 1
+
+    def _finalize_shot_assists(self) -> None:
+        """Redefine shot_assists as: all non-goal chances created by the
+        player.  This matches the user-facing convention:
+            shot_assists = chances_created - goal_assists
+        It deliberately ignores whether the chance came from a key pass,
+        a cross, a carry, or an explicit CHANCE_CREATED event."""
+        for p in self.per_player.values():
+            p["shot_assists"] = p.get("chances_created", 0) - p.get("goal_assists", 0)
+            p["open_play_shot_assists"] = p.get("open_play_cc", 0) - p.get("open_play_assists", 0)
+            p["setpiece_shot_assists"] = p.get("setpiece_cc", 0) - p.get("setpiece_assists", 0)
 
     # ── SHOT COLLECTION ──────────────────────────────
 

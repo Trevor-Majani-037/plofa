@@ -43,6 +43,13 @@ N_ROWS: int = int(math.ceil(PITCH_Y_MAX / CELL_SIZE))   # 14
 BASE_SIGMA: float = 8.0
 SIGMA_PACE_SCALE: float = 0.035   # sigma += pace * SIGMA_PACE_SCALE
 
+# Momentum physics (velocity-aware influence). A sprint is ~ 8 m/s =
+# 480 m/min; at full sprint the blob stretches 60% along its motion axis.
+# Zero velocity (the default) reproduces the legacy isotropic influence.
+SPRINT_REF: float = 480.0   # metres per minute
+MOMENTUM_ELONGATION: float = 0.6
+MOTION_EPS: float = 1e-3
+
 # Passing lane sampling: number of points to test along the straight line
 # ball -> receiver. 8 samples is enough for a 5m grid.
 LANE_SAMPLE_STEPS: int = 8
@@ -81,13 +88,20 @@ DEFAULT_XT_GRID: Dict[Tuple[int, int], float] = _build_default_xt_grid()
 
 @dataclass
 class PlayerInfluenceInput:
-    """One player's spatial data for pitch-control computation."""
+    """One player's spatial data for pitch-control computation.
+
+    vx/vy are the player's movement vector (m/min). Defaults of 0.0 keep
+    the legacy isotropic influence blob; nonzero velocity elongates control
+    along the direction of motion (momentum).
+    """
     name: str
     team: str
     position: str
     x: float
     y: float
     pace: float = 60.0
+    vx: float = 0.0
+    vy: float = 0.0
     is_goalkeeper: bool = False
 
 
@@ -392,14 +406,29 @@ class PitchControlField:
 
         sigma scales with pace: faster players control a wider radius.
         Goalkeepers have a smaller sigma (they don't dominate wide areas).
+
+        Velocity physics: a moving player elongates his blob along the
+        motion axis — a sprinting defender "commits" ground along his run;
+        perpendicular control is unchanged (the reach shifts INTO the
+        direction of motion rather than being redistributed). Zero velocity
+        keeps the isotropic blob, so legacy callers are unaffected.
         """
-        dx = x - player.x
-        dy = y - player.y
-        dist_sq = dx * dx + dy * dy
         sigma = max(3.0, BASE_SIGMA + player.pace * SIGMA_PACE_SCALE)
         if player.is_goalkeeper:
             sigma *= 0.6
-        return 1.0 / (1.0 + dist_sq / (2.0 * sigma * sigma))
+        speed = math.hypot(player.vx, player.vy)
+        if speed < MOTION_EPS:
+            dx = x - player.x
+            dy = y - player.y
+            return 1.0 / (1.0 + (dx * dx + dy * dy) / (2.0 * sigma * sigma))
+        ux, uy = player.vx / speed, player.vy / speed
+        sigma_along = sigma * (1.0 + (speed / SPRINT_REF) * MOMENTUM_ELONGATION)
+        dx = x - player.x
+        dy = y - player.y
+        along = abs(dx * ux + dy * uy)
+        across = abs(dx * (-uy) + dy * ux)
+        return 1.0 / (1.0 + along * along / (2.0 * sigma_along * sigma_along)
+                         + across * across / (2.0 * sigma * sigma))
 
     def _team_influence(
         self,

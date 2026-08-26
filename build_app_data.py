@@ -276,7 +276,7 @@ def build_league_table(all_matches):
     # Sort: pts â†’ gd â†’ gf â†’ name
     sorted_table = sorted(
         table.values(),
-        key=lambda t: (-t["points"], -t["gd"], -t["gf"], t["team"])
+        key=lambda t: (-t["gd"], -t["gf"], -t["points"],  t["team"])
     )
 
     # Add position + computed fields

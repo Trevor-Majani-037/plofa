@@ -253,34 +253,49 @@ def draw_dribble_map(ax, pitch: Pitch, timeline: List[MatchEvent], player_name: 
 # PUBLIC ENTRY POINTS
 # ─────────────────────────────────────────────
 
-def _new_pitch_ax(fig, pos, half: bool = False):
+def _new_pitch_ax(fig, pos, half: bool = False, team: str = "", home_team: str = ""):
     pitch = Pitch(pitch_type="statsbomb", pitch_color=ActionMapColors.PITCH_GREEN,
                   line_color=ActionMapColors.PITCH_LINE, half=half, line_zorder=2)
     ax = fig.add_subplot(pos)
     pitch.draw(ax=ax)
+    if team and home_team:
+        is_home = (team == home_team)
+        direction = 1.0 if is_home else -1.0
+        label = "Attacking →" if is_home else "← Attacking"
+        arrow_x = 18.0 if is_home else 102.0
+        ax.annotate(
+            label,
+            xy=(arrow_x + 22 * direction, 4.0),
+            xytext=(arrow_x, 4.0),
+            fontsize=8, color="white", ha="center", va="center",
+            arrowprops=dict(arrowstyle="->", color="white", lw=1.5),
+            zorder=10,
+        )
     return pitch, ax
 
 
 def plot_player_dashboard(timeline: List[MatchEvent], player_name: str,
                            team: str, position: str, filepath: str,
-                           team_color: str = "#00B4D8", ledger=None):
+                           team_color: str = "#00B4D8", ledger=None,
+                           home_team: str = ""):
     """
     One PNG per player: pass map | carry map | dribble map, side by side.
     Every arrow/dot on this figure is a REAL individual event from the
     timeline — nothing here is an average or an estimate. Key passes on the
     pass map are the real setup passes found by the Chance Creation Ledger.
     """
+    plt.rcParams["font.family"] = "Consolas"
     fig = plt.figure(figsize=(21, 8), facecolor=ActionMapColors.BG_DARK)
     fig.suptitle(f"{player_name}  ({position}, {team})", color=team_color,
                  fontsize=16, fontweight="bold", y=0.99)
 
-    pitch1, ax1 = _new_pitch_ax(fig, 131)
+    pitch1, ax1 = _new_pitch_ax(fig, 131, team=team, home_team=home_team)
     draw_pass_map(ax1, pitch1, timeline, player_name, ledger=ledger)
 
-    pitch2, ax2 = _new_pitch_ax(fig, 132)
+    pitch2, ax2 = _new_pitch_ax(fig, 132, team=team, home_team=home_team)
     draw_carry_map(ax2, pitch2, timeline, player_name)
 
-    pitch3, ax3 = _new_pitch_ax(fig, 133)
+    pitch3, ax3 = _new_pitch_ax(fig, 133, team=team, home_team=home_team)
     draw_dribble_map(ax3, pitch3, timeline, player_name)
 
     legend_elements = [
@@ -303,11 +318,13 @@ def plot_player_dashboard(timeline: List[MatchEvent], player_name: str,
 
 
 def plot_single_map(kind: str, timeline: List[MatchEvent], player_name: str,
-                     filepath: str, half: bool = False):
+                     filepath: str, half: bool = False,
+                     team: str = "", home_team: str = ""):
     """Standalone single-panel version (kind: 'pass' | 'carry' | 'dribble')."""
+    plt.rcParams["font.family"] = "Consolas"
     drawer = {"pass": draw_pass_map, "carry": draw_carry_map, "dribble": draw_dribble_map}[kind]
     fig = plt.figure(figsize=(8, 10.5), facecolor=ActionMapColors.BG_DARK)
-    pitch, ax = _new_pitch_ax(fig, 111, half=half)
+    pitch, ax = _new_pitch_ax(fig, 111, half=half, team=team, home_team=home_team)
     drawer(ax, pitch, timeline, player_name)
     plt.tight_layout()
     plt.savefig(filepath, dpi=150, bbox_inches="tight", facecolor=ActionMapColors.BG_DARK)
@@ -338,7 +355,8 @@ Add to PLOFAExporter:
             safe = name.replace(" ", "_")
             plot_player_dashboard(
                 self.result.timeline, name, s["team"], s["position"],
-                f"{folder}/{safe}_actions.png", team_color=color
+                f"{folder}/{safe}_actions.png", team_color=color,
+                home_team=self.config.home_team
             )
 
 Call it from export_all() alongside the existing plot_* calls, or on

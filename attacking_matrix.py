@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Any
 
 from position_engine import ELLIPSE_COMPOSE_FLOOR
+from block_awareness import BlockNavigationEngine
 
 # ─────────────────────────────────────────────
 # PITCH GEOMETRY CONSTANTS
@@ -614,6 +615,7 @@ class AttackingMatrix:
         under_pressure: bool = False,
         dna=None,
         danger_level: float = 0.0,
+        block_shape=None,
     ) -> AttackingDecision:
         """
         Resolve the carrier's action for this touch.
@@ -628,6 +630,12 @@ class AttackingMatrix:
         already organised and under pressure is harder to break down — a
         marginal shot now recycles instead of forcing a low-percentage
         attempt that inflates scorelines.
+
+        Checkpoint 29 — block_shape (the opponent's live BlockShape) is the
+        MACRO layer over the micro lane_clearance: option values are
+        reshaped by how each candidate pass navigates the whole defensive
+        shape (around = bonus, through = penalty), so the matrix's chosen
+        target respects the orbital passing pattern.
         """
         if position_engine is None:
             return AttackingDecision(
@@ -658,6 +666,10 @@ class AttackingMatrix:
             carrier, teammates, defenders, x, y, position_engine, attacks_right,
             team_profile=team_profile,
         )
+        if block_shape is not None and position_engine is not None:
+            cls._apply_block_navigation(
+                opts, carrier, x, y, position_engine, attacks_right, block_shape,
+            )
         close_opts = [o for o in opts if o.zone == "close"]
         far_opts = [o for o in opts if o.zone == "far"]
 
@@ -757,3 +769,46 @@ class AttackingMatrix:
             if gk_opt is not None:
                 return _pass(gk_opt, "RECYCLE_PASS", "back_to_keeper_recycle")
         return _pass(target_opt, "RECYCLE_PASS", "no_clear_option")
+
+    @staticmethod
+    def _apply_block_navigation(
+        opts: List["_Option"],
+        carrier,
+        x: float,
+        y: float,
+        position_engine,
+        attacks_right: bool,
+        block_shape,
+    ) -> None:
+        """
+        Checkpoint 29 — reshape option values by how each candidate pass
+        navigates the opponent's BLOCK (macro layer over micro lane checks).
+
+        lane_clearance asks "is THIS corridor open right NOW?"; the block
+        engine asks "does this pass go AROUND their shape or THROUGH it?".
+        Against a compact mid-block the orbital pattern (Modric/Tanaka)
+        emerges because through-the-heart options lose value while
+        half-space/wide/recycle options gain it, scaled by the carrier's
+        vision and composure. Broken/spread shapes self-gate to 1.0 inside
+        the engine, so transition moments play unchanged.
+        """
+        _pmt = getattr(getattr(carrier, "dna", None), "mental", None)
+        _vision = float(getattr(_pmt, "vision", 60.0)) if _pmt else 60.0
+        _composure = float(getattr(_pmt, "composure", 50.0)) if _pmt else 50.0
+        # High composure → patient → prefers safe orbital routes
+        _risk_tol = max(0.10, min(0.90, 1.0 - _composure / 100.0))
+
+        for opt in opts:
+            tx, ty = position_engine.get_position(opt.target.name)
+            orbital = BlockNavigationEngine.pass_orbital_score(
+                (x, y), (tx, ty), block_shape,
+                passer_vision=_vision,
+                passer_risk_tolerance=_risk_tol,
+                passer_position=getattr(carrier, "position", ""),
+                is_progressive=(tx > x + 8 if attacks_right else tx < x - 8),
+            )
+            channel = BlockNavigationEngine.channel_bonus((tx, ty), block_shape)
+            recycle = BlockNavigationEngine.recycle_tendency_score(
+                carrier, opt.target, block_shape, receiver_pos=(tx, ty),
+            )
+            opt.value *= orbital * channel * recycle

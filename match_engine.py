@@ -28,6 +28,7 @@ from datetime import date
 
 from position_engine import PositionEngine
 from threat_engine import ThreatEngine
+from block_awareness import BlockShape, BlockDetector
 
 # The match narrative prints emoji/unicode; on legacy consoles (cp1252 etc.)
 # that raises UnicodeEncodeError mid-simulation. Reconfigure the streams to
@@ -455,6 +456,24 @@ class MatchState:
     pending_corners_home: int = 0
     pending_corners_away: int = 0
 
+    # Checkpoint X — penalty causality: a foul the defending team commits
+    # inside its OWN box is a spot-kick offence. When a DisciplineChain
+    # reports penalty_won=True, the fouled team is owed the turn penalty
+    # sequence and it is consumed (queued -> PenaltyChain) exactly like a
+    # won corner. Per-TEAM counters so several won penalties in a minute
+    # (rare but possible under a siege) all survive to be taken instead of
+    # overwriting one another.
+    pending_penalty_home: int = 0
+    pending_penalty_away: int = 0
+
+    # Per-defending-team tally of spot-kicks actually taken this match. Keeps
+    # the box-penalty physics realistic: a siege can produce one, occasionally
+    # two, but never a deluge (otherwise a single match turns into a spot-kick
+    # carnival). MatchEngine refuses the box-foul→penalty conversion once a
+    # team has already conceded this many.
+    penalties_taken: Dict[str, int] = field(default_factory=dict)
+    PENALTY_CAP_PER_TEAM: int = 2
+
     # Checkpoint 7 — persistent ball-state: the last REAL location the ball
     # was seen at (from an actual event's end_x/end_y, or location_x/y if no
     # end coords exist). Every new possession sequence anchors its starting
@@ -466,6 +485,8 @@ class MatchState:
     last_ball_y: float = 34.0
     
     pending_kickoff_for: str = ""
+    first_half_kickoff_team: str = ""
+    pending_second_half_kickoff: bool = False
 
     # Checkpoint 8 — restart causality: goal kicks and throw-ins
     pending_goal_kick_for: str = ""
@@ -500,6 +521,8 @@ class MatchState:
     # can only ever concede at most one corner — no double-counting.
     cross_corner_done: bool = False
 
+    home_block: Optional[BlockShape] = None
+    away_block: Optional[BlockShape] = None
 
     @property
     def goal_difference(self) -> int:
@@ -1050,6 +1073,27 @@ class MatchEngine:
         self.position_log: List[Dict] = []
         self.momentum_log: List[Dict] = []
 
+    def _update_block_shapes(self, minute: int):
+        """
+        Checkpoint 29 — refresh both teams' defensive BlockShapes from their
+        live spatial states. Called every minute before sequences run so pass
+        selection can navigate around or through the opponent block.
+        Home defends x=0 (deep = low x -> attacks_right=False),
+        away defends x=105 (deep = high x -> attacks_right=True).
+        """
+        for team, attacks_right, attr in (
+            (self.config.home_team, False, "home_block"),
+            (self.config.away_team, True, "away_block"),
+        ):
+            names = [n for n in self.position_engine.team_rosters.get(team, [])
+                     if n in self.position_engine.states]
+            positions = {n: self.position_engine.get_position(n) for n in names}
+            pos_map = {n: self.position_engine.states[n].position for n in names}
+            shape = BlockDetector.detect(
+                positions, pos_map, attacks_right=attacks_right, minute=minute
+            )
+            setattr(self.state, attr, shape)
+
     def set_squad(self, team_name: str, starters: list, substitutes: list = None):
         """Register a squad for the match."""
         if len(starters) != 11:
@@ -1095,6 +1139,17 @@ class MatchEngine:
         def _run_minute(minute: int):
             self.state.minute = minute
             self.state.phase  = PhaseEngine.get_phase(minute)
+
+            # ── KICKOFF TRIGGERS ────────────────────────────────────────
+            if minute == 1 and not self.state.pending_kickoff_for:
+                self.state.pending_kickoff_for = self.state.first_half_kickoff_team
+            if minute == 46 and self.state.pending_second_half_kickoff:
+                second_half_team = (
+                    self.config.home_team if random.random() < 0.5
+                    else self.config.away_team
+                )
+                self.state.pending_kickoff_for = second_half_team
+                self.state.pending_second_half_kickoff = False
 
             # ── SUBSTITUTION CHECK (before the minute plays out) ──
             if self.sub_controller is not None:
@@ -1148,6 +1203,18 @@ class MatchEngine:
                                 state.drain_baseline(team_style, intensity_mult=intensity_mult)
                                 state.update_performance_mult()
 
+            # ── CHECKPOINT 29: OPPONENT BLOCK SHAPES ────────────────
+            # Refresh both teams' defensive BlockShapes from the live
+            # spatial states (as of the end of the previous minute) so
+            # pass selection this minute can navigate the block.
+            self._update_block_shapes(minute)
+            # Feed the same shapes to the drift engine — the in-possession
+            # team's CAMs/CMs/CFs occupy the block's half-space channels
+            # (HalfSpaceMagnet) while pass selection orbits them.
+            self.position_engine.set_block_context(
+                self.state.home_block, self.state.away_block
+            )
+
             # ── SIMULATE MINUTE ────────────────────────────────────
             self._simulate_minute(minute, TeamStyle)
 
@@ -1190,12 +1257,20 @@ class MatchEngine:
             _home_pos_before = self.position_engine.snapshot_positions(self.config.home_team)
             _away_pos_before = self.position_engine.snapshot_positions(self.config.away_team)
 
+            # Danger per team is needed by drift_minute (ball-side squeeze)
+            # and defensive_block — compute once, reuse below.
+            _danger = {
+                self.config.home_team: self.threat.danger_at(self.config.home_team),
+                self.config.away_team: self.threat.danger_at(self.config.away_team),
+            }
+
             self.position_engine.drift_minute(
                 self.config.home_team, self.home_profile,
                 self.state.phase, game_state_gd=gd_home_now, minute=minute,
                 in_possession=home_has_ball,
                 ball_x=self.state.last_ball_x, ball_y=self.state.last_ball_y,
                 opponent_players=home_opponents,
+                danger_level=_danger[self.config.home_team],
             )
             self.position_engine.drift_minute(
                 self.config.away_team, self.away_profile,
@@ -1203,6 +1278,7 @@ class MatchEngine:
                 in_possession=not home_has_ball,
                 ball_x=self.state.last_ball_x, ball_y=self.state.last_ball_y,
                 opponent_players=away_opponents,
+                danger_level=_danger[self.config.away_team],
             )
 
             # ── CHECKPOINT 9: COORDINATED DEFENSIVE BLOCK ────────────
@@ -1217,7 +1293,7 @@ class MatchEngine:
                 (self.config.home_team, home_has_ball),
                 (self.config.away_team, not home_has_ball),
             ):
-                danger = self.threat.danger_at(team)
+                danger = _danger[team]
                 if danger < 25 or has_ball:
                     continue
                 bx, by = self.state.last_ball_x, self.state.last_ball_y
@@ -1255,6 +1331,14 @@ class MatchEngine:
                 self.config.away_team, _away_pos_before
             )
 
+            # Checkpoint 26 — refresh the velocity-aware pitch-control
+            # cache from the just-updated drift velocities. Consumers
+            # (e.g. winger half-space openness) read it via
+            # position_engine.pitch_control_result/field.
+            self.position_engine.update_pitch_control(
+                self.config.home_team, self.config.away_team, minute=minute,
+            )
+
             # ── OPTA TELEMETRY LOGGING ─────────────────────────────
             # Per-minute snapshot of every player's live spatial state plus
             # the scoreline. Feeds the post-match analytics module (distance
@@ -1287,6 +1371,10 @@ class MatchEngine:
                         "distance_total": activity["distance_total"],
                         "touches": activity["touches"],
                         "peak_touch_jump": activity["peak_touch_jump"],
+                        "physics_distance_m": activity.get("physics_distance_m", 0.0),
+                        "physics_sprint_count": activity.get("physics_sprint_count", 0.0),
+                        "physics_high_speed_sprint_count": activity.get("physics_high_speed_sprint_count", 0.0),
+                        "physics_top_speed_mps": activity.get("physics_top_speed_mps", 0.0),
                     })
             self.position_log.append(frame)
 
@@ -1317,6 +1405,9 @@ class MatchEngine:
                         state = self.sub_controller.stamina.get(name)
                         if state and not state.is_injured:
                             state.half_time_recovery(recovery_pct=0.18)
+                # Realism: players retreat to their own halves during the
+                # break so the second half starts from clean shapes.
+                self._reset_positions_to_halves()
 
         # Added time (decided after full 90)
         added = self._decide_added_time()
@@ -1332,10 +1423,15 @@ class MatchEngine:
                         and getattr(p, "sub_in_minute", None) is None):
                     p.dna.minutes_played = total_mins
 
-        # Also finalise substitutes who came on
+        # Also finalise substitutes who came on. Bench players carry a
+        # pre-planned sub_in_minute from the roster (the "sub ~65'" tag),
+        # so only credit minutes to those who actually entered the pitch —
+        # otherwise unused bench players get phantom minutes and all-zero
+        # statlines.
         for team_squad in self.squads.values():
             for p in team_squad.get("substitutes", []):
                 if (hasattr(p, "dna") and p.dna.minutes_played == 0
+                        and getattr(p, "_entered_pitch", False)
                         and getattr(p, "sub_in_minute", None) is not None):
                     p.dna.minutes_played = total_mins - p.sub_in_minute
 
@@ -1382,6 +1478,10 @@ class MatchEngine:
                     if getattr(p, "name", "") == name_off), None)
         if idx is not None:
             active[idx] = player_on_obj
+            # Mark actual pitch entry — the roster's pre-planned
+            # sub_in_minute alone does NOT mean the player came on,
+            # so final-whistle minutes must key off this flag.
+            player_on_obj._entered_pitch = True
 
         # Set minutes
         if hasattr(player_off_obj, "dna"):
@@ -1431,15 +1531,94 @@ class MatchEngine:
 
     def _initialize_simulation(self):
         """Set up initial state before the whistle."""
-        # Decide who kicks off (home team by default, away by coin)
         if random.random() < 0.5:
             self.state.possession_team = self.config.home_team
+            self.state.first_half_kickoff_team = self.config.home_team
         else:
             self.state.possession_team = self.config.away_team
+            self.state.first_half_kickoff_team = self.config.away_team
+        self.state.pending_second_half_kickoff = True
 
         # Apply home advantage to starting momentum
         home_crowd_factor = 5.0 if not self.config.is_derby else 8.0
         self.state.momentum = home_crowd_factor
+
+    def _reset_positions_to_halves(self):
+        """Reset positions for a kickoff restart.
+        
+        Physics: the KICKING team's attackers step up to the centre circle
+        because they are the ones who initiate play. The defending team
+        holds its defensive shape. A hard snap is correct here because
+        the whistle gives everyone ~10 seconds to station themselves.
+        """
+        kickoff_team = self.state.pending_kickoff_for or self.state.possession_team
+        defending_team = (
+            self.config.away_team if kickoff_team == self.config.home_team
+            else self.config.home_team
+        )
+        for team_name, team_players in self.active_players.items():
+            for p in team_players:
+                name = getattr(p, "name", "")
+                state = self.position_engine.states.get(name)
+                if not state:
+                    continue
+                if team_name != kickoff_team:
+                    # Defending team: snap to home shape, but clamp to own half
+                    # so forwards don't start the half camped in the opponent's
+                    # half at kickoff.
+                    state.current_x = state.home_x
+                    state.current_y = state.home_y
+                    own_goal_x = 0.0 if team_name == self.config.home_team else 105.0
+                    if (team_name == self.config.home_team and state.current_x > 52.5) or (
+                        team_name == self.config.away_team and state.current_x < 52.5
+                    ):
+                        state.current_x = own_goal_x + (52.5 - own_goal_x) * 0.5
+                    continue
+                # Kicking team: push attackers toward the centre circle
+                pos = getattr(p, "position", "")
+                if pos in ("ST", "LW", "RW", "CAM"):
+                    # Attackers plant themselves just behind the centre spot
+                    # so they can receive the restart and carry it forward.
+                    state.current_x = 50.0 + random.uniform(-3.0, 3.0)
+                    state.current_y = 34.0 + random.uniform(-8.0, 8.0)
+                elif pos in ("CM", "CDM"):
+                    # Midfielders hold the middle third, ready to receive
+                    # the backward pass that every real kickoff starts with.
+                    state.current_x = 42.0 + random.uniform(-4.0, 4.0)
+                    state.current_y = 34.0 + random.uniform(-10.0, 10.0)
+                else:
+                    # Defenders and fullbacks stay deep — the safety valve.
+                    state.current_x = state.home_x
+                    state.current_y = state.home_y
+
+    def _pick_kickoff_taker(self, team_name: str) -> str:
+        """Pick a realistic kickoff taker from the active squad.
+        
+        Real football: the player who steps up is almost always an
+        attacker or midfielder (CAM, CM, LW, RW, CDM) — the same
+        players who naturally stand closest to the centre circle
+        after the teams reset. CBs and fullbacks do not take kickoffs.
+        """
+        players = self.active_players.get(team_name, [])
+        if not players:
+            return "Kickoff Taker"
+
+        preferred = ["CAM", "CM", "LW", "RW", "CDM"]
+        candidates = [
+            p for p in players
+            if getattr(p, "position", "") in preferred
+        ]
+        if not candidates:
+            candidates = list(players)
+
+        def dist_to_centre(p):
+            s = self.position_engine.states.get(getattr(p, "name", ""))
+            if s:
+                return ((s.current_x - 52.5) ** 2 + (s.current_y - 34.0) ** 2) ** 0.5
+            return 999.0
+
+        candidates.sort(key=dist_to_centre)
+        return candidates[0].name
 
     def _decide_added_time(self) -> int:
         """Realistic added time based on match events."""
@@ -1527,7 +1706,7 @@ class MatchEngine:
 
         # ── SIMULATE EACH SEQUENCE ────────────────────────────────────
         for seq_idx in range(n_sequences):
-            # ── KICKOFF (After Goal) ──────────────────────────────────
+            # ── KICKOFF (Start of half / After Goal) ──────────────────
             if self.state.pending_kickoff_for:
                 kickoff_team = self.state.pending_kickoff_for
                 self.state.pending_kickoff_for = ""
@@ -1535,15 +1714,22 @@ class MatchEngine:
                 self.state.last_ball_x = 52.5
                 self.state.last_ball_y = 34.0
 
+                # Realism: snap both teams back to their formation halves
+                # so the restart begins from a clean shape, not a scrambled
+                # goal-sequence tail.
+                self._reset_positions_to_halves()
+
                 # Checkpoint 9 — ball back at centre circle: both teams'
                 # danger returns to the low kickoff baseline.
                 self.threat.on_kickoff(minute)
+                
+                taker = self._pick_kickoff_taker(kickoff_team)
                 
                 self.timeline.append(MatchEvent(
                     minute=minute, second=0,
                     event_type=EventType.KICKOFF,
                     team=kickoff_team,
-                    player="Kickoff Taker",
+                    player=taker,
                     location_x=52.5, location_y=34.0,
                     phase=self.state.phase, game_state=self.state.game_state
                 ))
@@ -1587,8 +1773,44 @@ class MatchEngine:
                     self.active_players.get(corner_team, []),
                     self.active_players.get(corner_opponent, []),
                     self.state, SituationType.CORNER,
+                    position_engine=self.position_engine,
                 )
                 if self._absorb_chain(sp_result, minute): break
+                continue
+
+            # ── CHECKPOINT X: CONSUME A PENDING PENALTY FIRST ──────────
+            # A foul the defending team committed inside its own box wins a
+            # spot kick for the fouled side. Like won corners, this queues
+            # the ACTUAL penalty sequence rather than leaving PENALTY_WON as
+            # a dangling event. The fouled team kicks toward the same goal it
+            # was attacking when the foul was drawn.
+            pending_pen_home = self.state.pending_penalty_home > 0
+            pending_pen_away = self.state.pending_penalty_away > 0
+            if pending_pen_home or pending_pen_away:
+                pen_team = home_team if pending_pen_home else away_team
+                if pending_pen_home:
+                    self.state.pending_penalty_home -= 1
+                else:
+                    self.state.pending_penalty_away -= 1
+                pen_opponent = away_team if pen_team == home_team else home_team
+                self.state.possession_team = pen_team
+                if pen_team == home_team:
+                    self._minute_home_seq += 1
+                else:
+                    self._minute_away_seq += 1
+                # The conceding (defending/fouling) side is charged with the
+                # spot — this is what the per-team CAP reads so a siege can't
+                # cascade into a string of penalties against the same defence.
+                self.state.penalties_taken[pen_opponent] = self.state.penalties_taken.get(pen_opponent, 0) + 1
+                pen_result = ChainDispatcher.set_piece(
+                    minute, pen_team, pen_opponent,
+                    self.active_players.get(pen_team, []),
+                    self.active_players.get(pen_opponent, []),
+                    self.state, SituationType.PENALTY,
+                    attacks_right=(pen_team == home_team),
+                    position_engine=self.position_engine,
+                )
+                if self._absorb_chain(pen_result, minute): break
                 continue
 
             # ── CHECKPOINT 8: RESTART SEQUENCES ─────────────────────────
@@ -1656,6 +1878,7 @@ class MatchEngine:
                     attacks_right=(fk_team == home_team),
                     context_x=self.state.pending_offside_fk_x,
                     context_y=self.state.pending_offside_fk_y,
+                    position_engine=self.position_engine,
                 )
                 # Stamp the actual offside location onto the FREEKICK_WON event
                 # so the exporter records it at the correct coordinates.
@@ -1771,6 +1994,11 @@ class MatchEngine:
             if self._absorb_chain(poss_result, minute): break
 
             if poss_result.possession_lost:
+                if self._defensive_recovery(
+                    minute, poss_result, attacking_team, defending_team,
+                    att_players, def_players, attacks_right, def_avg_stamina,
+                ):
+                    break
                 continue  # Next sequence starts with other team
 
             # ── ATTACKING MATRIX SHOT HAND-OFF (Checkpoint 10) ──────────
@@ -1863,7 +2091,7 @@ class MatchEngine:
                 ctx_x = last_evt.end_x if last_evt.end_x is not None else last_evt.location_x
                 ctx_y = last_evt.end_y if last_evt.end_y is not None else last_evt.location_y
                 dangerous_def = ctx_x > 80 if attacks_right else ctx_x < 25
-                if dangerous_def and random.random() < 0.35:
+                if dangerous_def and random.random() < 0.50:
                     def_result = ChainDispatcher.defensive_action(
                         minute, defending_team, attacking_team,
                         def_players, att_players, self.state, "clearance",
@@ -1961,6 +2189,7 @@ class MatchEngine:
                         minute, attacking_team, defending_team,
                         att_players, def_players, self.state, situation,
                         attacks_right=attacks_right,
+                        position_engine=self.position_engine,
                     )
                     if self._absorb_chain(sp_result, minute): break
                 else:
@@ -1986,18 +2215,51 @@ class MatchEngine:
         # books fewer of them.
         last_attacker = self.state.possession_team or home_team
         fouling_team = away_team if last_attacker == home_team else home_team
+        att_right = (last_attacker == home_team)
         foul_prob = (
             0.23
             * PhaseEngine.card_mult(phase)
         )
         if random.random() < foul_prob:
+            # PHYSICS-ANCHORED FOUL LOCATION.
+            # A defensive foul happens at the live engagement point — where
+            # the defending team is actually challenging the ball — NOT at an
+            # arbitrary random spot. We anchor to the ball; the foul drifts a
+            # few metres around that contest (striker checked, second ball,
+            # shoulder in the channel).
+            lx = self.state.last_ball_x
+            ly = self.state.last_ball_y
+            foul_x = min(101.0, max(6.0, lx + random.gauss(0, 16.0)))
+            foul_y = min(63.0, max(5.0, ly + random.gauss(0, 4.5)))
+
+            # PHYSICS-GROUNDED PENALTY CONVICTION.
+            # A foul inside the box is NOT automatically a spot-kick. The ref
+            # only gives one when the defending team's lunge actually denied a
+            # clear scoring opportunity — i.e. the ball really was deep in its
+            # OWN box and live danger was high (defenders scrambling). We drive
+            # that straight off the ThreatEngine's pure ball↔goal geometry, and
+            # keep it deliberately scarce: a real penalty roughly every 3-5
+            # matches, never one per match. A per-team cap stops a siege turning
+            # into a spot-kick carnival.
+            box_conviction = 0.0
+            ball_in_deny_zone = (lx >= 84) if att_right else (lx <= 21)
+            if ball_in_deny_zone:
+                danger_def = self.threat.danger_at(fouling_team)
+                taken = self.state.penalties_taken.get(fouling_team, 0)
+                if taken < MatchState.PENALTY_CAP_PER_TEAM:
+                    box_conviction = 0.04 + 0.09 * (danger_def / 100.0)   # ~0.04-0.13
+                    if taken >= 1:
+                        box_conviction *= 0.35   # a second spot is a rare table-tilt
+                    box_conviction = min(0.5, box_conviction)
             disc_result = ChainDispatcher.discipline(
                 minute, fouling_team, last_attacker,
                 self.active_players.get(fouling_team, []),
                 self.active_players.get(last_attacker, []),
                 self.state,
                 referee_strictness=self.config.referee_strictness,
-                attacks_right=(last_attacker == home_team),
+                x=foul_x, y=foul_y,
+                attacks_right=att_right,
+                box_penalty_chance=box_conviction,
             )
             self._absorb_chain(disc_result, minute)
 
@@ -2015,12 +2277,67 @@ class MatchEngine:
         is what keeps the no-threat baseline statistically unchanged.
         """
         if danger >= 85:
-            return [0.18, 0.08, 0.44, 0.30]   # tackle, interception, clearance, block
+            return [0.15, 0.08, 0.48, 0.29]   # tackle, interception, clearance, block
         if danger >= 60:
-            return [0.22, 0.14, 0.40, 0.24]
+            return [0.20, 0.12, 0.44, 0.24]
         if danger >= 30:
-            return [0.30, 0.28, 0.24, 0.18]
-        return [0.35, 0.30, 0.20, 0.15]
+            return [0.28, 0.25, 0.27, 0.20]
+        return [0.32, 0.28, 0.22, 0.18]
+
+    def _defensive_recovery(self, minute, poss_result, attacking_team,
+                            defending_team, att_players, def_players,
+                            attacks_right: bool, def_avg_stamina) -> bool:
+        """Checkpoint 29 — defensive wins inside PossessionChain (physics
+        race-to-ball interceptions, miscontrols, lost duels) previously died
+        at the possession_lost continue and never reached the DefensiveChain
+        dispatcher, so deep clearances/blocks collapsed to ~1/match. When a
+        sequence is turned over in the defending third, the defence now gets
+        a danger-scaled chance to hammer it away (clearance-heavy), feeding
+        the same clearance/corner/own-goal pipeline as the contest path.
+        Returns True when the match ended during the recovery."""
+        if not poss_result.events:
+            return False
+        last_evt = poss_result.events[-1]
+        if last_evt.event_type in (EventType.CLEARANCE, EventType.BLOCK):
+            return False
+        ctx_x = last_evt.end_x if last_evt.end_x is not None else getattr(last_evt, "location_x", None)
+        ctx_y = last_evt.end_y if last_evt.end_y is not None else getattr(last_evt, "location_y", None)
+        if ctx_x is None:
+            return False
+        deep_zone = ctx_x > 70.0 if attacks_right else ctx_x < 35.0
+        if not deep_zone:
+            return False
+        danger = self.threat.danger_at(defending_team)
+        recovery_prob = 0.22 + min(0.20, danger / 250.0)
+        if random.random() >= recovery_prob:
+            return False
+        clearance_w = 0.70 + danger / 400.0
+        action_type = random.choices(
+            ["clearance", "block", "tackle"],
+            weights=[clearance_w, 0.16, 0.12],
+        )[0]
+        own_goal_x = 105.0 if attacks_right else 0.0
+        from event_chain import ChainDispatcher
+        def_result = ChainDispatcher.defensive_action(
+            minute, defending_team, attacking_team,
+            def_players, att_players, self.state, action_type,
+            context_x=ctx_x, context_y=ctx_y,
+            attacks_right=attacks_right,
+            danger_level=danger,
+            ball_aerial=self._infer_aerial_ball(poss_result.events, last_evt),
+            own_goal_x=own_goal_x,
+            position_engine=self.position_engine,
+            ball_z=self._infer_ball_height(poss_result.events, last_evt),
+            defender_facing_x=self._defender_facing_at(
+                defending_team, ctx_x, ctx_y, own_goal_x)[0],
+            defender_facing_y=self._defender_facing_at(
+                defending_team, ctx_x, ctx_y, own_goal_x)[1],
+            opponent_distance=self._contest_distance(
+                defending_team, attacking_team, ctx_x, ctx_y),
+            stamina=def_avg_stamina,
+            referee_strictness=self.config.referee_strictness,
+        )
+        return self._absorb_chain(def_result, minute)
 
     def _infer_aerial_ball(self, events, last_evt) -> bool:
         """
@@ -2312,6 +2629,24 @@ class MatchEngine:
             else:
                 self.state.pending_corners_away += 1
 
+        # Checkpoint X — penalty causality: a foul a defending team committed
+        # inside its OWN box is a spot-kick offence. The fouling team's box
+        # foul means the FOULED side takes the kick, so we queue the fouled
+        # team. The PENALTY_WON event's `.team` is the fouled (attacking)
+        # side. This converts a won penalty into an ACTUAL spot-kick sequence
+        # rather than leaving it as a dangling one-off timeline event.
+        if chain_result.penalty_won:
+            _fouled = ""
+            for _ev in chain_result.events:
+                if _ev.event_type == EventType.PENALTY_WON:
+                    _fouled = _ev.team
+                    break
+            if _fouled:
+                if _fouled == self.config.home_team:
+                    self.state.pending_penalty_home += 1
+                else:
+                    self.state.pending_penalty_away += 1
+
         # Checkpoint 8 — restart causality: goal kicks and throw-ins
         # When a chain reports restart_required, queue the actual restart
         # chain (in _simulate_minute) rather than emitting a stub event.
@@ -2392,6 +2727,10 @@ class MatchEngine:
                 # Set up Kickoff for conceding team
                 conceding_team = self.config.away_team if chain_result.goal_team == self.config.home_team else self.config.home_team
                 self.state.pending_kickoff_for = conceding_team
+                # Realism: snap both teams back to their halves so the restart
+                # begins from clean defensive shapes rather than a scrambled
+                # goal-mouth tail.
+                self._reset_positions_to_halves()
                 # Checkpoint 9 — the threat was realised: the conceding team's
                 # danger PEAKS (a goal came from it), then resets at kickoff.
                 self.threat.on_goal(conceding_team, minute)
@@ -2469,20 +2808,23 @@ class MatchEngine:
                         if not self.quiet:
                             print(f"  🟥 RED CARD! {minute}' — {player_name} ({card_team}) SENT OFF")
 
+                    # Credit minutes up to the sending-off BEFORE removal —
+                    # the final-whistle pass only covers players still in the
+                    # active pools, so skipping this leaves the red-carded
+                    # player at minutes_played=0 and breaks every per-90 stat.
+                    for _p in self.active_players.get(card_team, []):
+                        if getattr(_p, "name", "") == player_name and hasattr(_p, "dna"):
+                            _p.dna.minutes_played = minute
+
                     if card_team == self.config.home_team:
                         self.state.home_red_cards += 1
-                        # Remove player from home active pool
-                        self.active_players[card_team] = [
-                            p for p in self.active_players.get(card_team, [])
-                            if p.name != player_name
-                        ]
                     else:
                         self.state.away_red_cards += 1
-                        # Remove player from away active pool
-                        self.active_players[card_team] = [
-                            p for p in self.active_players.get(card_team, [])
-                            if p.name != player_name
-                        ]
+                    # Remove player from the active pool
+                    self.active_players[card_team] = [
+                        p for p in self.active_players.get(card_team, [])
+                        if p.name != player_name
+                    ]
 
                     self.state.sent_off_players.append(player_name)
                     self.state.booked_players.pop(player_name, None)  # Clear booking record
@@ -2774,7 +3116,15 @@ class MatchEngine:
             SituationType.CORNER:           5,
             SituationType.DIRECT_FREEKICK:  9,
             SituationType.CROSSED_FREEKICK: 8,
-            SituationType.PENALTY:          5,
+            # NOTE: SituationType.PENALTY is intentionally ABSENT from this
+            # weights table. A penalty is NOT a generic shot situation — it is
+            # always the consequence of a defending-team foul inside its own
+            # box, which the DisciplineChain reports via `box_conviction` and
+            # queues through `pending_penalty_*`. Leaving PENALTY here generated
+            # "phantom" penalty kicks out of ordinary attacking moves (a kick
+            # nobody fouled for), inflating counts and double-charging the
+            # conceding defence. Penalties are now produced exclusively by the
+            # box-foul conviction path below.
         }
 
         # Resolve style — profile may be EffectiveTactics (no .style attr) or TeamProfile

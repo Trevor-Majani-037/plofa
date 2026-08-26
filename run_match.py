@@ -54,18 +54,20 @@ SOUL_PLAYERS = {
         )
     ),
 
+
     # ── Add other soul players below as the season progresses ──
-    # "Van Der Berg": PlayerSoul(
-    #     player_name="Van Der Berg",
-    #     archetype=SoulArchetype.DEFENSIVE_PURIST,
-    #     pillars=GreatnessPillars(hardwork=0.91, talent=0.93, luck=0.82)
-    # ),
+    "Luca Ferrini": PlayerSoul(
+        player_name="Luca Ferrini",
+        archetype=SoulArchetype.MIDFIELD_PHILOSOPHER,
+        pillars=GreatnessPillars(hardwork=0.91, talent=0.93, luck=0.82)
+    ),
     #
-    # "Kwame Asante": PlayerSoul(
-    #     player_name="Kwame Asante",
-    #     archetype=SoulArchetype.CREATIVE_ORACLE,
-    #     pillars=GreatnessPillars(hardwork=0.88, talent=0.90, luck=0.78)
-    # ),
+    "Kwame Asante": PlayerSoul(
+        player_name="Kwame Asante",
+        archetype=SoulArchetype.CREATIVE_ORACLE,
+        pillars=GreatnessPillars(hardwork=0.88, talent=0.90, luck=0.78)
+    ),
+
 }
 
 
@@ -346,20 +348,43 @@ def run():
     )
     sub_controller.MAX_SUBS = MAX_SUBS
 
-    # Register pre-planned tactical sub minutes
-    # Format: player_name_going_OFF → minute
-    # The controller reads sub_in_minute from bench players directly
-    home_tactical = {
-        p.name: p.sub_in_minute
-        for p in home_squad["substitutes"]
-        if getattr(p, "sub_in_minute", None)
-    }
-    away_tactical = {
-        p.name: p.sub_in_minute
-        for p in away_squad["substitutes"]
-        if getattr(p, "sub_in_minute", None)
-    }
-    # sub_controller uses bench sub_in_minute directly — no extra registration needed
+    # Register pre-planned tactical sub minutes.
+    # Format: {player_OFF_name: minute_they_come_off}
+    # Built from starters' sub_out_minute and from bench sub_in_minute
+    # (inferring the player going off by finding a starter in the same
+    # position group who doesn't already have a sub scheduled).
+    tactical_schedule = {}
+    for p in home_squad["starters"] + away_squad["starters"]:
+        if getattr(p, "sub_out_minute", None):
+            tactical_schedule[p.name] = p.sub_out_minute
+    for bench, starters in [
+        (home_squad["substitutes"], home_squad["starters"]),
+        (away_squad["substitutes"], away_squad["starters"]),
+    ]:
+        for sub_p in bench:
+            sm = getattr(sub_p, "sub_in_minute", None)
+            if sm is None and hasattr(sub_p, "dna"):
+                sm = getattr(sub_p.dna, "sub_in_minute", None)
+            if not sm:
+                continue
+            sub_pos = getattr(sub_p, "position",
+                              getattr(getattr(sub_p, "dna", None), "position", "CM"))
+            adj = {
+                "ST": ["CF", "LW", "RW", "CAM"], "CF": ["ST", "CAM", "LW", "RW"],
+                "LW": ["RW", "CAM", "ST", "LB"], "RW": ["LW", "CAM", "ST", "RB"],
+                "CAM": ["CM", "LW", "RW", "ST"], "CM": ["CAM", "CDM", "LW", "RW"],
+                "CDM": ["CM", "CB"], "LB": ["RB", "CB", "LW"],
+                "RB": ["LB", "CB", "RW"], "CB": ["CDM", "LB", "RB"], "GK": ["GK"],
+            }.get(sub_pos, [])
+            candidates = [
+                s for s in starters
+                if getattr(s, "position",
+                           getattr(getattr(s, "dna", None), "position", "CM")) in ([sub_pos] + adj)
+                and s.name not in tactical_schedule
+            ]
+            if candidates:
+                tactical_schedule[candidates[0].name] = sm
+    sub_controller.register_tactical_schedule(tactical_schedule)
 
     # ── Run simulation ────────────────────────────────────────
     engine = MatchEngine(config, HOME_STYLE, AWAY_STYLE)

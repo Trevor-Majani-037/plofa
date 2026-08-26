@@ -39,6 +39,7 @@ import numpy as np
 from scipy.stats import poisson as scipy_poisson
 import pandas as pd
 import matplotlib
+from openpyxl.styles import Font
 
 # Advanced valuation metrics
 from advanced_valuation import (
@@ -60,6 +61,7 @@ from match_engine import MatchEvent, EventType, SituationType, MatchResult, Matc
 from player_dna import PlayerProfile
 from player_maps import plot_player_dashboard
 from pass_network import PassMatrix, ChanceMatrix
+from opta_stats import compute as compute_opta_stats
 
 
 # ─────────────────────────────────────────────
@@ -97,17 +99,40 @@ class PLOFAStyle:
         """Apply PLOFA dark theme to matplotlib."""
         plt.rcParams.update({
             "figure.facecolor":  PLOFAStyle.BG_DARK,
-            "axes.facecolor":    PLOFAStyle.BG_PANEL,
+            "axes.facecolor":    PLOFAStyle.BG_CARD,
             "axes.edgecolor":    PLOFAStyle.TEXT_MUTED,
             "axes.labelcolor":   PLOFAStyle.TEXT_PRIMARY,
-            "text.color":        PLOFAStyle.TEXT_PRIMARY,
             "xtick.color":       PLOFAStyle.TEXT_MUTED,
             "ytick.color":       PLOFAStyle.TEXT_MUTED,
-            "grid.color":        "#2A2A2A",
-            "grid.alpha":        0.5,
-            "font.family":       "DejaVu Sans",
-            "axes.titlecolor":   PLOFAStyle.TEXT_PRIMARY,
+            "text.color":        PLOFAStyle.TEXT_PRIMARY,
+            "font.size":         10,
+            "font.family":       "Consolas",
         })
+
+
+def _add_attacking_direction(ax, team: str, config, is_half: bool = False):
+    is_home = (team == config.home_team)
+    if is_half:
+        ax.annotate(
+            "Attacking ↑",
+            xy=(112, 28), xytext=(112, 38),
+            fontsize=8, color="white", ha="center", va="center",
+            arrowprops=dict(arrowstyle="->", color="white", lw=1.5),
+            zorder=10,
+        )
+    else:
+        direction = 1.0 if is_home else -1.0
+        label = "Attacking →" if is_home else "← Attacking"
+        arrow_x = 18.0 if is_home else 102.0
+        ax.annotate(
+            label,
+            xy=(arrow_x + 22 * direction, 4.0),
+            xytext=(arrow_x, 4.0),
+            fontsize=8, color="white", ha="center", va="center",
+            arrowprops=dict(arrowstyle="->", color="white", lw=1.5),
+            zorder=10,
+        )
+
 
 
 # ─────────────────────────────────────────────
@@ -335,6 +360,12 @@ class StatAccumulator:
             if cc_stats:
                 s.update(cc_stats)
 
+        # Opta confirmed stats — pressed sequences, PPDA, carry chains,
+        # dangerous possessions, shot-ending carries, chance-creating carries
+        # with true locations, carry directness, players per possession.
+        self._opta_stats = compute_opta_stats(self.result)
+        self._apply_opta_stats()
+
         # Count off-ball runs from position_log
         self._count_off_ball_runs()
 
@@ -400,7 +431,7 @@ class StatAccumulator:
             "specialties": ", ".join(p.dna.specialties),
             "preferred_foot": p.dna.preferred_foot,
             "is_set_piece_taker": p.dna.is_set_piece_taker,
-            "sub_in":  p.sub_in_minute,
+            "sub_in":  p.sub_in_minute if getattr(p, "_entered_pitch", False) else None,
             "sub_out": p.sub_out_minute,
             "soul_archetype": p.dna.soul.profile.label if p.dna.soul else "",
             "soul_tier": p.dna.soul.tier if p.dna.soul else "",
@@ -516,6 +547,23 @@ class StatAccumulator:
             "deep_completions": 0, "progressive_pass_distance": 0.0,
             "xT": 0.0, "gpa": 0.0, "pva": 0.0, "epa": 0.0,
 
+            # Opta confirmed stats (Checkpoint 28)
+            "pressed_sequences": 0,
+            "ppda": 0.0,
+            "shot_ending_carries": 0,
+            "goal_ending_carries": 0,
+            "chance_creating_carries": 0,
+            "assist_carries": 0,
+            "carry_directness": 0.0,
+            "carry_directness_sum": 0.0,
+            "carry_directness_count": 0,
+            "carry_chains": 0,
+            "ball_progression_chains": 0,
+            "dangerous_possessions": 0,
+            "players_per_possession": 0.0,
+            "total_sequences": 0,
+            "carry_creation_log": [],
+
             # Errors → shot/goal chains (opta_analytics)
             "errors": 0, "errors_leading_to_shot": 0, "errors_leading_to_goal": 0,
 
@@ -575,8 +623,8 @@ class StatAccumulator:
             self._add_xg(actor, e.xg, e.situation)
             is_pen = e.situation == SituationType.PENALTY
             is_header = e.body_part == "head"
-            is_left_foot = e.body_part == "left"
-            is_right_foot = e.body_part == "right"
+            is_left_foot = e.body_part == "left_foot"
+            is_right_foot = e.body_part == "right_foot"
             if is_pen:
                 actor["pen_goals"] += 1
                 actor["xg_penalty"] += e.xg
@@ -947,7 +995,7 @@ class StatAccumulator:
                     actor["longest_progressive_carry"] = dist
             x = e.location_x or 50
             is_home = self._is_home_player(actor, e)
-            if x < 52:
+            if (x < 52.0) if is_home else (x > 52.0):
                 actor["carries_own_half"] += 1
             else:
                 actor["carries_opp_half"] += 1
@@ -1029,16 +1077,19 @@ class StatAccumulator:
             actor["dribbled_past"] += 1
 
         elif e.event_type == EventType.INTERCEPTION:
-            actor["interceptions"] += 1
-            actor["possession_won"] += 1
-            if e.location_x is not None:
-                is_home = self._is_home_player(actor, e)
-                if self._own_third(e.location_x, is_home):
-                    actor["interceptions_def_third"] += 1
-                elif self._mid_third(e.location_x, is_home):
-                    actor["interceptions_mid_third"] += 1
-                else:
-                    actor["interceptions_att_third"] += 1
+            if not e.outcome:
+                actor["possession_lost"] += 1
+            else:
+                actor["interceptions"] += 1
+                actor["possession_won"] += 1
+                if e.location_x is not None:
+                    is_home = self._is_home_player(actor, e)
+                    if self._own_third(e.location_x, is_home):
+                        actor["interceptions_def_third"] += 1
+                    elif self._mid_third(e.location_x, is_home):
+                        actor["interceptions_mid_third"] += 1
+                    else:
+                        actor["interceptions_att_third"] += 1
 
         elif e.event_type == EventType.CLEARANCE:
             actor["clearances"] += 1
@@ -1199,6 +1250,56 @@ class StatAccumulator:
                             self.stats[name]["runs_without_ball"] += 1
                     prev_positions[name] = (x, y)
 
+    def _apply_opta_stats(self):
+        """Merge OptaStatsEngine results into per-player stat dicts."""
+        opta = getattr(self, "_opta_stats", None)
+        if opta is None:
+            return
+
+        # Team-level values → propagate to every player on that team
+        team_defaults = {
+            "pressed_sequences": 0,
+            "ppda": 0.0,
+            "carry_chains": 0,
+            "ball_progression_chains": 0,
+            "dangerous_possessions": 0,
+            "players_per_possession": 0.0,
+            "total_sequences": 0,
+        }
+        for team, tstats in opta.team.items():
+            for key, default in team_defaults.items():
+                val = tstats.get(key, default)
+                for name, s in self.stats.items():
+                    if s["team"] == team:
+                        s[key] = val
+
+        # Carry directness averages
+        for team, pstats in opta.player.items():
+            for player, pdata in pstats.items():
+                if player not in self.stats:
+                    continue
+                s = self.stats[player]
+                s["shot_ending_carries"] = pdata.get("shot_ending_carries", 0)
+                s["goal_ending_carries"] = pdata.get("goal_ending_carries", 0)
+                s["chance_creating_carries"] = pdata.get("chance_creating_carries", 0)
+                s["assist_carries"] = pdata.get("assist_carries", 0)
+                s["total_carries"] = pdata.get("total_carries", 0)
+                s["carry_directness_sum"] = pdata.get("carry_directness", 0.0)
+                s["carry_directness_count"] = pdata.get("carry_directness_count", 0)
+                if s["carry_directness_count"] > 0:
+                    s["carry_directness"] = round(
+                        s["carry_directness_sum"] / s["carry_directness_count"], 3
+                    )
+                else:
+                    s["carry_directness"] = 0.0
+
+        # Carry creation log (true locations) — store on each participant
+        for entry in opta.carry_creation_log:
+            player = entry.get("player")
+            team = entry.get("team")
+            if player in self.stats and self.stats[player]["team"] == team:
+                self.stats[player]["carry_creation_log"].append(entry)
+
     def _finalise(self):
         """Post-process derived stats after all events are accumulated."""
         config = self.result.config
@@ -1258,7 +1359,7 @@ class StatAccumulator:
                 xgot = round(self.team_xgot.get(team, 0.0), 3)
                 s["xgot_faced"] = xgot
                 prevented = round(xgot - goals_conceded, 3)
-                s["goals_prevented"] = max(0.0, prevented)
+                s["goals_prevented"] = prevented
 
             # Pass accuracy — DERIVED from the simulated events only.
             att = s["passes_attempted"]
@@ -1853,6 +1954,8 @@ class PLOFAExporter:
         print(f"\n📦 PLOFA Exporter — {self.config.home_team} vs {self.config.away_team}")
         print(f"   Season {self.config.season} | Matchday {self.config.matchday}")
         print(f"   Output: {base_path}/\n")
+
+        PLOFAStyle.apply_dark_style()
 
         # Print match financials
         fin = self.accumulator.match_financials
@@ -2470,7 +2573,8 @@ class PLOFAExporter:
                 plot_player_dashboard(
                     self.result.timeline, name, s["team"], s["position"],
                     os.path.join(folder, f"{safe_name}_dashboard.png"),
-                    team_color=color, ledger=ledger
+                    team_color=color, ledger=ledger,
+                    home_team=self.config.home_team
                 )
 
     def export_excel(self, filepath: str, include_third_progression: bool = True, include_footed_events: bool = True):
@@ -2888,6 +2992,24 @@ class PLOFAExporter:
                     if not player_third_df.empty:
                         player_third_df.to_excel(writer, sheet_name="Third Entries (Player)", index=False)
 
+            from openpyxl import load_workbook
+            wb = load_workbook(tmp_path)
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                for row in ws.iter_rows():
+                    for cell in row:
+                        f = cell.font
+                        cell.font = Font(
+                            name="Consolas",
+                            bold=f.bold,
+                            italic=f.italic,
+                            underline=f.underline,
+                            strike=f.strike,
+                            color=f.color,
+                            size=f.size,
+                        )
+            wb.save(tmp_path)
+
             os.replace(tmp_path, filepath)
             print(f"   📊 Excel  → {filepath}")
         except PermissionError:
@@ -3003,6 +3125,7 @@ class PLOFAExporter:
                 for name, s in self.accumulator.stats.items()
             },
             "opta": self._opta_analytics_json(),
+            "opta_stats": self._opta_stats_json(),
             "pressing": {
                 "teams": [
                     {"team": team, **metrics}
@@ -3111,6 +3234,30 @@ class PLOFAExporter:
             },
         }
 
+    def _opta_stats_json(self) -> dict:
+        opta = getattr(self.accumulator, "_opta_stats", None)
+        if opta is None:
+            return {}
+        return {
+            "teams": {
+                team: {
+                    k: v for k, v in stats.items()
+                    if k != "carry_creation_log"
+                }
+                for team, stats in opta.team.items()
+            },
+            "players": {
+                player: {
+                    k: v for k, v in stats.items()
+                    if k != "carry_creation_log"
+                }
+                for team_stats in opta.player.values()
+                for player, stats in team_stats.items()
+            },
+            "carry_creation_log": opta.carry_creation_log,
+            "sequences": opta.sequence_rows,
+        }
+
     # ─────────────────────────────────────────
     # VISUALIZATIONS
     # ─────────────────────────────────────────
@@ -3143,6 +3290,7 @@ class PLOFAExporter:
                 line_zorder=2,
             )
             pitch.draw(ax=ax)
+            _add_attacking_direction(ax, team, self.config, is_half=True)
             ax.set_facecolor(PLOFAStyle.BG_DARK)
 
             # Collect shots for this team
@@ -3302,6 +3450,7 @@ class PLOFAExporter:
                 line_color=PLOFAStyle.PITCH_LINE,
             )
             pitch.draw(ax=ax)
+            _add_attacking_direction(ax, team, self.config, is_half=False)
 
             team_stats = {
                 n: s for n, s in self.accumulator.stats.items()
@@ -3683,6 +3832,7 @@ class PLOFAExporter:
                     line_color=PLOFAStyle.PITCH_LINE,
                 )
                 pitch.draw(ax=ax)
+                _add_attacking_direction(ax, team, self.config, is_half=False)
 
                 if row_idx < len(players):
                     pname, _ = players[row_idx]
@@ -3730,6 +3880,7 @@ class PLOFAExporter:
                           pitch_color=PLOFAStyle.PITCH_GREEN,
                           line_color=PLOFAStyle.PITCH_LINE)
             pitch.draw(ax=ax)
+            _add_attacking_direction(ax, team, self.config, is_half=False)
 
             # Collect press locations for this team
             press_locs = []

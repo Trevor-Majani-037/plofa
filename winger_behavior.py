@@ -124,7 +124,13 @@ FLANK_DRIFT_LIMIT_M = 4.0
 # the shape, so "am I still on my flank" must be answered relative to the
 # formation anchor, never the position name. The name-based
 # flank_channel() (whole left/right half) is only a frame fallback.
-FLANK_CHANNEL_HALF_WIDTH_M = 12.0
+#
+# Checkpoint 31: tightened 12.0 -> 7.0. At 12m a winger standing 12m infield
+# of his anchor counted as "in the channel" and every carry bias went silent,
+# so the equilibrium settled around |y-centre| ≈ 15-17 — classic wide-
+# midfielder width. Real touchline wingers live 3-8m off their anchor;
+# beyond 7m the carry steering must re-assert the touchline.
+FLANK_CHANNEL_HALF_WIDTH_M = 7.0
 
 # ── HALF-SPACE GEOMETRY ──────────────────────────────────────────
 # The half-space is the corridor between a winger's flank channel and
@@ -395,14 +401,22 @@ class WingerSpatialProfile:
         formation-aware; when omitted, the name-based touchline_anchor_y
         is used (correct for the attacks-right frame).
 
-        SECONDARY signal (dormant until pitch_control.py is wired into
-        match_engine.py's per-minute loop): if a PitchControlResult is
-        supplied, cells in the corridor that are opponent-controlled
-        further suppress the score, cells that are neutral/attacking-team
-        controlled corroborate openness. Safe no-op when not supplied.
+        SECONDARY signal: pitch control. When explicit
+        pitch_control_result/field args are given, uses them; otherwise
+        falls back to the position engine's cached
+        update_pitch_control() snapshot. Cells opponent-controlled
+        suppress the score, neutral/attacking-controlled corroborate
+        openness. Safe no-op when neither source has data.
         """
         if position_engine is None or not defenders:
             return 0.5   # unknown — neutral, neither open nor closed
+
+        # Fall back to the engine's cached motion-aware snapshot when the
+        # caller didn't supply one explicitly (Checkpoint 26 wiring).
+        if pitch_control_result is None:
+            pitch_control_result = getattr(position_engine, "pitch_control_result", None)
+        if pitch_control_field is None:
+            pitch_control_field = getattr(position_engine, "pitch_control_field", None)
 
         # Corridor: a band running from this winger's flank anchor
         # inward by HALF_SPACE_WIDTH_M, spanning the attacking third.

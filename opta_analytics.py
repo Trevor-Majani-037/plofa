@@ -188,6 +188,7 @@ class OptaAnalytics:
         self._dribbler_tackles: Dict[str, Dict] = {}
         self._packing: Dict[str, Dict] = {}
         self._game_state_mins: Dict[str, Dict] = {}
+        self._physics_stats: Dict[str, Dict] = {}     # physics-derived distance/sprint data
 
         # Per-minute team position index (for opponent-geometry on each event)
         self._positions_by_minute: Dict[int, Dict[str, List[Dict]]] = {}
@@ -515,6 +516,10 @@ class OptaAnalytics:
                     drift_dist = row.get("distance_drift", 0.0)
                     touches = row.get("touches", 0)
                     peak_jump = row.get("peak_touch_jump", 0.0)
+                    physics_dist = row.get("physics_distance_m", 0.0)
+                    physics_sprints = row.get("physics_sprint_count", 0.0)
+                    physics_high_sprints = row.get("physics_high_speed_sprint_count", 0.0)
+                    physics_top_speed = row.get("physics_top_speed_mps", 0.0)
 
                     stand, walk, jog, run, sprint = self._activity_profile(name)
                     secs = {
@@ -526,24 +531,43 @@ class OptaAnalytics:
 
                     real_dist = touch_dist + drift_dist
 
-                    if peak_jump >= SPRINT_JUMP_THRESHOLD:
-                        sprint_secs = min(8.0, 2.0 + (peak_jump - SPRINT_JUMP_THRESHOLD) * 0.15)
-                        secs["sprinting"] = min(8.0, secs["sprinting"] + sprint_secs)
-                    elif peak_jump >= RUN_JUMP_THRESHOLD:
-                        run_secs = min(12.0, 2.0 + (peak_jump - RUN_JUMP_THRESHOLD) * 0.1)
-                        secs["running"] = min(28.0, secs["running"] + run_secs)
+                    # Physics integration: the trace only captures movement
+                    # during brief action windows, so it is NOT a full-minute
+                    # distance replacement. Instead:
+                    #   - baseline_dist remains the authoritative total distance
+                    #   - physics trace corrects the speed-band split and adds
+                    #     high-intensity distance that the baseline undercounts.
+                    physics_dist_additive = 0.0
+                    if physics_dist > 0:
+                        physics_dist_additive = physics_dist * 0.45
+                        if physics_top_speed > 0:
+                            sprint_secs = min(8.0, physics_sprints * 6.0)
+                            secs["sprinting"] = min(8.0, sprint_secs)
+                            high_sprint_secs = min(6.0, physics_high_sprints * 6.0)
+                            secs["running"] = min(28.0, secs["running"] + high_sprint_secs)
+                            secs["running"] = max(secs["running"], secs["sprinting"] * 0.5)
+                        if touches > 0:
+                            secs["jogging"] = min(20.0, secs["jogging"] + touches * 0.3)
+                            secs["running"] = min(28.0, secs["running"] + touches * 0.5)
+                    else:
+                        if peak_jump >= SPRINT_JUMP_THRESHOLD:
+                            sprint_secs = min(8.0, 2.0 + (peak_jump - SPRINT_JUMP_THRESHOLD) * 0.15)
+                            secs["sprinting"] = min(8.0, secs["sprinting"] + sprint_secs)
+                        elif peak_jump >= RUN_JUMP_THRESHOLD:
+                            run_secs = min(12.0, 2.0 + (peak_jump - RUN_JUMP_THRESHOLD) * 0.1)
+                            secs["running"] = min(28.0, secs["running"] + run_secs)
 
-                    if touches > 0:
-                        touch_run = min(10.0, touches * 0.8)
-                        secs["running"] = min(28.0, secs["running"] + touch_run)
-                        secs["jogging"] = min(20.0, secs["jogging"] + touches * 0.3)
+                        if touches > 0:
+                            touch_run = min(10.0, touches * 0.8)
+                            secs["running"] = min(28.0, secs["running"] + touch_run)
+                            secs["jogging"] = min(20.0, secs["jogging"] + touches * 0.3)
 
-                    if real_dist > baseline_dist * 1.15:
-                        excess = real_dist - baseline_dist
-                        run_boost = min(14.0, excess * 0.45)
-                        sprint_boost = min(6.0, excess * 0.15)
-                        secs["running"] = min(28.0, secs["running"] + run_boost)
-                        secs["sprinting"] = min(8.0, secs["sprinting"] + sprint_boost)
+                        if real_dist > baseline_dist * 1.15:
+                            excess = real_dist - baseline_dist
+                            run_boost = min(14.0, excess * 0.45)
+                            sprint_boost = min(6.0, excess * 0.15)
+                            secs["running"] = min(28.0, secs["running"] + run_boost)
+                            secs["sprinting"] = min(8.0, secs["sprinting"] + sprint_boost)
 
                     total = sum(secs.values())
                     diff = total - 60.0
@@ -562,7 +586,28 @@ class OptaAnalytics:
                     acc = activity.setdefault(name, {b: 0.0 for b in ACTIVITY_BUCKETS})
                     for b in ACTIVITY_BUCKETS:
                         acc[b] += secs[b]
-                    distances[name] = distances.get(name, 0.0) + baseline_dist
+                    distances[name] = distances.get(name, 0.0) + baseline_dist + physics_dist_additive
+
+                    # Collect physics-derived stats when available.
+                    # IMPORTANT: these MUST be ACCUMULATED across every minute of
+                    # the match (+=), not overwritten. Each position_log frame only
+                    # carries this single minute's physics trace, so assigning would
+                    # leave _physics_stats holding only the LAST minute's values —
+                    # which is exactly what collapsed some players' runs/sprints to
+                    # 0/1 (a player with a single sparse sprint in the final recorded
+                    # minute ended up with sprint_count=1 for the whole match).
+                    # Accumulate here exactly like _activity / _distances above.
+                    if physics_dist > 0:
+                        acc_physics = self._physics_stats.setdefault(name, {
+                            "distance_m": 0.0,
+                            "sprint_count": 0.0,
+                            "high_speed_sprint_count": 0.0,
+                            "top_speed_mps": 0.0,
+                        })
+                        acc_physics["distance_m"] += physics_dist
+                        acc_physics["sprint_count"] += physics_sprints
+                        acc_physics["high_speed_sprint_count"] += physics_high_sprints
+                        acc_physics["top_speed_mps"] = max(acc_physics["top_speed_mps"], physics_top_speed)
 
                     seg = self._minute_events.get(name, {}).get(m, [])
                     ball_work = self._minute_ball_work.get(name, {}).get(m, 0.0)
@@ -742,17 +787,47 @@ class OptaAnalytics:
                 pace = getattr(pace, "pace", 50.0) or 50.0
             top_speed = 26.0 + pace * 0.13
 
+            sprints = run["sprints"]
+            high_speed_sprints = run["high_speed_sprints"]
+            runs_val = run["runs"]
+            baseline_sprints = sprints
+            baseline_high = high_speed_sprints
+            baseline_runs = runs_val
+
+            # Physics integration: reconcile the physics trace with the calibrated
+            # baseline. The trace is sparse (it only fires during possession
+            # episodes), so it systematically UNDER-counts full-match activity —
+            # therefore it must NEVER REPLACE the baseline, which was the bug that
+            # collapsed some players' sprints to 1 and runs to 0/1. Instead we
+            # take the max: physics can only RAISE a count above the baseline
+            # (when the trace captured a genuinely high-intensity performance for
+            # that player) but it can never drag it below the model's full-match
+            # estimate. Top speed, by contrast, is a single max value and is
+            # reliable to read straight from the trace.
+            physics = self._physics_stats.get(name)
+            if physics:
+                if physics["sprint_count"] > 0 or physics["high_speed_sprint_count"] > 0:
+                    sprints = max(baseline_sprints, int(physics["sprint_count"]))
+                    high_speed_sprints = max(baseline_high, int(physics["high_speed_sprint_count"]))
+                    runs_val = max(baseline_runs, int(physics["sprint_count"] + physics["high_speed_sprint_count"] * 0.5))
+                if physics.get("top_speed_mps", 0.0) > 0:
+                    top_speed = physics["top_speed_mps"]
+
             self.player_data[name] = {
                 "standing_seconds": round(act["standing"], 1),
                 "walking_seconds": round(act["walking"], 1),
                 "jogging_seconds": round(act["jogging"], 1),
                 "running_seconds": round(act["running"], 1),
                 "sprinting_seconds": round(act["sprinting"], 1),
-                "distance_covered": round(dist / 1000.0, 2),   # km
-                "runs": run["runs"],
-                "sprints": run["sprints"],
-                "high_speed_sprints": run["high_speed_sprints"],
+                "distance_covered": round(dist / 1000.0, 2),
+                "runs": runs_val,
+                "sprints": sprints,
+                "high_speed_sprints": high_speed_sprints,
                 "top_speed": round(top_speed, 1),
+                "physics_distance_m": round(physics.get("distance_m", 0.0), 2) if physics else 0.0,
+                "physics_sprint_count": round(physics.get("sprint_count", 0.0), 1) if physics else 0.0,
+                "physics_high_speed_sprint_count": round(physics.get("high_speed_sprint_count", 0.0), 1) if physics else 0.0,
+                "physics_top_speed_mps": round(physics.get("top_speed_mps", 0.0), 2) if physics else 0.0,
                 "errors": err["errors"],
                 "errors_leading_to_shot": err["errors_leading_to_shot"],
                 "errors_leading_to_goal": err["errors_leading_to_goal"],
