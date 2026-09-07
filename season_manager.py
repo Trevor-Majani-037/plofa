@@ -51,6 +51,7 @@ from match_engine import (
 )
 from squad_manager import SubstitutionController, AvailabilityChecker, AvailabilityStatus
 from exporter import PLOFAExporter
+from referee_pool import RefereeManager
 
 
 # ─────────────────────────────────────────────
@@ -156,7 +157,7 @@ class FixtureList:
 
     @classmethod
     def load(cls, path: str) -> "FixtureList":
-        with open(path) as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         return cls([Fixture.from_dict(d) for d in data])
 
@@ -278,16 +279,21 @@ class SeasonState:
         self.path = path
         self.players: Dict[str, Dict[str, Any]] = {}   # name -> state dict
         self.chemistry: Dict[str, Dict[str, Any]] = {}  # team -> chemistry dict
+        # League standings mutated by record_team_result -> feeds attendance
+        # performance modifier (see exporter.MatchFinancials).
+        # {team: {"w":, "d":, "l":, "gf":, "ga":, "pts":, "form": [W/D/L...]}}
+        self.standings: Dict[str, Dict[str, Any]] = {}
         self.load()
 
     def load(self):
         if not os.path.exists(self.path):
             return
         try:
-            with open(self.path, encoding="utf-8") as f:
+            with open(self.path, encoding="utf-8-sig") as f:
                 data = json.load(f)
             self.players = data.get("players", {})
             self.chemistry = data.get("chemistry", {})
+            self.standings = data.get("standings", {})
         except (json.JSONDecodeError, OSError) as e:
             # Corrupt/truncated state file (e.g. from a crash before the
             # atomic-save fix). Back it up so nothing is silently lost, then
@@ -302,6 +308,7 @@ class SeasonState:
                   f"Backed up to {backup}; starting fresh.")
             self.players = {}
             self.chemistry = {}
+            self.standings = {}
 
     def save(self):
         """Atomically persist season state.
@@ -311,18 +318,99 @@ class SeasonState:
         truncated or corrupt (the old in-place 'w' mode could and did).
         """
         data = {"season": self.season, "players": self.players,
-                "chemistry": self.chemistry}
+                "chemistry": self.chemistry, "standings": self.standings}
         tmp_path = f"{self.path}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         # os.replace is atomic on both Windows and POSIX.
         os.replace(tmp_path, self.path)
 
+    # ── League standings (feeds attendance performance modifier) ──
+    def _team_row(self, team: str) -> Dict[str, Any]:
+        row = self.standings.setdefault(
+            team,
+            {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0, "form": []},
+        )
+        return row
+
+    def record_team_result(self, home: str, away: str, hg: int, ag: int):
+        """Record a played fixture into the league standings."""
+        for team, gf, ga in ((home, hg, ag), (away, ag, hg)):
+            row = self._team_row(team)
+            row["gf"] += gf
+            row["ga"] += ga
+        h, a = self._team_row(home), self._team_row(away)
+        if hg > ag:
+            h["w"] += 1; h["pts"] += 3; h["form"].append("W")
+            a["l"] += 1; a["form"].append("L")
+        elif hg < ag:
+            a["w"] += 1; a["pts"] += 3; a["form"].append("W")
+            h["l"] += 1; h["form"].append("L")
+        else:
+            h["d"] += 1; a["d"] += 1
+            h["pts"] += 1; a["pts"] += 1
+            h["form"].append("D"); a["form"].append("D")
+        h["form"] = h["form"][-5:]
+        a["form"] = a["form"][-5:]
+
+    def standings_sorted(self) -> List[Dict[str, Any]]:
+        """Teams sorted by points then goal difference then goals for."""
+        rows = [
+            {
+                "team": team,
+                **row,
+                "played": row["w"] + row["d"] + row["l"],
+                "gd": row["gf"] - row["ga"],
+            }
+            for team, row in self.standings.items()
+        ]
+        rows.sort(key=lambda r: (r["pts"], r["gd"], r["gf"]), reverse=True)
+        return rows
+
+    def position_of(self, team: str) -> Optional[int]:
+        """1-based league position for a team (None if no games recorded)."""
+        for i, row in enumerate(self.standings_sorted(), 1):
+            if row["team"] == team:
+                return i
+        return None
+
+    def form_of(self, team: str) -> str:
+        """Last-5 form string like 'WWDLW' ('' if none)."""
+        row = self.standings.get(team)
+        return "".join(row["form"][-5:]) if row else ""
+
+    def standings_info(self) -> Dict[str, Dict[str, Any]]:
+        """Compact {team: {position, points, form}} for the attendance layer."""
+        out: Dict[str, Dict[str, Any]] = {}
+        for i, row in enumerate(self.standings_sorted(), 1):
+            out[row["team"]] = {
+                "position": i,
+                "points": row["pts"],
+                "played": row["played"],
+                "form": "".join(row["form"][-5:]),
+            }
+        return out
+
     @staticmethod
     def _recovery_days(injury_type: str) -> int:
         """Return random recovery days within the realistic range for this injury type."""
         lo, hi = INJURY_RECOVERY_DAYS.get(injury_type.lower(), DEFAULT_RECOVERY_RANGE)
         return random.randint(lo, hi)
+
+    # ── TEAM CHEMISTRY (persisted per team, evolves across the season) ──
+
+    def get_team_chemistry(self, team: str) -> "SquadChemistry":
+        """Load (or lazily create) a team's SquadChemistry from the persisted
+        season_state.chemistry store."""
+        from squad_chemistry import SquadChemistry
+        raw = self.chemistry.get(team)
+        if raw is not None:
+            return SquadChemistry.from_dict({**raw, "team_name": raw.get("team_name", team)})
+        return SquadChemistry(team_name=team)
+
+    def set_team_chemistry(self, team: str, chemistry: "SquadChemistry"):
+        """Persist a team's SquadChemistry into the season_state.chemistry store."""
+        self.chemistry[team] = chemistry.to_dict()
 
     # ── PLAYER STATE ──────────────────────────────────────────
 
@@ -374,7 +462,8 @@ class SeasonState:
                            yellow: bool = False, red: bool = False,
                            injured: bool = False, injury_type: str = "none",
                            matches_out: int = 0,
-                           match_date: Optional[date] = None):
+                           match_date: Optional[date] = None,
+                           assists: int = 0):
         """
         Records what happened FOR A PLAYER WHO ACTUALLY PLAYED this match:
         form, fatigue, season load, and any NEW card/injury picked up.
@@ -399,12 +488,22 @@ class SeasonState:
         s["recent_ratings"] = (s["recent_ratings"] + [rating])[-5:]
         s["recent_goals"] = (s["recent_goals"] + [goals])[-5:]
 
+        # Confidence update — must match PlayerFormState.update_after_match()
         if rating >= 7.5:
             s["confidence"] = min(100, s["confidence"] + 8)
         elif rating >= 7.0:
             s["confidence"] = min(100, s["confidence"] + 4)
-        elif rating < 5.5:
+        elif rating >= 6.5:
+            s["confidence"] = min(100, s["confidence"] + 1)
+        elif rating >= 6.0:
+            pass  # Neutral
+        elif rating >= 5.5:
+            s["confidence"] = max(0, s["confidence"] - 4)
+        else:
             s["confidence"] = max(0, s["confidence"] - 8)
+
+        # Bonus for goals/assists (matches in-memory logic)
+        s["confidence"] = min(100, s["confidence"] + goals * 3 + assists * 1.5)
 
         # Recovery between matches (assume ~6 days til next match)
         fatigue_now = 100.0 - ending_stamina
@@ -512,6 +611,142 @@ class SeasonState:
             return False
         avg = s["season_minutes"] / s["season_matches"]
         return avg >= minutes_threshold_per_game and s["fatigue_level"] > 55.0
+
+
+    # ─────────────────────────────────────────────
+    # PRE-MATCH FATIGUE BRIEFING
+    # ─────────────────────────────────────────────
+
+    def fatigue_briefing(self, players: List[PlayerProfile],
+                         match_date: Optional[date] = None) -> List[str]:
+        """
+        Build a human-readable pre-match fitness dashboard for a squad so the
+        manager can READ their own fatigue before picking a XI:
+
+            Name                Pos   Stamina       Fatigue  Load    Status
+            D. Kamara           ST    ██████████    6.0%    847m    ✓ Fresh
+            K. Boateng          CM    ██████░░░░   36.0%    912m    ⚠️ Gassed
+            R. Mensah           CB    ████░░░░░░   55.0%    968m    🔴 Danger zone
+
+          Tiers mirror the engine's degradation curve: >=90 full, 75-89
+          fading, 60-74 gassed, <60 red/injury zone. "Load" is average
+          minutes per match this season.
+        """
+        lines = []
+        rows = []
+        for p in players:
+            s = self.get_player_state(p.name)
+            fits, reason = self.is_available(p.name, match_date)
+            fatigue = float(s.get("fatigue_level", 0.0))
+            mins = int(s.get("season_minutes", 0))
+            apps = int(s.get("season_matches", 0))
+            load = mins / apps if apps else 0.0
+
+            # Show the TRUTH about this player's fatigue: the persisted
+            # projection of what they'll start with. The engine clamps this
+            # to a 70% floor in _apply_starting_stamina — that rubber-band
+            # hides real exhaustion, so when it kicks in we flag it in the
+            # status ("floored") instead of pretending the player is fine.
+            stamina = float(s.get("starting_stamina", 100.0))
+
+            if not fits:
+                status = "❌ OUT"
+            elif stamina >= 90:
+                status = "✓ Fresh"
+            elif stamina >= 75:
+                status = "~ Fading"
+            elif stamina >= 60:
+                status = "⚠️ Gassed"
+            else:
+                status = "🔴 Danger zone"
+
+            if fits and stamina < 70:
+                status += f" [floored→70%]"
+
+            rows.append({
+                "name": p.name, "pos": p.position, "stamina": stamina,
+                "fatigue": fatigue, "load": load, "status": status, "out": not fits,
+            })
+
+        if rows:
+            width = max(len(r["name"]) for r in rows) + 2
+            lines.append(f"{'Name':<{width}}{'Pos':<5}Stamina      |  Fatigue  Load   Status")
+            lines.append("─" * (width + 48))
+            for r in rows:
+                name = r["name"] if not r["out"] else f"{r['name']} (out)"
+                bar = self._stamina_bar(r["stamina"])
+                lines.append(
+                    f"{name:<{width}}{r['pos']:<5}{bar}  |  "
+                    f"{r['fatigue']:5.1f}%  {r['load']:5.0f}m   {r['status']}"
+                )
+
+            # Team-level readout
+            fit_rows = [r for r in rows if not r["out"]]
+            avg = sum(r["stamina"] for r in fit_rows) / len(fit_rows) if fit_rows else 0.0
+            gassed = [r for r in fit_rows if r["stamina"] < 60]
+            fading = [r for r in fit_rows if r["stamina"] < 75]
+            lines.append("─" * (width + 48))
+            lines.append(f"Average starting stamina: {avg:.1f}% "
+                         f"{'🟢 fresh' if avg >= 85 else '🟡 workable' if avg >= 70 else '🔴 fatigued'}")
+            if gassed:
+                names = ", ".join(f"{(r['name'].split()[-1])}" for r in gassed)
+                lines.append(f"⚠️  {len(gassed)} player(s) start below 60% — expect a "
+                             f"significant performance drop, plan subs ~min 55-65: {names}")
+            elif fading:
+                names = ", ".join(f"{(r['name'].split()[-1])}" for r in fading)
+                lines.append(f"~ {len(fading)} player(s) start below 75% — monitor "
+                             f"them, bench has the edge: {names}")
+
+            # Rotation suggestions from season load
+            rot = [r["name"] for r in rows
+                   if not r["out"] and self.rotation_flag(r["name"])]
+            if rot:
+                lines.append("💡 Rotation candidates (heavy load + fatigue): "
+                             + ", ".join(rot))
+        else:
+            lines.append("  (no players to report)")
+
+        return lines
+
+    @staticmethod
+    def _stamina_bar(stamina: float, width: int = 10) -> str:
+        blocks = int(round(max(0.0, min(100.0, stamina)) / 100.0 * width))
+        bar = "█" * blocks + "░" * (width - blocks)
+        if stamina >= 90:
+            return f"🟢{bar}"
+        if stamina >= 75:
+            return f"🟡{bar}"
+        if stamina >= 60:
+            return f"🟠{bar}"
+        return f"🔴{bar}"
+
+    def bench_readiness(self, bench: List[PlayerProfile],
+                        match_date: Optional[date] = None) -> str:
+        """One-line readout of the bench's fresh legs for rotation calls."""
+        if not bench:
+            return "  Bench: empty"
+        rows = []
+        for p in bench:
+            stamina = float(self.get_player_state(p.name).get("starting_stamina", 100.0))
+            fits, _ = self.is_available(p.name, match_date)
+            rows.append((stamina, fits))
+        fit = [s for s, isfit in rows if isfit]
+        avg = sum(fit) / len(fit) if fit else 0.0
+        count = len(fit)
+        fresh = sum(1 for s in fit if s >= 90)
+        ready = sum(1 for s in fit if 75 <= s < 90)
+        tag = "🟢" if avg >= 85 else "🟡" if avg >= 70 else "🔴"
+        return (f"  Bench: {count} fit, {fresh} fresh (>=90%), {ready} ready "
+                f"(75-89%), avg stamina {avg:.0f}% {tag}")
+
+    def print_fatigue_briefing(self, team: str, players: List[PlayerProfile],
+                               bench: Optional[List[PlayerProfile]] = None,
+                               match_date: Optional[date] = None) -> None:
+        print(f"\n  ⚡ {team} — Pre-Match Fitness Briefing")
+        for ln in self.fatigue_briefing(players, match_date):
+            print(f"  {ln}")
+        if bench is not None:
+            print(self.bench_readiness(bench, match_date))
 
 
 # ─────────────────────────────────────────────
@@ -627,8 +862,8 @@ class LeagueRunner:
         matchday: int,
         squads: Dict[str, Dict[str, List]],           # team -> {starters, substitutes}
         team_profiles: Dict[str, TeamProfile],
-        referee: str = "League Referee",
-        referee_strictness: float = 0.5,
+        referee: str = None,
+        referee_strictness: float = None,
         home_colors: Dict[str, str] = None,
         away_colors: Dict[str, str] = None,
         full_roster: Dict[str, List[str]] = None,
@@ -656,13 +891,37 @@ class LeagueRunner:
             print(f"  ⚠️  No fixtures found for matchday {matchday}.")
             return results
 
+        # If no referee is forced, auto-assign one per fixture using
+        # EPL-style rotation rules (see referee_pool.py).
+        ref_mgr = RefereeManager()
+        auto_refs = (referee is None)
+
+        # Manager bias layer: one ManagerProfile per club (auto-generated
+        # for promoted teams without a known manager).
+        from manager_profile import ManagerPool
+        style_lookup = {
+            name: tp.style.value for name, tp in team_profiles.items()
+        }
+        mgr_pool = ManagerPool(clubs=list(team_profiles.keys()),
+                               style_lookup=style_lookup)
+
         for fx in fixtures_today:
+
+            # Auto-assign a distinct referee for THIS fixture.
+            if auto_refs:
+                referee = ref_mgr.assign(matchday, fx.home_team, fx.away_team,
+                                         force_ref=None).name
+                ref_strict = ref_mgr.get_ref_by_name(referee).strictness
+            else:
+                ref_strict = referee_strictness if referee_strictness is not None else 0.5
             if fx.played:
                 continue
 
             home, away = fx.home_team, fx.away_team
             home_squad = squads[home]
             away_squad = squads[away]
+            home_mgr = mgr_pool.manager_for(home)
+            away_mgr = mgr_pool.manager_for(away)
 
             all_players = (home_squad["starters"] + home_squad["substitutes"] +
                            away_squad["starters"] + away_squad["substitutes"])
@@ -670,10 +929,19 @@ class LeagueRunner:
             for p in all_players:
                 starting_stamina[p.name] = self.state.apply_pre_match(p.dna, p.name)
 
+            # Pre-match fatigue briefing for BOTH benches — the manager reads
+            # their fatigue here, before kickoff, to judge start-or-rest.
+            self.state.print_fatigue_briefing(home, home_squad["starters"],
+                                              bench=home_squad["substitutes"],
+                                              match_date=fx.match_date)
+            self.state.print_fatigue_briefing(away, away_squad["starters"],
+                                              bench=away_squad["substitutes"],
+                                              match_date=fx.match_date)
+
             config = MatchConfig(
                 home_team=home, away_team=away, match_date=fx.match_date,
                 matchday=matchday, season=self.season, competition="PLOFA",
-                venue=fx.venue, referee=referee, referee_strictness=referee_strictness,
+                venue=fx.venue, referee=referee, referee_strictness=ref_strict,
                 is_derby=fx.is_derby,
             )
 
@@ -689,7 +957,21 @@ class LeagueRunner:
                 away_style=team_profiles[away].style.value,
                 manager_stubbornness=0.35,
             )
+            sub_controller.set_manager_stubbornness(home, home_mgr.stubbornness())
+            sub_controller.set_manager_stubbornness(away, away_mgr.stubbornness())
             engine.set_stamina_controller(sub_controller)
+            engine.set_managers(home_manager=home_mgr, away_manager=away_mgr)
+
+            # Chemistry: load each team's persisted SquadChemistry, apply the
+            # manager fingerprint + leadership, and register it into the live
+            # registry so _pass_success / composure rolls can consult it in-match.
+            from squad_chemistry import register_active, clear_active
+            home_chem = self.state.get_team_chemistry(home)
+            away_chem = self.state.get_team_chemistry(away)
+            home_chem.set_manager(home_mgr)
+            away_chem.set_manager(away_mgr)
+            register_active(home, home_chem)
+            register_active(away, away_chem)
 
             result = engine.simulate()
             print(result.summary())
@@ -735,6 +1017,7 @@ class LeagueRunner:
                     injured=stamina_state.is_injured if stamina_state else False,
                     injury_type=stamina_state.injury_type if stamina_state else "none",
                     matches_out=stamina_state.matches_out() if stamina_state else 0,
+                    assists=s.get("assists", 0),
                 )
                 played_names.add(p.name)
 
@@ -745,8 +1028,38 @@ class LeagueRunner:
                 roster_names = set(full_roster.get(home, [])) | set(full_roster.get(away, []))
                 self.state.advance_matchday(list(roster_names), played_names)
 
+            # ── CHEMISTRY EVOLUTION ──
+            # After the match, grow the pair-chemistry for players who shared
+            # the pitch and decay pairs that were separated; persist both teams.
+            from squad_chemistry import clear_active
+            for team, chem, squad in ((home, home_chem, home_squad),
+                                      (away, away_chem, away_squad)):
+                starter_names = [p.name for p in squad["starters"]]
+                squad_names = [p.name for p in
+                               (squad["starters"] + squad["substitutes"])]
+                chem.register_appearance_together(starter_names)
+                chem.decay_unused_pairs(squad_names)
+                self.state.set_team_chemistry(team, chem)
+            clear_active()
+
             self.table.add_result(home, away, result.home_goals, result.away_goals)
             self.fixtures.mark_played(home, away, matchday, result.home_goals, result.away_goals)
+
+            if auto_refs:
+                used_ref = ref_mgr.get_ref_by_name(referee)
+                if used_ref:
+                    ref_mgr.record_assignment(used_ref, matchday, home, away)
+
+            # Record manager results (job security is emergent vs. xP).
+            home_pts, away_pts = 3, 0
+            if result.home_goals == result.away_goals:
+                home_pts = away_pts = 1
+            elif result.home_goals < result.away_goals:
+                home_pts, away_pts = 0, 3
+            h_xp = 1.0 + (result.home_xg - result.away_xg) * 0.6
+            a_xp = 1.0 + (result.away_xg - result.home_xg) * 0.6
+            home_mgr.record_result(matchday, home_pts, max(0.0, h_xp))
+            away_mgr.record_result(matchday, away_pts, max(0.0, a_xp))
 
             results.append({
                 "home": home, "away": away,
@@ -762,6 +1075,9 @@ class LeagueRunner:
 
         self.state.save()
         self.fixtures.save(self.fixtures_path)
+        if auto_refs:
+            ref_mgr.save()
+        mgr_pool.save()
         self.table.print_table()
         return results
 

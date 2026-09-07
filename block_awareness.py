@@ -698,7 +698,7 @@ class BlockNavigationEngine:
         work_rate = getattr(passer.dna.mental, "work_rate", 60.0) if hasattr(passer, "dna") else 60.0
 
         volume_score = (vision + short_pass + work_rate) / 3.0
-        if volume_score < 60:
+        if volume_score < 45:
             return 1.0  # Not a volume passer
 
         # Volume passers prefer:
@@ -739,7 +739,7 @@ class HalfSpaceMagnet:
     """
 
     # Positions that respond to half-space magnetism
-    MAGNET_POSITIONS: Set[str] = {"CAM", "CM", "CF"}
+    MAGNET_POSITIONS: Set[str] = {"CAM", "CM", "CF", "CDM"}
 
     # How strong the pull is (0.0 – 1.0, blended into drift)
     PULL_STRENGTH: float = 0.8
@@ -796,24 +796,48 @@ class HalfSpaceMagnet:
         hx, hy = home_pos
         cx, cy = best_channel.center
 
-        # But: if the player is already in their preferred half-space side,
-        # don't pull them across the pitch. CAMs have a preferred side based
-        # on their natural tendency or the team's build-up side.
-        # Simple heuristic: stay on the same side of center as home position
-        if hy < CENTER_Y:
-            # Player's home is on the left side — prefer left half-space
-            left_ch = block.channel_named("left_half_space")
-            if left_ch and left_ch.accessibility >= 0.3:
-                cx, cy = left_ch.center
+        # CMs/CDMs: allow cross-side pull to orbit the block.
+        # CAMs: stay on the preferred half-space side (they thread, not recycle).
+        if player.position in ("CM", "CDM"):
+            # For CMs/CDMs, if the nearest channel is on their home side,
+            # check if a FAR-SIDE channel is more accessible — this enables
+            # the orbital duty to actually reposition them.
+            far_ch = None
+            far_score = -1.0
+            for ch in block.channels:
+                if "half_space" not in ch.name:
+                    continue
+                if ch.accessibility < 0.20:
+                    continue
+                ch_cy = ch.center[1]
+                ch_side = 1.0 if ch_cy >= CENTER_Y else -1.0
+                home_side = 1.0 if hy >= CENTER_Y else -1.0
+                if ch_side != home_side:
+                    # Far-side channel — score by accessibility
+                    if ch.accessibility > far_score:
+                        far_score = ch.accessibility
+                        far_ch = ch
+            # Use far-side if it's reasonably accessible
+            if far_ch is not None and far_ch.accessibility >= 0.35:
+                cx, cy = far_ch.center
         else:
-            right_ch = block.channel_named("right_half_space")
-            if right_ch and right_ch.accessibility >= 0.3:
-                cx, cy = right_ch.center
+            # CAMs: stay on the preferred side of center
+            if hy < CENTER_Y:
+                left_ch = block.channel_named("left_half_space")
+                if left_ch and left_ch.accessibility >= 0.3:
+                    cx, cy = left_ch.center
+            else:
+                right_ch = block.channel_named("right_half_space")
+                if right_ch and right_ch.accessibility >= 0.3:
+                    cx, cy = right_ch.center
 
         # Blend: stronger pull when block is more compact
         blend = cls.PULL_STRENGTH * block.compactness
 
-        target_x = hx + (cx - hx) * blend * 0.5  # Less x-pull than y-pull
+        # CMs/CDMs get stronger x-pull to actually reach the channel;
+        # CAMs stay with reduced x-pull (they thread between lines)
+        x_pull = 0.70 if player.position in ("CM", "CDM") else 0.50
+        target_x = hx + (cx - hx) * blend * x_pull
         target_y = hy + (cy - hy) * blend
 
         return (target_x, target_y)

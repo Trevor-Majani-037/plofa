@@ -30,7 +30,7 @@ PLOFA_OUTPUT_DIR = PLOFA_DIR / "plofa_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_json(path):
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 def save_json(data, filename):
@@ -107,12 +107,21 @@ def parse_match(path: Path):
             if isinstance(val, (int, float)):
                 ts[field] += val
 
-    # Compute possession from passes
-    home_passes = team_stats.get(home, {}).get("passes_attempted", 0)
-    away_passes = team_stats.get(away, {}).get("passes_attempted", 0)
-    total_passes = home_passes + away_passes
-    home_poss = round(home_passes / total_passes * 100, 1) if total_passes > 0 else 50.0
-    away_poss = round(100 - home_poss, 1)
+    # Compute possession from measured time-in-possession seconds (real
+    # Opta-style, exported by the engine). Fall back to pass-share only for
+    # legacy match JSON files written before possession seconds were exported.
+    home_poss_s = info.get("home_possession_s")
+    away_poss_s = info.get("away_possession_s")
+    if (isinstance(home_poss_s, (int, float)) and isinstance(away_poss_s, (int, float))
+            and (home_poss_s + away_poss_s) > 0):
+        home_poss = round(home_poss_s / (home_poss_s + away_poss_s) * 100, 1)
+        away_poss = round(100 - home_poss, 1)
+    else:
+        home_passes = team_stats.get(home, {}).get("passes_attempted", 0)
+        away_passes = team_stats.get(away, {}).get("passes_attempted", 0)
+        total_passes = home_passes + away_passes
+        home_poss = round(home_passes / total_passes * 100, 1) if total_passes > 0 else 50.0
+        away_poss = round(100 - home_poss, 1)
 
     # Player ratings per team
     home_players_list = []

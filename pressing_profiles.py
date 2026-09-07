@@ -288,3 +288,52 @@ def cover_shadow_blocked(
                                profile, engaged=engaged)
         < COVER_SHADOW_BLOCK_THRESHOLD
     )
+
+
+# ── SECOND PRESSER / TRAP (P3) ───────────────────────────────────────
+# A "trap" is a coordinated double-team: the primary presser forces the
+# carrier one way while a second defender seals the escape lane, stealing
+# the ball. Contained here as pure predicates so the event chain can apply
+# them without threading PositionEngine deep inside lambdas.
+
+# How close a second defender must be to the carrier to count as sealing
+# the trap lane (metres).
+TRAP_RANGE_M: float = 15.0
+# How often a sealed trap actually converts to a turnover (a double-team
+# is decisive but must stay a relative rarity).
+TRAP_CONVERSION_PROB: float = 0.35
+
+
+def is_trap_profile(style_key: Optional[str]) -> bool:
+    """Does this team play a trapping / gegenpressing identity?  Both the
+    mid-block trap and the ultra-high gegenpress hunt the ball in twos; a
+    low-block contain side sits and absorbs instead."""
+    if not style_key:
+        return False
+    key = style_key.strip().lower()
+    return key in ("gegenpressing", "ultra_attacking", "vertical_tiki_taka",
+                   "high_press", "gegenpress")
+
+
+def trap_present(
+    def_players: List[Any],
+    pressure_player: Any,
+    x: float,
+    y: float,
+    position_engine: Any,
+    range_m: float = TRAP_RANGE_M,
+) -> bool:
+    """True when an outfield defender (other than the primary presser) sits
+    within `range_m` of the carrier — the outside man who closes the lane.
+    Without spatial info this can never count a trap (conservative)."""
+    if position_engine is None or not def_players or pressure_player is None:
+        return False
+    for d in def_players:
+        if getattr(d, "position", None) == "GK":
+            continue
+        if d is pressure_player or d.name == getattr(pressure_player, "name", None):
+            continue
+        dx, dy = position_engine.get_position(d.name)
+        if math.hypot(dx - x, dy - y) <= range_m:
+            return True
+    return False

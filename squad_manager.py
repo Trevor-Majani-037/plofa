@@ -239,7 +239,7 @@ class PlayerStaminaState:
         self.total_drained += actual_loss
         self.drain_by_action[action] = self.drain_by_action.get(action, 0.0) + cost
 
-    def drain_baseline(self, team_style: str, intensity_mult: float = 1.0):
+    def drain_baseline(self, team_style: str, intensity_mult: float = 1.0, weather_mult: float = 1.0):
         """
         Per-minute baseline drain from just being on pitch.
 
@@ -256,7 +256,7 @@ class PlayerStaminaState:
         """
         base = POSITION_BASE_DRAIN.get(self.position, 0.05)
         style_mult = STYLE_DRAIN_MULT.get(team_style, 1.0)
-        self.drain("standing", base * style_mult * intensity_mult)
+        self.drain("standing", base * style_mult * intensity_mult * weather_mult)
 
     def update_performance_mult(self):
         """
@@ -424,6 +424,11 @@ class SubstitutionController:
         }
         self.stubbornness = manager_stubbornness
 
+        # Optional per-team manager stubbornness override (from ManagerProfile).
+        # Keys = team names; value = stubbornness (0 subs quick, 1 stubborn).
+        # Falls back to the flat `self.stubbornness` when a team isn't keyed.
+        self.stubbornness_by_team: Dict[str, float] = {}
+
         # Track subs made
         self.subs_made: Dict[str, int]       = {home_team: 0, away_team: 0}
         self.subs_log:  List[Dict]            = []
@@ -434,6 +439,25 @@ class SubstitutionController:
         # Tactical sub schedule from run_match.py
         # {player_name: minute} — pre-planned tactical subs
         self.tactical_schedule: Dict[str, int] = {}
+        self.weather_drain_mult: float = 1.0
+
+    def set_weather(self, weather):
+        """Configure weather multiplier for stamina drain."""
+        try:
+            from weather_physics import WeatherPhysics
+            self.weather_drain_mult = WeatherPhysics.stamina_drain_mult(weather)
+        except Exception:
+            self.weather_drain_mult = 1.0
+
+    def set_manager_stubbornness(self, team: str, stubbornness: float):
+        """Set an individual manager's substitution patience for one team.
+        Call this to make each side's rotation behaviour depend on its own
+        manager instead of one flat constant."""
+        self.stubbornness_by_team[team] = max(0.0, min(1.0, stubbornness))
+
+    def stubbornness_for(self, team: str) -> float:
+        """Resolve which substitution-patience value applies to a team."""
+        return self.stubbornness_by_team.get(team, self.stubbornness)
 
     def register_player(self, player, starting_stamina: float = 100.0):
         """Register a player's stamina state at kick-off."""
@@ -488,12 +512,13 @@ class SubstitutionController:
             return
         
         # Reduce drain for secondary actors
+        effective_mult = drain_mult * getattr(self, "weather_drain_mult", 1.0)
         if is_secondary:
             # Get original cost, halve it, then apply any fatigue tax
             original_cost = STAMINA_COSTS.get(action, 0.05)
-            state.drain(action, original_cost * 0.5 * drain_mult)
+            state.drain(action, original_cost * 0.5 * effective_mult)
         else:
-            state.drain(action, STAMINA_COSTS.get(action, 0.05) * drain_mult)
+            state.drain(action, STAMINA_COSTS.get(action, 0.05) * effective_mult)
         
         state.update_performance_mult()
         
@@ -506,7 +531,7 @@ class SubstitutionController:
         
         # Check if stamina sub needed
         if not state.sub_requested:
-            state.check_stamina_sub(minute, self.stubbornness)
+            state.check_stamina_sub(minute, self.stubbornness_for(team))
 
     def process_minute(self, minute: int, active_players: Dict[str, List],
                        game_state_home: int, game_state_away: int) -> List[Dict]:
@@ -549,6 +574,13 @@ class SubstitutionController:
 
             # ── 2. TACTICAL PRE-PLANNED SUBS ──────────────────
             for player in players:
+                # Guard: stop making tactical subs once the team has hit
+                # the MAX_SUBS limit. Without this check, multiple players
+                # scheduled at the same minute (e.g. CAM/LW/RW all at 65')
+                # would all be subbed simultaneously, blowing past the
+                # 3-per-team cap.
+                if self.subs_made[team] >= self.MAX_SUBS:
+                    break
                 name = getattr(player, "name", "")
                 if (name in self.tactical_schedule and
                         minute >= self.tactical_schedule[name] and
@@ -885,6 +917,9 @@ class AvailabilityChecker:
                     df = pd.read_excel(fpath, sheet_name="Player Stats")
                 else:
                     df = pd.read_csv(fpath)
+                # Defragment before stamping the matchday column; inserting into
+                # a freshly-read (fragmented) frame trips pandas' insert warning.
+                df = df.copy()
                 df["_matchday"] = matchday
                 frames.append(df)
             except Exception as e:

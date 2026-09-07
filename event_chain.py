@@ -31,7 +31,7 @@ import random
 import math
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Dict, TYPE_CHECKING
+from typing import List, Optional, Tuple, Dict, Any, TYPE_CHECKING
 
 from match_engine import (
     MatchEvent, EventType, SituationType, MatchPhase,
@@ -41,13 +41,20 @@ from player_dna import PlayerDNA, PlayerProfile, DNAFactory, BehavioralTendencie
 from position_engine import PositionEngine, ELLIPSE_COMPOSE_FLOOR
 from block_awareness import BlockNavigationEngine
 from geometry_engine import (
-    MovingPlayer, Vec2, Vec3, make_flight, resolve_aerial_delivery,
+    MovingPlayer, Vec2, Vec3, BallSpin, make_flight, make_ballistic_flight,
+    resolve_aerial_delivery,
     resolve_dribble, resolve_ground_pass, resolve_shot,
+    body_mass, body_balance,
+)
+from set_piece_routines import (
+    SetPieceRoutine, corner_delivery, receiver_weight,
 )
 from possession_physics import (
     PossessionEpisode, aim_shot_flight, ground_pass_speed, shot_speed,
+    header_shot_speed,
     sprint_speed, acceleration, reaction_time, control_radius, tackle_radius,
     jump_height, standing_reach, dive_extension, dive_speed, aerial_delivery_speed,
+    delivery_spin, rolling_decel_for,
 )
 from attacking_matrix import (
     AttackingMatrix,
@@ -60,6 +67,7 @@ from winger_behavior import (
 
     WingerSpatialProfile,
 )
+from midfielder_behavior import MidfielderBehaviorEngine
 from fullback_behavior import FullbackBehaviorEngine
 from possession_phases import (
     PossessionPhase,
@@ -70,9 +78,15 @@ from possession_phases import (
     PossessionDecision,
     possession_phase_for,
 )
+from attack_patterns import (
+    AttackPattern,
+    favored_flank,
+    flank_bias_multiplier,
+)
 from cross_detector import detect_cross
 from long_pass_detector import detect_long_pass
-from pass_classifier import classify_pass
+from pass_classifier import classify_pass, apply_wind_deflection
+from weather_physics import WeatherPhysics, WeatherCondition
 from pressing_profiles import (
     PressingProfile,
     PROFILES as PRESS_PROFILES,
@@ -82,7 +96,12 @@ from pressing_profiles import (
     cover_shadow_blocked,
     in_cover_shadow,
     COVER_SHADOW_BLOCK_THRESHOLD,
+    TRAP_RANGE_M,
+    TRAP_CONVERSION_PROB,
+    is_trap_profile,
+    trap_present,
 )
+from active_play_brain import ActivePlayBrain
 from threat_engine import (
     danger_after_clearance,
     calculate_relative_ball_angle,
@@ -93,11 +112,18 @@ from threat_engine import (
     apply_width_bias,
     own_goal_probability,
 )
+from marking import SetPieceMarkingEngine, MarkingEngine
 
 # Checkpoint 25 — pass-execution reaction radius: a defender only cuts out a
 # ball genuinely within reach (0.8m), tighter than the 1.2m planning radius
 # the decision layer uses to AVOID corridors.
 LANE_REACTION_DIST = 0.8
+SIX_YARD_BOX_DEPTH_M = 6 * 0.9144
+
+
+def is_goalkeeper_run_out(goal_line_x: float, contact_x: float) -> bool:
+    """Return whether the keeper's aerial contact was beyond the six-yard box."""
+    return abs(contact_x - goal_line_x) > SIX_YARD_BOX_DEPTH_M
 
 # Lazy import to avoid circular dependency
 _soul_applicator = None
@@ -137,6 +163,46 @@ OFFSIDE_LEVEL_TOL_M   = 1.5   # within 1.5m of the line -> level, onside
 OFFSIDE_FULL_MARGIN_M = 8.0   # beyond this, "decisiveness" saturates at 1.0
 OFFSIDE_CALL_FLOOR    = 0.02  # flag probability when barely past the line
 OFFSIDE_CALL_PEAK     = 0.06  # flag probability when decisively beyond
+
+
+# ─────────────────────────────────────────────
+# SHOT-SPEED STAMPING — Opta-style launch velocity
+# ─────────────────────────────────────────────
+# Every shot-producing chain attaches the ball's launch velocity (m/s and
+# km/h) plus flight time to the event metadata, so analytics can report
+# "average shot speed" the way Opta does. Additive only: the raw timeline
+# events are unchanged otherwise (physics metadata is untouched).
+
+SHOT_SPEED_EVENT_TYPES = frozenset({
+    EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET, EventType.SHOT_BLOCKED,
+    EventType.GOAL, EventType.HIT_WOODWORK, EventType.PENALTY_SCORED,
+    EventType.PENALTY_MISSED,
+})
+
+
+def _stamp_shot_speed(ev: MatchEvent, mps: float, flight_s: Optional[float] = None) -> None:
+    """Attach a launch velocity to an event's metadata (m/s + km/h + flight s)."""
+    md = ev.metadata
+    md.setdefault("shot_speed_mps", round(mps, 2))
+    md.setdefault("shot_speed_kmh", round(mps * 3.6, 1))
+    if flight_s is not None:
+        md.setdefault("shot_flight_s", round(flight_s, 2))
+
+
+def _shot_speed_for_player(player: "PlayerProfile", body_part: str = "foot") -> float:
+    """Launch velocity the player's DNA would generate for this body part.
+
+    Foot: 20-34 m/s (struck). Head: 5-12 m/s (redirected, far slower).
+    Used by chains that don't run the full ballistics solver.
+    """
+    dna = getattr(player, "dna", None)
+    physical = getattr(dna, "physical", None)
+    technical = getattr(dna, "technical", None)
+    strength = float(getattr(physical, "strength", 60.0))
+    finishing = float(getattr(technical, "finishing", 50.0))
+    if body_part == "head":
+        return header_shot_speed(strength * 0.5 + finishing * 0.5)
+    return shot_speed(strength * 0.4 + finishing * 0.6)
 
 
 # ─────────────────────────────────────────────
@@ -200,6 +266,20 @@ class ChainResult:
     shoot_y: float           = 0.0
     shoot_under_pressure: bool = False
     shot_taken: bool         = False
+
+    # Possession-time tracking (real minutes held, not a probability roll)
+    sequence_duration_s: float = 0.0
+    player_possession_s: Dict[str, float] = field(default_factory=dict)
+
+    # Whole-possession continuous ball path (persistent across the episode,
+    # unlike the per-action trajectory). Each entry: {t,x,y,kind,p}.
+    ball_path: List[Any] = field(default_factory=list)
+
+    # Real per-player distance / sprint accounting measured by the underlying
+    # PossessionEpisode's 10 Hz trace (actual physics integration, not a roll).
+    # Populated by any chain that resolves a PossessionEpisode. Maps player name
+    # -> {"distance_m", "sprint_distance_m", "sprint_count", "top_speed_mps"}.
+    player_distance_stats: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     def add(self, event: MatchEvent):
         self.events.append(event)
@@ -368,15 +448,16 @@ class BaseChain:
         episode,
         position_engine: Optional[PositionEngine],
         minute: int,
-    ) -> None:
+    ) -> Dict[str, Dict[str, float]]:
         """Extract per-player distance/sprint stats from episode trace and
-        feed them to PositionEngine for per-minute activity aggregation."""
+        feed them to PositionEngine for per-minute activity aggregation.
+        Returns the stats dict so the caller can also flag on-ball players."""
         if episode is None or position_engine is None:
-            return
+            return {}
         try:
             stats = episode.calculate_distance_stats()
         except Exception:
-            return
+            return {}
         for player_name, s in stats.items():
             position_engine.record_physics_distance(
                 player_name,
@@ -385,6 +466,24 @@ class BaseChain:
                 high_speed_sprint_count=s.get("high_speed_sprint_count", 0.0),
                 top_speed_mps=s.get("top_speed_mps", 0.0),
             )
+        return dict(stats)
+
+    @staticmethod
+    def _inherit_restart(source: "ChainResult", target: "ChainResult") -> None:
+        """Fold a sub-chain's restart (throw-in / goal-kick) into its parent.
+
+        Sub-chains that only forward events (DefensiveChain inside
+        PossessionChain / CornerChain) would otherwise lose the restart the
+        engine needs to queue — e.g. a clearance to the touchline that puts
+        the ball out for a throw-in."""
+        if not getattr(source, "restart_required", False):
+            return
+        target.restart_required = True
+        target.restart_type = source.restart_type
+        target.restart_team = getattr(source, "restart_team", "")
+        target.restart_x = getattr(source, "restart_x", None)
+        target.restart_y = getattr(source, "restart_y", None)
+        target.possession_lost = True
 
     @staticmethod
     def _moving_player(player: PlayerProfile, position_engine: Optional[PositionEngine]) -> MovingPlayer:
@@ -414,6 +513,12 @@ class BaseChain:
             gk_attrs = getattr(dna, "gk_attrs", None)
             reflexes = float(getattr(gk_attrs, "reflexes", 60.0)) if gk_attrs else 60.0
             diving = float(getattr(gk_attrs, "diving", 60.0)) if gk_attrs else 60.0
+        # Body identity (#4): mass is pure strength; balance is the leverage
+        # converting mass at contact (strength + agility + ball control).
+        strength_attr = float(getattr(getattr(dna, "physical", None), "strength", 50.0))
+        agility_attr = float(getattr(getattr(dna, "physical", None), "agility", 50.0))
+        body_mass_kg = body_mass(strength_attr)
+        balance_val = body_balance(strength_attr, agility_attr, ball_control)
         return MovingPlayer(
             player=player,
             position=Vec2(x, y),
@@ -427,7 +532,164 @@ class BaseChain:
             standing_reach=standing_reach(jumping, is_gk),
             dive_reach=dive_extension(diving) if is_gk else 0.6,
             dive_speed=dive_speed(reflexes) if is_gk else 2.2,
+            body_mass_kg=body_mass_kg,
+            balance=balance_val,
         )
+
+    @classmethod
+    def _dribble_confirmation_gate(
+        cls,
+        geometric_outcome: str,
+        attacker: Optional[PlayerProfile],
+        tackler: Optional[PlayerProfile],
+    ) -> str:
+        """Layer a skill-differential confirmation gate onto dribble geometry.
+
+        Geometry remains the PRIMARY authority for who physically reaches the
+        ball — but, exactly like the pass interception roll and the shot's
+        Checkpoint 28 worldie gate, it is no longer the ONLY voice. A defender
+        who geometrically wins the race can still be shrugged off by a gifted
+        dribbler; and a carrier who geometrically kept the ball can still be
+        hauled down by a last-ditch stretch tackle.
+
+        Attack-side signal blends the close-control dribbling traits; defence
+        blends the tackling/reading traits. The differential shifts a base
+        probability either way, producing both halves of the gate:
+
+            * ``tackled``  -> may flip to ``retained`` (shrug-off) — the
+                              attacker's skill beat a defender who got there.
+            * ``retained`` -> may flip to ``tackled`` (stretch tackle) — the
+                              defender snatched the ball despite losing the
+                              geometric race.
+        """
+        if attacker is None or tackler is None:
+            return geometric_outcome
+
+        a_tech = getattr(attacker, "dna", None)
+        t_tech = getattr(tackler, "dna", None)
+        if a_tech is None or t_tech is None:
+            return geometric_outcome
+
+        attacking_skill = (
+            float(getattr(getattr(a_tech, "technical", None), "dribbling", 50.0)) * 0.50
+            + float(getattr(getattr(a_tech, "physical", None), "agility", 50.0)) * 0.25
+            + float(getattr(getattr(a_tech, "technical", None), "ball_control", 50.0)) * 0.25
+        ) / 100.0
+
+        defending_skill = (
+            float(getattr(getattr(t_tech, "defending", None), "tackling", 50.0)) * 0.6
+            + float(getattr(getattr(t_tech, "mental", None), "anticipation", 50.0)) * 0.4
+        ) / 100.0
+
+        differential = attacking_skill - defending_skill
+
+        if geometric_outcome == "tackled":
+            # Defender geometrically got there — but can the attacker still
+            # shrug it off? Mirrors the pass intercept_prob roll (a skilled
+            # passer beats a defender positioned to intercept).
+            shrug_prob = 0.10 + differential * 0.40
+            shrug_prob = max(0.05, min(0.60, shrug_prob))
+            if random.random() < shrug_prob:
+                return "retained"
+            return "tackled"
+
+        # geometric_outcome == "retained": the carrier kept it — but a
+        # last-ditch stretch tackle can still snatch it back (the mirror of a
+        # marginal shot being clawed back by a worldie save).
+        stretch_prob = 0.04 - differential * 0.35
+        stretch_prob = max(0.02, min(0.35, stretch_prob))
+        if random.random() < stretch_prob:
+            return "tackled"
+        return "retained"
+
+    @classmethod
+    def _aerial_pass_gate(
+        cls,
+        geometric_outcome: str,
+        winner_player: Optional[PlayerProfile],
+        passer: PlayerProfile,
+    ) -> str:
+        """DECISION (documented, for audit): long balls get a Checkpoint-28
+        confirmation gate — YES, deliberately.
+
+        Geometry (the ballistic race + landing-point duel in
+        ``episode.resolve_long_pass``) stays the PRIMARY authority for who
+        physically wins the descent. The gate is a SECOND, attribute-based
+        voice layered on top for the contested case only, mirroring exactly
+        where the shots got theirs (Checkpoint 28 worldie gate), the ground
+        passes got theirs (the intercept_prob skill roll), and the dribbles
+        got theirs (_dribble_confirmation_gate): one voice is not the whole
+        story for a contested action in this engine.
+
+        Shape: the winning marker geometrically arrived first, but to convert
+        that into an actual interception he must demonstrate the defensive
+        attributes to read and win it against a lofted delivery of real
+        quality. A soft, short-hoofed long passer is worse off than an elite
+        diagonal router, so the differential (passer long-passing vs marker
+        tackling/anticipation) moves a base probability — the same 0.15±0.35
+        band the ground-pass interception roll and the old aerial fallback
+        used, so long-ball interception rates stay in the same calibrated
+        range while now being *distributed by the defensive attributes that
+        actually matter in the air*.
+
+        Returns the possibly-flipped geometric outcome (``received`` /
+        ``intercepted``). Geometry-pure outcomes (``underhit``) pass through
+        untouched — a ball nobody could physically reach is never 'revived'
+        by skill on either side.
+        """
+        if geometric_outcome != "intercepted" or winner_player is None:
+            return geometric_outcome
+
+        int_dna = getattr(winner_player, "dna", None)
+        if int_dna is None:
+            return geometric_outcome
+
+        int_tackling = float(getattr(getattr(int_dna, "defending", None), "tackling", 50.0))
+        int_anticipation = float(getattr(getattr(int_dna, "mental", None), "anticipation", 50.0))
+        int_skill = (int_tackling * 0.4 + int_anticipation * 0.6) / 100.0
+        passing_attrs = getattr(getattr(passer, "dna", None), "passing", None)
+        passer_long = float(getattr(passing_attrs, "long_passing", 55.0)) if passing_attrs is not None else 55.0
+        passer_skill = passer_long / 100.0
+        intercept_prob = 0.15 + (int_skill - passer_skill) * 0.35
+        intercept_prob = max(0.08, min(0.50, intercept_prob))
+        if random.random() < intercept_prob:
+            return "intercepted"
+        return "received"
+
+    @classmethod
+    def _tackle_attacker_resistance(
+        cls,
+        attacker: Optional[PlayerProfile],
+        defender: Optional[PlayerProfile],
+    ) -> float:
+        """How much a skilled carrier erodes a defender's tackle rate.
+
+        Mirrors the attacking_skill/defending_skill differential that
+        _dribble_confirmation_gate layers onto the geometric dribble race
+        (the physics-race path), so the two tackle systems speak the same
+        language: a high-dribbling attacker measurably reduces the defender's
+        chance of winning the ball, the same way they already shrug off a
+        defender who geometrically got there.
+
+        Attack blend (0.5/0.25/0.25, matching the gate's shape): dribbling,
+        agility, strength. Defence blend (0.6/0.4): tackling, anticipation.
+        """
+        a_tech = getattr(attacker, "dna", None)
+        t_tech = getattr(defender, "dna", None)
+
+        attacking_skill = (
+            float(getattr(getattr(a_tech, "technical", None), "dribbling", 50.0)) * 0.50
+            + float(getattr(getattr(a_tech, "physical", None), "agility", 50.0)) * 0.25
+            + float(getattr(getattr(a_tech, "physical", None), "strength", 50.0)) * 0.25
+        ) / 100.0
+        defending_skill = (
+            float(getattr(getattr(t_tech, "defending", None), "tackling", 50.0)) * 0.6
+            + float(getattr(getattr(t_tech, "mental", None), "anticipation", 50.0)) * 0.4
+        ) / 100.0
+
+        differential = attacking_skill - defending_skill
+        resistance = 0.05 + differential * 0.28
+        return max(0.0, min(0.30, resistance))
 
     @classmethod
     def _foot_for_pass(cls, player: PlayerProfile, from_x: float, from_y: float,
@@ -671,6 +933,9 @@ class BaseChain:
         ball_control = getattr(receiver.dna.technical, "ball_control", 55.0)
         control_skill = (first_touch + ball_control) / 200.0
         base *= max(0.3, 1.0 - control_skill * 0.5)
+        if WeatherPhysics.enabled:
+            ctrl_mult = WeatherPhysics.dribble_control_mult()
+            base += (1.0 - ctrl_mult) * 0.15
         return max(0.02, min(0.45, base))
 
     @classmethod
@@ -714,6 +979,9 @@ class BaseChain:
             sm = 1.0
         base *= sm
 
+        if WeatherPhysics.enabled:
+            base *= WeatherPhysics.carry_distance_mult()
+
         lo, hi = (1, 6) if is_micro else (10, 40) if is_counter else (2, 16)
         dist = max(lo, min(hi, base))
 
@@ -729,6 +997,23 @@ class BaseChain:
             outfield,
             lambda p: (p.dna.physical.jumping + p.dna.technical.heading) / 2,
             exclude=exclude
+        )
+
+    @classmethod
+    def _pick_set_piece_target(cls, players, zone: Optional[str],
+                               exclude=None) -> Optional[PlayerProfile]:
+        """Routine-zone target pick for a dead-ball delivery.
+
+        ``receiver_weight`` (set_piece_routines) rescales the same weighted
+        pick so the scheme selects its own type of attacker: the big leapers
+        for the posts, the late-arriving finisher for the penalty spot, and
+        the press-resistant feet for the short-corner edge. ``None`` zone
+        keeps the classic aerial-threat weight exactly."""
+        outfield = [p for p in players if p.position != "GK"] or players
+        return cls.pick_weighted(
+            outfield,
+            lambda p: receiver_weight(zone, p),
+            exclude=exclude,
         )
 
     @classmethod
@@ -777,6 +1062,7 @@ class PossessionChain(BaseChain):
         def_press_intensity: Optional[float] = None,
         def_style_key: Optional[str] = None,
         att_style_key: Optional[str] = None,
+        counterpress: Optional[Dict[str, Any]] = None,
     ) -> ChainResult:
         """
         Full StatsBomb-level possession sequence.
@@ -893,20 +1179,34 @@ class PossessionChain(BaseChain):
                 if _m_anchor is not None:
                     end_cy = y + _m_bias + (0.5 - random.random()) * 3
                 else:
-                    end_cy = y + (0.5 - random.random()) * 6
+                    # PITCH WIDTH FIX: Increased from 6 to 10 to allow wider micro-carries
+                    end_cy = y + (0.5 - random.random()) * 10
                 end_cy = max(2, min(66, end_cy))
 
-                # Stepping into an occupied defender ends the run sometimes.
+                # Stepping into an occupied defender ends the run — now decided
+                # by geometry on the shared possession clock ("both": the ball
+                # visibly travels AND race-to-ball decides the outcome).
                 micro_lost = False
-                if position_engine is not None and def_players:
-                    nearest_at_end = min(
-                        (math.hypot(position_engine.get_position(d.name)[0] - end_cx,
-                                    position_engine.get_position(d.name)[1] - end_cy)
-                         for d in def_players if getattr(d, 'position', None) != 'GK'),
-                        default=99.0,
+                if position_engine is not None:
+                    mover = cls._moving_player(last_player, position_engine)
+                    defs = (
+                        [cls._moving_player(d, position_engine) for d in def_players
+                         if getattr(d, "position", "") != "GK"]
+                        if def_players else []
                     )
-                    if nearest_at_end < 2.5 and random.random() < 0.30:
-                        micro_lost = True
+                    mc_res = episode.resolve_dribble(
+                        Vec2(x, y), Vec2(end_cx, end_cy), mover, defs
+                    )
+                    _mc_tackler = getattr(mc_res.tackler, "player", None)
+                    _mc_out = cls._dribble_confirmation_gate(
+                        mc_res.outcome, last_player, _mc_tackler
+                    )
+                    micro_lost = _mc_out != "retained"
+                    episode.set_ball(end_cx, end_cy)
+                else:
+                    # No physics feed: record the carry as a timed move so the
+                    # whole-possession ball_path still spans it.
+                    episode.record_ball_move(x, y, end_cx, end_cy, 6.0, "carry")
 
                 result.add(cls.make_event(
                     minute, EventType.CARRY, attacking_team, last_player.name,
@@ -954,7 +1254,22 @@ class PossessionChain(BaseChain):
             if def_players:
                 press_intensity = _def_press_i
                 nx = x if attacks_right else (105.0 - x)
-                if engagement_allows(nx, press_profile):
+                engaged_normal = engagement_allows(nx, press_profile)
+                # ── COUNTERPRESS BURST (P2) ────────────────────────
+                # Override the engagement gate when the defending team is
+                # counterpressing near the recovery zone.  Within
+                # COUNTERPRESS_RANGE_M of the ball-lost spot the team
+                # presses regardless of the static line, and its press
+                # probability is boosted by COUNTERPRESS_INTENSITY_MULT.
+                cp_boost = 1.0
+                if counterpress and counterpress.get("active") and state is not None:
+                    cp_dist = math.hypot(
+                        x - counterpress["x"], y - counterpress["y"]
+                    )
+                    if cp_dist <= state.COUNTERPRESS_RANGE_M:
+                        engaged_normal = True
+                        cp_boost = state.COUNTERPRESS_INTENSITY_MULT
+                if engaged_normal:
                     press_zone_prob = press_cfg.zone_probs.get(
                         "box" if x > 83 else
                         "att_third" if x > 70 else
@@ -962,7 +1277,7 @@ class PossessionChain(BaseChain):
                         0.20
                     )
                     # Scale by live press intensity (from the defending team)
-                    press_prob = min(0.75, press_zone_prob * (0.6 + 0.6 * press_intensity))
+                    press_prob = min(0.75, press_zone_prob * (0.6 + 0.6 * press_intensity) * cp_boost)
                     # A press only commits when a defender is actually within
                     # the profile's engagement range of the carrier.
                     near_def = nearest_defender_dist(x, y, def_players, position_engine)
@@ -1007,6 +1322,7 @@ class PossessionChain(BaseChain):
                                     "press_profile": press_profile.value,
                                     "press_tax": press_cfg.stamina_tax,
                                     "cover_shadow": True,
+                                    "counterpress": bool(cp_boost > 1.0),
                                 }
                             ))
 
@@ -1043,6 +1359,8 @@ class PossessionChain(BaseChain):
                     att_style_key=att_style_key,
                     def_style_key=def_style_key,
                     def_press_intensity=_def_press_i,
+                    counterpress=counterpress,
+                    state=state,
                 )
                 if phase_decision is not None and phase_decision.directive in (
                     TacticalDirective.RECYCLE_BACKWARD,
@@ -1252,6 +1570,16 @@ class PossessionChain(BaseChain):
             # The keeper on the ball is a distribution touch — force the pass.
             gk_distribution = (last_player.position == "GK")
 
+            # Active on-ball intent: the brain chooses whether this touch is
+            # meant to carry or pass. Existing branches still resolve the
+            # physical outcome.
+            active_decision = ActivePlayBrain.decide(
+                last_player, x, y,
+                [p for p in players if p.name != last_player.name],
+                def_players, position_engine, team_profile, under_pressure,
+                attacks_right, game_state,
+            )
+
             # ── CHECKPOINT 18: MODERN WINGER CARRY STEERING ──────────
             # The Winger Behaviour Engine's on-the-ball geometry is now live:
             #   - should_drive_byline  → commit to the touchline→byline corridor
@@ -1280,13 +1608,18 @@ class PossessionChain(BaseChain):
             # A winger who commits to a drive/cut carries the ball instead of
             # settling for a safe pass — the instinct gates carry-vs-pass in
             # the final third (Checkpoint 18).
+            choose_carry = active_decision.action == "CARRY"
             if winger_drive_mode is not None:
                 carry_prob = max(carry_prob, 0.80)
-            if (action_roll < carry_prob and can_carry and not under_pressure
+            if (choose_carry and action_roll < max(0.55, active_decision.confidence)
+                    and can_carry and not under_pressure
                     and regression_mode is None and not gk_distribution):
                 carry_dist, adv_ratio = cls._carry_distance_advance(
                     last_player, x, team_profile
                 )
+                # DNA-driven carry speed for the whole-possession ball path.
+                _carry_speed = sprint_speed(float(getattr(
+                    getattr(last_player.dna, "physical", None), "pace", 60.0))) * 0.68
                 raw_advance = carry_dist * adv_ratio
                 new_x = cls.clamp_x(x + (raw_advance if attacks_right else -raw_advance), attacks_right)
                 # Checkpoint 24 — a winger carry ends at the cutback station,
@@ -1313,52 +1646,34 @@ class PossessionChain(BaseChain):
                         2 + (last_player.dna.technical.ball_control / 100) * 4
                     )
                 else:
-                    vert_range = 4 + (last_player.dna.technical.ball_control / 100) * 8
+                    # PITCH WIDTH FIX: Increased from 4 + ball_control * 8 (max 12m) to
+                    # 6 + ball_control * 14 (max 20m) to allow wider diagonal runs.
+                    vert_range = 6 + (last_player.dna.technical.ball_control / 100) * 14
                     new_y = y + (0.5 - random.random()) * vert_range
                 new_y = max(2, min(66, new_y))
                 is_prog = (new_x - x) > 9.14 if attacks_right else (x - new_x) > 9.14
 
-                if hasattr(last_player, "dna"):
-                    dribble_success_rate = DNAFactory.get_dribble_success_rate(last_player.dna)
-                    # Checkpoint 24 — carries were near-invincible
-                    # (0.78 + 0.15·skill ≈ 93-98%), so every winger drive
-                    # reached the byline and fed the cross trigger. Real
-                    # carriers lose the ball constantly against a set block:
-                    # Doku completes barely half his take-ons. Success now
-                    # scales with the nearest defender's distance and gets
-                    # harder the deeper into the block the carry goes.
-                    carry_prob = 0.58 + dribble_success_rate * 0.12
-                    nearest_def = 99.0
-                    carry_resolution = None
-                    if position_engine is not None and def_players:
-                        nearest_def = min(
-                            (math.hypot(position_engine.get_position(d.name)[0] - x,
-                                        position_engine.get_position(d.name)[1] - y)
-                             for d in def_players if getattr(d, 'position', None) != 'GK'),
-                            default=99.0,
-                        )
-                        if nearest_def < 2.5:
-                            carry_prob -= 0.22
-                        elif nearest_def < 5.0:
-                            carry_prob -= 0.10
-                    if (x > 72) if attacks_right else (x < 33):
-                        carry_prob -= 0.08  # final third: no free rides through a set block
-                    carry_prob = max(0.30, min(0.90, carry_prob))
-                    carry_prob = _get_soul_applicator().modify_dribble_success(last_player, carry_prob)
-                    
-                    if position_engine is not None and nearest_def < 5.0:
-                        carry_resolution = episode.resolve_dribble(
-                            Vec2(x, y), Vec2(new_x, new_y),
-                            cls._moving_player(last_player, position_engine),
-                            [
-                                cls._moving_player(d, position_engine)
-                                for d in def_players
-                                if getattr(d, "position", "") != "GK"
-                            ],
-                        )
-                        carry_success = carry_resolution.outcome == "retained"
-                    else:
-                        carry_success = random.random() < carry_prob
+                # "Both" (visible travel + timing-based outcomes): when a
+                # position engine is wired in, EVERY carry is resolved on the
+                # shared 0.1 s possession clock. The ball travels and race-to-ball
+                # decides retention — soul/DNA still shape it through control &
+                # tackle radii and speed inside resolve_dribble.
+                carry_resolution = None
+                if position_engine is not None:
+                    mover = cls._moving_player(last_player, position_engine)
+                    defs = (
+                        [cls._moving_player(d, position_engine) for d in def_players
+                         if getattr(d, "position", "") != "GK"]
+                        if def_players else []
+                    )
+                    carry_resolution = episode.resolve_dribble(
+                        Vec2(x, y), Vec2(new_x, new_y), mover, defs
+                    )
+                    _carry_tackler = getattr(carry_resolution.tackler, "player", None)
+                    _carry_out = cls._dribble_confirmation_gate(
+                        carry_resolution.outcome, last_player, _carry_tackler
+                    )
+                    carry_success = _carry_out == "retained"
                 else:
                     carry_success = random.random() < 0.82
 
@@ -1370,16 +1685,32 @@ class PossessionChain(BaseChain):
                     end_x=new_x if carry_success else cls.clamp_x(fail_x, attacks_right),
                     end_y=new_y,
                     outcome=carry_success,
-                    metadata={"progressive": is_prog, "distance": round(carry_dist, 1)}
+                    metadata={
+                        "progressive": is_prog,
+                        "distance": round(carry_dist, 1),
+                        "active_brain": {
+                            "action": active_decision.action,
+                            "confidence": active_decision.confidence,
+                            "reason": active_decision.reason,
+                        },
+                    }
                 ))
 
                 if carry_success:
+                    _from_x, _from_y = x, y
                     x, y = new_x, new_y
+                    episode.set_ball(x, y)
+                    if position_engine is None:
+                        episode.record_ball_move(_from_x, _from_y, new_x, new_y, _carry_speed, "carry")
                     if position_engine is not None:
                         position_engine.record_touch(last_player.name, x, y, minute)
                 else:
                     if carry_resolution is not None:
+                        _from_x, _from_y = x, y
                         x, y = carry_resolution.contact_point.x, carry_resolution.contact_point.y
+                        episode.set_ball(x, y)
+                        if position_engine is None:
+                            episode.record_ball_move(_from_x, _from_y, x, y, _carry_speed, "carry")
                     # Lost carry → dispossession or turnover
                     result.add(cls.make_event(
                         minute, EventType.DISPOSSESSED, attacking_team, last_player.name,
@@ -1546,6 +1877,16 @@ class PossessionChain(BaseChain):
                         position_engine, attacks_right,
                     )
 
+                # ── Aerodynamic wind deflection (Weather Physics) ────────
+                wind_drift_m = 0.0
+                active_weather = getattr(state, "weather", None)
+                if WeatherPhysics.is_active(active_weather):
+                    end_px, end_py, wind_drift_m = WeatherPhysics.pass_lateral_deflection(
+                        end_px, end_py, x, y,
+                        weather=active_weather,
+                        is_airborne=bool(is_switch or long_intent),
+                    )
+
                 # ── RACE-TO-BALL (Checkpoint 27) ───────────────────
                 # Geometry is the outcome authority for ALL passes. There
                 # is deliberately NO completion roll layered on top: a
@@ -1563,6 +1904,7 @@ class PossessionChain(BaseChain):
                         for defender in def_players
                         if getattr(defender, "position", "") != "GK"
                     ]
+                    gk = cls._pick_gk_player(def_players)
                     passing = float(getattr(last_player.dna.passing, "short_passing", 55.0))
                     switch_play = float(getattr(last_player.dna.passing, "switch_play", 50.0))
                     # Calibrated kick speeds: short balls 10-23 m/s; a driven
@@ -1578,58 +1920,96 @@ class PossessionChain(BaseChain):
                         )
                         if under_pressure:
                             ball_speed += 1.0
-                    
-                    # Long balls / switches use 3D aerial race; short passes use ground race
+
+                    # Long balls / switches use TRUE ballistic race;
+                    # short passes use ground race.
                     if is_switch or long_intent:
-                        # 3D aerial trajectory for long balls
                         aerial_height = 2.0 + random.uniform(0.5, 1.5)
-                        flight = make_flight(
-                            Vec3(x, y, 0.05),
-                            Vec3(end_px, end_py, aerial_height),
-                            ball_speed,
-                            apex_z=max(aerial_height * 1.5, 4.0),
-                        )
+                        _lst = list(defender_motion)
+                        # A sweeper goalkeeper may genuinely leave
+                        # his line to claim a long ball deep inside
+                        # his own box. He enters the race only
+                        # when the delivery is aimed at that
+                        # genuine sweep zone — geometry then
+                        # decides if he beats the receiver.
+                        _deep = (end_px >= 83.0) if attacks_right else (end_px <= 22.0)
+                        if gk is not None and _deep:
+                            _lst.append(cls._moving_player(gk, position_engine))
                         episode.set_ball(x, y)
-                        aerial_resolution = episode.resolve_aerial(flight, [receiver_motion], defender_motion)
-                        if aerial_resolution.outcome == "controlled" and aerial_resolution.winner is receiver_motion:
+                        # Checkpoint 7 — the long ball carries real spin:
+                        # a whipped out-swinger curls, a lofted pass floats on
+                        # backspin. The bend is geometry (Magnus), zero at the
+                        # landing point so the deflection below stays caught.
+                        _passer_lp = float(getattr(getattr(last_player, "dna", None), "passing", None) and getattr(last_player.dna.passing, "long_passing", 55.0))
+                        long_spin = delivery_spin(
+                            _passer_lp,
+                            kind="back" if random.random() < 0.35 else "side",
+                        )
+                        # weather=None: chain already deflected end_px/end_py
+                        # at the Checkpoint weather block above (k_drag=0.09
+                        # for airborne); resolve_long_pass must not apply
+                        # a second deflection.
+                        aerial_pass_res = episode.resolve_long_pass(
+                            Vec2(x, y), Vec2(end_px, end_py),
+                            ball_speed,
+                            receiver_motion, _lst,
+                            landing_z=aerial_height,
+                            weather=None,
+                            pressure_level=1.0 if under_pressure else 0.0,
+                            spin=long_spin,
+                        )
+                        interceptor = None
+                        if aerial_pass_res.outcome == "received":
                             success = True
-                            interceptor = None
-                        elif aerial_resolution.outcome == "intercepted" and aerial_resolution.winner not in [receiver_motion]:
-                            success = False
-                            int_player = aerial_resolution.winner.player
-                            int_dna = getattr(int_player, "dna", None)
-                            int_tackling = float(getattr(getattr(int_dna, "defending", None), "tackling", 50.0))
-                            int_anticipation = float(getattr(getattr(int_dna, "mental", None), "anticipation", 50.0))
-                            int_skill = (int_tackling * 0.4 + int_anticipation * 0.6) / 100.0
-                            passer_skill = passing / 100.0
-                            intercept_prob = 0.15 + (int_skill - passer_skill) * 0.35
-                            intercept_prob = max(0.08, min(0.50, intercept_prob))
-                            if random.random() < intercept_prob:
+                            gate = "none"
+                        elif aerial_pass_res.outcome == "intercepted":
+                            # ── CHECKPOINT-28-STYLE ATTRIBUTE GATE ──────
+                            # Geometry said the defender won the landing
+                            # point; the gate then asks whether his
+                            # defensive attributes beat the passer's long
+                            # passing quality. See
+                            # PossessionChain._aerial_pass_gate.
+                            gated_outcome = cls._aerial_pass_gate(
+                                "intercepted",
+                                aerial_pass_res.winner.player
+                                if aerial_pass_res.winner is not None else None,
+                                last_player,
+                            )
+                            gate = "checkpoint28"
+                            if gated_outcome == "intercepted":
+                                success = False
+                                int_player = aerial_pass_res.winner.player
                                 interceptor = (
-                                    getattr(int_player, "name", ""),
-                                    aerial_resolution.contact_point.x,
-                                    aerial_resolution.contact_point.y,
+                                    int_player,
+                                    aerial_pass_res.contact_point.x,
+                                    aerial_pass_res.contact_point.y,
                                 )
                             else:
-                                interceptor = None
                                 success = True
                         else:
                             success = False
-                            interceptor = None
+                            gate = "none"
                         geometry_meta = {
                             "resolution": "aerial_race",
-                            "ball_speed_mps": round(ball_speed, 2),
-                            "ball_travel_s": round(aerial_resolution.contact_time, 2),
-                            "receiver_arrival_s": round(aerial_resolution.contact_time, 2),
-                            "kinematic_outcome": aerial_resolution.outcome,
+                            "ball_speed_mps": round(aerial_pass_res.launch_speed or ball_speed, 2),
+                            "ball_travel_s": round(aerial_pass_res.ball_travel_time, 2),
+                            "receiver_arrival_s": round(aerial_pass_res.receiver_arrival_time, 2),
+                            "kinematic_outcome": aerial_pass_res.outcome,
                             "physics": episode.physics_meta("long_pass"),
-                            "aerial_height_m": round(aerial_height, 2),
+                            "aerial_height_m": round(aerial_pass_res.apex_height or aerial_height, 2),
+                            "launch_speed_mps": round(aerial_pass_res.launch_speed, 2),
+                            "launch_angle_deg": round(aerial_pass_res.launch_angle_deg, 1),
+                            "wind_drift_m": round(wind_drift_m, 2),
+                            "spin_rate_rps": round(aerial_pass_res.spin_rate, 2),
+                            "spin_kind": aerial_pass_res.spin_kind or "none",
+                            "gate": gate,
                         }
                     else:
                         # Ground pass race
                         pass_resolution = episode.resolve_pass(
                             Vec2(x, y), Vec2(end_px, end_py), receiver_motion,
                             defender_motion, ball_speed,
+                            rolling_decel=rolling_decel_for(active_weather),
                         )
                         if pass_resolution.outcome == "intercepted" and pass_resolution.interceptor is not None:
                             int_dna = pass_resolution.interceptor.player.dna
@@ -1663,13 +2043,119 @@ class PossessionChain(BaseChain):
                                 pass_resolution.interceptor_arrival_time, 2
                             )
                 else:
-                    # Long balls / no geometry feed: existing delivery logic
-                    # (future stage: 3D aerial race via resolve_aerial_delivery).
-                    success = cls._pass_success(
-                        last_player, long_intent, under_pressure,
-                        receiver=receiver, marking=marking,
-                        confidence=last_player.dna.form.confidence,
-                    )
+                    # LONG BALLS / NO GEOMETRY FEED → bring long balls into the
+                    # 3D aerial system. Even without a live position engine we
+                    # resolve the lofted pass as a ballistic race: the ball
+                    # travels a height/arc over time and the landing-point duel
+                    # is settled by a receiver's jump/reach against a contesting
+                    # defender's aerial geometry (jump timing + vertical reach).
+                    _fallback = False
+                    try:
+                        receiver_motion = cls._moving_player(receiver, position_engine)
+                        defender_motion = [
+                            cls._moving_player(defender, position_engine)
+                            for defender in (def_players or [])
+                            if getattr(defender, "position", "") != "GK"
+                        ]
+                        gk = cls._pick_gk_player(def_players or [])
+                        _fallback_deep = False
+                        aerial_height = 2.0 + random.uniform(0.5, 1.5)
+                        _lst = list(defender_motion)
+                        # Sweeper scenario: deep delivery into the
+                        # goalkeeper's own box.
+                        _fallback_deep = (end_px >= 83.0) if attacks_right else (end_px <= 22.0)
+                        if gk is not None and _fallback_deep:
+                            _lst.append(cls._moving_player(gk, position_engine))
+                        episode.set_ball(x, y)
+                        # True ballistic swing: long balls carry Magnus from the
+                        # passer's long-passing quality (backspin floats a
+                        # loft, side spins a switch around the defender snake).
+                        _fb_lp = float(getattr(getattr(last_player, "dna", None), "passing", None) and getattr(last_player.dna.passing, "long_passing", 55.0))
+                        fallback_spin = delivery_spin(
+                            _fb_lp,
+                            kind="back" if random.random() < 0.35 else "side",
+                        )
+                        # weather=None: the chain already deflected end_px/
+                        # end_py via pass_lateral_deflection (airborne k_drag)
+                        # at the Checkpoint weather block above; resolve_long
+                        # _pass must not apply a second deflection.
+                        aerial_pass_res = episode.resolve_long_pass(
+                            Vec2(x, y), Vec2(end_px, end_py),
+                            aerial_delivery_speed(
+                                float(getattr(last_player.dna.passing, "long_passing", 55.0))
+                            ),
+                            receiver_motion, _lst,
+                            landing_z=aerial_height,
+                            weather=None,
+                            pressure_level=1.0 if under_pressure else 0.0,
+                            spin=fallback_spin,
+                        )
+                        interceptor = None
+
+                        if aerial_pass_res.outcome == "received":
+                            success = True
+                            gate = "none"
+                        elif aerial_pass_res.outcome == "intercepted":
+                            # ── CHECKPOINT-28-STYLE ATTRIBUTE GATE ──────
+                            # DECISION (documented): long balls DO get the
+                            # attribute confirmation gate, exactly like shots,
+                            # ground passes and dribbles. Geometry decided the
+                            # defender physically won the landing point; the
+                            # gate then asks whether that marker's defensive
+                            # attributes (tackling/anticipation) beat the
+                            # passer's long-passing quality — the same band as
+                            # the ground-pass interception roll. See
+                            # PossessionChain._aerial_pass_gate.
+                            gated_outcome = cls._aerial_pass_gate(
+                                "intercepted",
+                                aerial_pass_res.winner.player
+                                if aerial_pass_res.winner is not None else None,
+                                last_player,
+                            )
+                            gate = "checkpoint28"
+                            if gated_outcome == "intercepted":
+                                success = False
+                                int_player = aerial_pass_res.winner.player
+                                interceptor = (
+                                    int_player,
+                                    aerial_pass_res.contact_point.x,
+                                    aerial_pass_res.contact_point.y,
+                                )
+                            else:
+                                success = True
+                        else:
+                            success = False
+                            gate = "none"
+                        geometry_meta = {
+                            "resolution": "aerial_race",
+                            "ball_speed_mps": round(aerial_pass_res.launch_speed or 15.0, 2),
+                            "ball_travel_s": round(aerial_pass_res.ball_travel_time, 2),
+                            "receiver_arrival_s": round(aerial_pass_res.receiver_arrival_time, 2),
+                            "kinematic_outcome": aerial_pass_res.outcome,
+                            "physics": episode.physics_meta("long_pass"),
+                            "aerial_height_m": round(aerial_pass_res.apex_height or aerial_height, 2),
+                            "launch_speed_mps": round(aerial_pass_res.launch_speed, 2),
+                            "launch_angle_deg": round(aerial_pass_res.launch_angle_deg, 1),
+                            "wind_drift_m": round(wind_drift_m, 2),
+                            "spin_rate_rps": round(aerial_pass_res.spin_rate, 2),
+                            "spin_kind": aerial_pass_res.spin_kind or "none",
+                            "gate": gate,
+                        }
+                    except Exception:
+                        _fallback = True
+
+                    if _fallback:
+                        # If anything above was malformed, fall back to the
+                        # legacy probability delivery so the possession survives.
+                        success = cls._pass_success(
+                            last_player, long_intent, under_pressure,
+                            receiver=receiver, marking=marking,
+                            confidence=last_player.dna.form.confidence,
+                        )
+                        episode.record_ball_move(
+                            x, y, end_px, end_py, 15.0, "pass",
+                            rolling_decel=rolling_decel_for(active_weather),
+                        )
 
                 if is_switch and long_intent:
                     etype = EventType.SWITCH_OF_PLAY
@@ -1724,7 +2210,17 @@ class PossessionChain(BaseChain):
                     is_headed=(body_part == "head"),
                     under_pressure=under_pressure,
                     attacks_right=attacks_right,
+                    wind_drift_m=wind_drift_m,
                 )
+
+                if success and WeatherPhysics.is_active(active_weather):
+                    acc_mult = WeatherPhysics.pass_accuracy_mult(
+                        active_weather,
+                        is_long=bool(is_long),
+                        is_airborne=bool(_cr.airborne or is_switch or long_intent),
+                    )
+                    if acc_mult < 1.0 and random.random() > acc_mult:
+                        success = False
 
                 pass_energy = cls._pass_energy_cost(
                     last_player, x, y, end_px, end_py,
@@ -1754,6 +2250,7 @@ class PossessionChain(BaseChain):
                         "cross_dest": _cr.destination_zone,
                         "pass_type": _pc.pass_type,
                         "length_class": _pc.length_class,
+                        "wind_drift_m": round(wind_drift_m, 2),
                         "pass_direction": _pc.direction,
                         "start_half": _pc.start_half,
                         "end_half": _pc.end_half,
@@ -1859,6 +2356,21 @@ class PossessionChain(BaseChain):
                             outcome=True,
                             metadata={"intercepted_pass_from": last_player.name},
                         ))
+                        # Genuine sweeper run-out: the goalkeeper
+                        # left his line and beat the attacker to a
+                        # ball deep inside his own box. A sweep is
+                        # a run-out and is not counted as a shot
+                        # save.
+                        if getattr(idf, "position", "") == "GK":
+                            _deep = (ix >= 83.0) if attacks_right else (ix <= 22.0)
+                            if _deep:
+                                result.add(cls.make_event(
+                                    minute, EventType.SAVE,
+                                    idf.team_name, idf.name,
+                                    phase, game_state, outcome=True,
+                                    location_x=ix, location_y=iy,
+                                    metadata={"type": "gk_sweep", "runs_out": True, "contact_z": 0.0},
+                                ))
                     result.add(cls.make_event(
                         minute, EventType.TURNOVER, attacking_team, last_player.name,
                         phase, game_state,
@@ -1894,11 +2406,15 @@ class PossessionChain(BaseChain):
                     )
                     aerial_target_x = x + random.uniform(-3, 3)
                     aerial_target_y = y + random.uniform(-3, 3)
-                    flight = make_flight(
+                    if math.hypot(aerial_target_x - x, aerial_target_y - y) < 0.5:
+                        # Keep the flight's range physically launchable; a ~0 m
+                        # span would hit the 45 deg max-range fallback.
+                        aerial_target_x += 0.5
+                    flight = make_ballistic_flight(
                         Vec3(x, y, 0.05),
                         Vec3(aerial_target_x, aerial_target_y, aerial_height),
                         aerial_speed,
-                        apex_z=max(aerial_height * 1.5, 3.0),
+                        loft=0.0,
                     )
                     aerial_attackers = [
                         cls._moving_player(last_player, position_engine)
@@ -1933,14 +2449,53 @@ class PossessionChain(BaseChain):
                               "physics": duel_physics}
                 ))
 
+                # ── SECOND PRESSER / TRAP (P3) ──────────────────────
+                # A second defender converging on the carrier's escape lane
+                # closes the exit the primary presser leaves open.  A trap
+                # profile (mid-block trap / gegenpress) running with an extra
+                # defender within TRAP_RANGE_M of the carrier forces the
+                # presser's win — the ball is trapped and stolen rather than
+                # dribbled out of trouble.
+                trap_win = False
+                if is_trap_profile(def_style_key) and trap_present(
+                    def_players, pressure_player, x, y, position_engine,
+                ) and random.random() < TRAP_CONVERSION_PROB:
+                    trap_win = True
+                if trap_win:
+                    # The trap steals the ball: credit a clean interception at
+                    # the carrier's location by the presser who made the trap.
+                    result.events[-1].outcome = False
+                    result.add(cls.make_event(
+                        minute, EventType.INTERCEPTION,
+                        pressure_player.team_name, pressure_player.name,
+                        phase, game_state,
+                        secondary_player=last_player.name,
+                        location_x=x, location_y=y,
+                        outcome=True,
+                        metadata={"trap": True},
+                    ))
+                    result.possession_lost = True
+                    break
+
                 if not att_wins:
                     result.possession_lost = True
                     break
 
             # ── 5. THROUGH BALL (final step, vision players) ───────
             through_zone = x > 50 if attacks_right else x < 55
+            # Gate on raw DNA tendency, then — for registered midfielders —
+            # on the MidfielderBehaviorEngine's delivery instinct + an open
+            # forward lane, so delivery_instinct finally drives real passes.
+            tb_gate = random.random() < last_player.dna.tendencies.plays_through_ball
+            mid_prof = None
+            if position_engine is not None and hasattr(position_engine, "midfield_registry"):
+                mid_prof = position_engine.midfield_registry.get(last_player.name)
+            if mid_prof is not None:
+                tb_gate = tb_gate and MidfielderBehaviorEngine.should_play_through_ball(
+                    mid_prof, x, y, attacks_right,
+                    defenders=def_players, position_engine=position_engine)
             if (is_final_step and through_zone and not result.possession_lost
-                    and random.random() < last_player.dna.tendencies.plays_through_ball):
+                    and tb_gate):
                 receiver = cls._pick_receiver(
                     players, last_player, x, team_profile,
                     preferred_positions=["ST", "CF", "LW", "RW", "CAM"],
@@ -1956,15 +2511,30 @@ class PossessionChain(BaseChain):
                             float(getattr(last_player.dna.passing, "short_passing", 55.0)),
                             driven=5.0
                         )
+                        # ── GROUND PASS / THROUGH BALL ──
+                        # Real race-to-ball: the GK may genuinely
+                        # sweep a through ball off his line. He enters
+                        # the race only when the ball is delivered
+                        # deep inside his own box — the authentic
+                        # sweeper scenario — and his live position
+                        # (position_engine) is where he stands now.
+                        gk = cls._pick_gk_player(def_players)
+                        deep_into_box = (end_tx >= 83.0) if attacks_right else (end_tx <= 22.0)
+                        tb_defenders = [
+                            cls._moving_player(d, position_engine)
+                            for d in def_players
+                            if getattr(d, "position", "") != "GK"
+                        ]
+                        if gk is not None and deep_into_box:
+                            tb_defenders.append(cls._moving_player(gk, position_engine))
                         tb_resolution = episode.resolve_ground_pass(
                             Vec2(x, y), Vec2(end_tx, end_ty),
                             cls._moving_player(receiver, position_engine),
-                            [
-                                cls._moving_player(d, position_engine)
-                                for d in def_players
-                                if getattr(d, "position", "") != "GK"
-                            ],
+                            tb_defenders,
                             ball_speed,
+                            rolling_decel=rolling_decel_for(
+                                getattr(state, "weather", None)
+                            ),
                         )
                         tb_success = tb_resolution.outcome == "received"
                     else:
@@ -2008,6 +2578,25 @@ class PossessionChain(BaseChain):
                                 outcome=True,
                                 metadata={"intercepted_pass_from": last_player.name},
                             ))
+                            # A genuine sweeper run-out: the goalkeeper
+                            # left his line and beat the attacker to a
+                            # through ball deep in his own box. Recorded
+                            # as a SAVE with type "gk_sweep" so the
+                            # exporter counts it as runs_out and only
+                            # runs_out.
+                            if getattr(idf, "position", "") == "GK":
+                                result.add(cls.make_event(
+                                    minute, EventType.SAVE,
+                                    getattr(idf, "team_name", ""), idf.name,
+                                    phase, game_state, outcome=True,
+                                    location_x=tb_resolution.contact_point.x,
+                                    location_y=tb_resolution.contact_point.y,
+                                    metadata={
+                                        "type": "gk_sweep",
+                                        "runs_out": True,
+                                        "contact_z": 0.0,
+                                    },
+                                ))
                         result.add(cls.make_event(
                             minute, EventType.TURNOVER, attacking_team, last_player.name,
                             phase, game_state,
@@ -2154,7 +2743,10 @@ class PossessionChain(BaseChain):
                                 if getattr(defender, "position", "") != "GK"
                             ],
                         )
-                        drb_success = dribble_resolution.outcome == "retained"
+                        _drb_out = cls._dribble_confirmation_gate(
+                            dribble_resolution.outcome, last_player, marker
+                        )
+                        drb_success = _drb_out == "retained"
                         if not drb_success:
                             end_drb_x = dribble_resolution.contact_point.x
                             end_drb_y = dribble_resolution.contact_point.y
@@ -2281,11 +2873,20 @@ class PossessionChain(BaseChain):
                     cross_speed = aerial_delivery_speed(
                         float(getattr(last_player.dna.passing, "long_passing", 55.0))
                     )
-                    flight = make_flight(
+                    # Whipped delivery: the winger's crossing quality spins the
+                    # ball into the corridor in front of the runner (side-spin
+                    # Magnus bend). Aimed at the landing point, so the curl is
+                    # visible mid-flight but the resolver's landing stays exact.
+                    cross_spin = delivery_spin(
+                        float(getattr(last_player.dna.passing, "crossing", 55.0)),
+                        kind="side",
+                    )
+                    flight = make_ballistic_flight(
                         Vec3(x, y, 0.05),
                         Vec3(end_tx, end_ty, cross_height),
                         cross_speed,
-                        apex_z=max(cross_height * 1.4, 3.0),
+                        loft=0.0,
+                        spin=cross_spin,
                     )
                     cross_attackers = [
                         cls._moving_player(cross_receiver, position_engine)
@@ -2318,6 +2919,44 @@ class PossessionChain(BaseChain):
                                 (p for p in players if getattr(p, "name", "") == winner_name),
                                 last_player,
                             )
+                        elif gk is not None and cross_resolution.winner is not None and getattr(cross_resolution.winner.player, "name", "") == gk.name:
+                            # ── GK WINS THE HIGH BALL → CLAIM / PUNCH ────
+                            # The keeper genuinely arrived and won the aerial
+                            # race on an open-play cross. That is a real
+                            # high-ball take: he decides to claim it cleanly
+                            # or punch it clear, exactly like the corner path.
+                            cpx = max(83.0, min(104.5, cross_resolution.contact_point.x)) if attacks_right else max(0.5, min(22.0, cross_resolution.contact_point.x))
+                            cpy = max(24.0, min(44.0, cross_resolution.contact_point.y))
+                            contact_z = cross_resolution.contact_point.z
+                            contested = cross_resolution.outcome == "contested"
+                            challenger_present = cross_resolution.challenger is not None
+                            gk_action, claim_height = GoalkeeperEngine.decide_high_ball(
+                                gk, contact_z, contested, challenger_present,
+                            )
+                            # A run-out is a genuine sweep: the keeper left his
+                            # goal-mouth and beat an attacker to a LIVE open-play
+                            # cross. The win point IS the evidence — beyond the
+                            # six-yard box depth (5.5m) the keeper physically
+                            # committed to claim/punch it ahead of his own line,
+                            # i.e. a genuine sweep-keeper exit.
+                            goal_line_x = 105.0 if attacks_right else 0.0
+                            runs_out = is_goalkeeper_run_out(goal_line_x, cpx)
+                            event_type_md = "gk_punch" if gk_action == "punch" else "gk_claim"
+                            result.add(cls.make_event(
+                                minute, EventType.SAVE, defending_players[0].team_name if defending_players else attacking_team,
+                                gk.name, phase, game_state, outcome=True,
+                                location_x=cpx, location_y=cpy,
+                                metadata={
+                                    "type": event_type_md,
+                                    "claim_height": claim_height,
+                                    "contested": contested,
+                                    "runs_out": runs_out,
+                                    "contact_z": round(contact_z, 2),
+                                },
+                            ))
+                            x, y = cpx, cpy
+                            episode.set_ball(x, y)
+                            result.possession_lost = True
                         else:
                             cx = cross_resolution.contact_point.x
                             cy = cross_resolution.contact_point.y
@@ -2352,6 +2991,7 @@ class PossessionChain(BaseChain):
                             )
                             for e in clearance_result.events:
                                 result.add(e)
+                            cls._inherit_restart(clearance_result, result)
                             x, y = cx, cy
                             episode.set_ball(x, y)
                             result.possession_lost = True
@@ -2459,8 +3099,35 @@ class PossessionChain(BaseChain):
             if last_evt.metadata.get("physics") is None:
                 last_evt.metadata["physics"] = episode.physics_meta("possession_episode")
             last_evt.metadata["motion_trace"] = episode.condensed_trace()
+            last_evt.metadata["ball_motion"] = episode.ball_path
 
-        cls._accumulate_physics_stats(episode, position_engine, minute)
+        # ── POSSESSION-TIME (real minutes held, not a probability) ─────
+        # episode.elapsed is the 0.1 s clock advanced continuously across every
+        # pass, carry, dribble and duel in this sequence — the team's actual
+        # time on the ball. Split it across the players with an on-ball action
+        # (carry/pass/dribble) for per-player possession minutes.
+        result.sequence_duration_s = round(episode.elapsed, 2)
+        result.ball_path = episode.ball_path
+        # Real per-player distance / sprint accounting from the episode's 10 Hz
+        # trace (actual physics integration). This is what lets the unified
+        # timeline report physically-measured distance instead of a snapshot.
+        try:
+            result.player_distance_stats = dict(episode.calculate_distance_stats())
+        except Exception:
+            result.player_distance_stats = {}
+        _touch_types = (EventType.CARRY, EventType.PASS, EventType.PROGRESSIVE_PASS,
+                        EventType.SWITCH_OF_PLAY)
+        _touch_counts: Dict[str, int] = {}
+        for _ev in result.events:
+            if _ev.event_type in _touch_types:
+                _touch_counts[_ev.player] = _touch_counts.get(_ev.player, 0) + 1
+        _total_touches = sum(_touch_counts.values())
+        if _total_touches > 0:
+            _per = result.sequence_duration_s / _total_touches
+            for _p, _c in _touch_counts.items():
+                result.player_possession_s[_p] = round(_c * _per, 2)
+
+        result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
         return result
 
     # ── HELPERS ───────────────────────────────────────────────
@@ -2570,6 +3237,8 @@ class PossessionChain(BaseChain):
         att_style_key: Optional[str] = None,
         def_style_key: Optional[str] = None,
         def_press_intensity: Optional[float] = None,
+        counterpress: Optional[Dict[str, Any]] = None,
+        state: Optional[MatchState] = None,
     ) -> Tuple[PossessionPhase, Optional[PossessionDecision]]:
         """
         Run the possession-phase engine for this touch and return
@@ -2596,6 +3265,20 @@ class PossessionChain(BaseChain):
         engaged = engagement_allows(
             x if attacks_right else (105.0 - x), press_profile
         )
+
+        # ── COUNTERPRESS BURST OVERRIDE (P2) ─────────────────────────
+        # When a team has just lost possession, it presses the recovery
+        # zone for ~8 s, overriding the normal static engagement line
+        # within COUNTERPRESS_RANGE_M of the ball-lost location.  This
+        # keeps the cover-shadow geometry active and forward lanes choked
+        # even when the ball is in the team's own half — exactly what a
+        # real counterpress does in the first seconds after a turnover.
+        cp_blocked_lanes = False
+        if counterpress and counterpress.get("active") and state is not None:
+            cp_dist = math.hypot(x - counterpress["x"], y - counterpress["y"])
+            if cp_dist <= state.COUNTERPRESS_RANGE_M:
+                engaged = True
+                cp_blocked_lanes = True
 
         teammates = []
         for p in players:
@@ -2639,8 +3322,22 @@ class PossessionChain(BaseChain):
                 carrier_dna.mental.vision * 0.6
                 + carrier_dna.mental.composure * 0.4
             ) / 100.0
+        # Feature #2 — the carrier team's live attack pattern (set per minute
+        # by the MatchEngine from the team's identity + game state). The
+        # possession engine uses its favoured flank / pattern identity to bias
+        # circulation and the switch; receivers on that flank draw a mild
+        # boost in _pick_receiver. A defending team carries NONE.
+        _pattern = None
+        if state is not None and position_engine is not None:
+            _carrier_state = position_engine.states.get(getattr(carrier, "name", ""))
+            if _carrier_state is not None:
+                _pattern = (
+                    getattr(state, "team_patterns", {}) or {}
+                ).get(_carrier_state.team)
         engine = PossessionPhaseEngine(
-            gk_snap, style_key=style_key, carrier_iq=carrier_iq
+            gk_snap, style_key=style_key, carrier_iq=carrier_iq,
+            favored_flank=favored_flank(_pattern),
+            pattern_key=(_pattern.value if _pattern is not None else None),
         )
         decision = engine.decide(
             current_phase, x, y, carrier.position, teammates,
@@ -2785,8 +3482,14 @@ class PossessionChain(BaseChain):
         possession_phase: Optional[PossessionPhase] = None,
         match_state: Optional["MatchState"] = None,
     ) -> Optional[PlayerProfile]:
-        # Closer to goal = higher chance of forward player receiving
-        fwd_weight = min(5.0, 1.0 + (x / 105) * 4.0)
+        # Closer to goal = higher chance of forward player receiving.
+        # VERTICALITY RE-BALANCE: the gradient was min(5.0, 1 + (x/105)*4) —
+        # a forward label was worth up to 5x whenever the ball was near the
+        # box, which made "pass it to the deepest forward" the winner on
+        # almost every touch even from midfield. The gradient is compressed
+        # (cap 4.4x) so forward preference survives but support/lateral
+        # outlets compete properly — less forced verticality, same shape.
+        fwd_weight = min(4.4, 1.0 + (x / 105) * 3.4)
         fwd_pos = preferred_positions or ["CAM", "LW", "RW", "ST", "CF", "CM"]
 
         # Confidence gates how willing the passer is to attempt a pass into a
@@ -2877,6 +3580,21 @@ class PossessionChain(BaseChain):
                             base = 1.0 + (fwd_weight - 1.0) * 0.25
                     else:
                         base = fwd_weight
+                # FULLBACK OVERLAP FIX: Overlapping fullbacks (LB/RB advanced
+                # into the final third) should be attractive passing options
+                # for wingers, providing width + support. Without this boost,
+                # fullbacks get only base=1.0 weight even when perfectly
+                # positioned on the overlap, making wingers recycle sideways
+                # instead of playing the support runner.
+                elif p.position in ("LB", "RB") and position_engine is not None:
+                    cur_x, cur_y = position_engine.get_position(p.name)
+                    # Advanced into attacking territory (x > 60 for attacking right)
+                    advanced = (cur_x > 60.0 if attacks_right else cur_x < 45.0)
+                    if advanced:
+                        # Give them a healthy forward-player bonus when overlapping
+                        base = fwd_weight * 0.70  # 70% of winger/CAM weight
+                    else:
+                        base = 1.0  # Normal midfielder weight in own half
                 else:
                     base = fwd_weight if p.position in fwd_pos else 1.0
 
@@ -2993,6 +3711,36 @@ class PossessionChain(BaseChain):
         # post-discipline, so no extra near-ball plausibility multiply is
         # applied here — that term is what pinned the pass to the central
         # clump and let the ball never leave the middle of the pitch.
+        #
+        # Feature #2 — PATTERN FLANK PULL: when this team is leaning on a side
+        # overload / wing isolation, receivers already standing on that flank
+        # draw a mild weight bump (and the far side a small tax). This is the
+        # player-level half of the overload: the ball LIVES on the pattern's
+        # flank (3v2s are created there) until the far lane truly opens for
+        # the switch. It is deliberately weak (1.18 / 0.88) so the geometric
+        # weighting above keeps its authority.
+        _base_labeller = label_weight
+        _fav = None
+        _pteam = None
+        if match_state is not None and position_engine is not None:
+            _pst = position_engine.states.get(getattr(passer, "name", ""))
+            if _pst is not None:
+                _pteam = _pst.team
+                _pattern = (getattr(match_state, "team_patterns", {}) or {}).get(_pteam)
+                _fav = favored_flank(_pattern)
+
+        def label_weight(p: PlayerProfile) -> float:
+            w = _base_labeller(p)
+            if _fav and position_engine is not None:
+                try:
+                    _r = position_engine.states.get(p.name)
+                    if _r is not None and _r.team == _pteam:
+                        _ry = position_engine.get_position(p.name)[1]
+                        w *= flank_bias_multiplier(_ry, attacks_right, _fav)
+                except Exception:
+                    pass
+            return w
+
         return cls.pick_weighted(
             candidates,
             label_weight,
@@ -3207,13 +3955,20 @@ class PossessionChain(BaseChain):
                        chemistry=None,
                        marking: float = 0.0,
                        confidence: Optional[float] = None,
-                       lane_mult: float = 1.0) -> bool:
+                       lane_mult: float = 1.0,
+                       is_airborne: bool = False,
+                       weather: Optional[WeatherCondition] = None) -> bool:
         prob = DNAFactory.get_pass_accuracy(player.dna, is_long=is_long, under_pressure=under_pressure)
         # Chemistry modifier: if both players have chemistry data, multiply
         # pass accuracy by the chemistry multiplier (0.90x to 1.14x).
-        if chemistry is not None and receiver is not None:
-            chem_mult = chemistry.pass_chemistry_mult(player.name, receiver.name)
-            prob = min(0.95, prob * chem_mult)
+        if receiver is not None:
+            # Resolve the active chemistry from the live registry unless the
+            # caller passed one explicitly. Falls back to the passer's team.
+            from squad_chemistry import active_for
+            chem = chemistry if chemistry is not None else active_for(getattr(player, "team_name", None))
+            if chem is not None:
+                chem_mult = chem.pass_chemistry_mult(player.name, receiver.name)
+                prob = min(0.95, prob * chem_mult)
         # Marking penalty: a pass into a tightly-marked receiver is harder to
         # complete, but the effect is modest — a smothered pass drops ~25%
         # off base accuracy at most, not half. Confidence modulates the
@@ -3232,6 +3987,8 @@ class PossessionChain(BaseChain):
         # shadow completed at the same rate as an open one — line-breaking
         # balls were free. A choked corridor cuts completion sharply.
         prob *= lane_mult
+        if WeatherPhysics.enabled or weather is not None:
+            prob *= WeatherPhysics.pass_accuracy_mult(weather, is_long=is_long, is_airborne=is_airborne)
         prob = _get_soul_applicator().modify_pass_accuracy(player, prob)
         return random.random() < prob
 
@@ -3522,9 +4279,9 @@ class PossessionChain(BaseChain):
             if under_pressure:
                 base *= 0.80   # squeezed on the touchline he still recycles short
             if is_progressive:
-                return max(5, min(18, base * 1.5))
+                return max(5, min(16, base * 1.35))
         if is_progressive:
-            return max(5, min(25, base * 1.5))
+            return max(5, min(22, base * 1.35))
         return max(2, min(20, base))
 
     @classmethod
@@ -3591,19 +4348,25 @@ class PossessionChain(BaseChain):
         vision_roll = player.dna.mental.vision / 100.0
         composure_roll = player.dna.mental.composure / 100.0
         safe_penalty = player.dna.tendencies.plays_safe * 0.3
-        base_prob = vision_roll * 0.5 + composure_roll * 0.2 - safe_penalty
+        # VERTICALITY RE-BALANCE: the old coefficients (vision 0.5 +
+        # composure 0.2, clamp 0.60) fired a "drive it forward" intent on
+        # most touches in the progression zone. The bar is raised — vision
+        # weighs less, safety weighs more, and the cap drops to 0.48 — so a
+        # forward intent is a genuine decision by an elite passer rather
+        # than the default exit from midfield.
+        base_prob = vision_roll * 0.42 + composure_roll * 0.16 - safe_penalty * 1.15
         if hasattr(profile, 'style'):
             fast_styles = {"fluid_counter", "gegenpressing", "ultra_attacking", "route_one", "direct"}
             if profile.style.value in fast_styles:
-                base_prob += 0.12
+                base_prob += 0.09
         # Confidence modulates forward-pass boldness: a player low on
         # confidence turns the ball back / sideways rather than attempting
         # the risky forward pass; a confident one commits to it.
         conf = getattr(getattr(player, "dna", None), "form", None)
         if conf is not None:
-            conf_mult = 0.55 + (conf.confidence / 100.0) * 0.90   # 0.55 .. 1.45
+            conf_mult = 0.50 + (conf.confidence / 100.0) * 0.85   # 0.50 .. 1.35
             base_prob *= conf_mult
-        base_prob = max(0.08, min(0.60, base_prob))
+        base_prob = max(0.06, min(0.48, base_prob))
         return random.random() < base_prob
 
     @classmethod
@@ -3669,22 +4432,26 @@ class PossessionChain(BaseChain):
 
         end_px = cls.clamp_x(x + (dx if attacks_right else -dx), attacks_right)
 
+        # PITCH WIDTH FIX: Increased from 4 + vert_skill * 16 (max 20m) to 
+        # 6 + vert_skill * 22 (max 28m) to allow wider cross-field switches
+        # and better pitch stretching for skilled passers.
         vert_skill = (player.dna.passing.short_passing + player.dna.technical.ball_control) / 200
-        vert_range = 4 + vert_skill * 16
+        vert_range = 6 + vert_skill * 22
         end_py = y + (0.5 - random.random()) * vert_range
         end_py = max(2, min(66, end_py))
 
         # Preserve flank width for wide fullbacks on non-forward reset passes.
         # This avoids a safe fullback recycle pushing the ball unnaturally toward
         # the central channel when the pass is meant to be a sideways/backward option.
+        # PITCH WIDTH FIX: Further relaxed from 18/50 to 12/56 to allow wider fullback play.
         is_forward = (dx > 0) if attacks_right else (dx < 0)
         if player.position in ("LB", "RB") and not is_forward:
-            if y < 22.0:
+            if y < 12.0:
                 end_py = max(end_py, y - 3.0)
-                end_py = min(end_py, 24.0)
-            elif y > 46.0:
+                end_py = min(end_py, 14.0)
+            elif y > 56.0:
                 end_py = min(end_py, y + 3.0)
-                end_py = max(end_py, 44.0)
+                end_py = max(end_py, 54.0)
 
         # ── CHECKPOINT 18: WINGER FLANK PRESERVATION ──────────────
         # MODERN WINGER FIX: wingers are touchline-hugging flank attackers,
@@ -3694,25 +4461,27 @@ class PossessionChain(BaseChain):
         # their flank channel, not drift toward midfield. This is one of the
         # key reasons wingers were ending up next to the CAM — every pass
         # pulled them central.
+        # PITCH WIDTH FIX: Further relaxed caps from 18/50 to 12/56 to allow wingers
+        # to reach touchline zones (0-10m, 58-68m) for realistic wing play.
         if player.position in ("LW", "RW"):
             flank_keep = 0.55 if not is_forward else 0.40
             if player.position == "LW":
                 # Left winger: destination stays in the left flank channel
                 if y < 26.0:
-                    # Already wide — keep it wide
-                    end_py = min(end_py, 22.0)
-                elif end_py > 22.0:
+                    # Already wide — keep it wide (relaxed from 18.0 to 12.0)
+                    end_py = min(end_py, 12.0)
+                elif end_py > 12.0:
                     # Drifted central — push the destination back to the flank
-                    end_py = y - (y - 22.0) * flank_keep
-                    end_py = max(6.0, min(22.0, end_py))
+                    end_py = y - (y - 12.0) * flank_keep
+                    end_py = max(3.0, min(12.0, end_py))
             else:
                 # Right winger: destination stays in the right flank channel
                 if y > 42.0:
-                    # Already wide — keep it wide
-                    end_py = max(end_py, 46.0)
-                elif end_py < 46.0:
+                    # Already wide — keep it wide (relaxed from 50.0 to 56.0)
+                    end_py = max(end_py, 56.0)
+                elif end_py < 56.0:
                     # Drifted central — push the destination back to the flank
-                    end_py = y + (46.0 - y) * flank_keep
+                    end_py = y + (56.0 - y) * flank_keep
                     end_py = max(46.0, min(62.0, end_py))
 
         return end_px, end_py
@@ -3814,7 +4583,9 @@ class PossessionChain(BaseChain):
         """Generate a carry event and return (event, new_x, new_y, success)."""
         dist, adv_ratio = cls._carry_distance_advance(player, x, profile)
         new_x = min(103, x + dist * adv_ratio)
-        vert_range = 4 + (player.dna.technical.ball_control / 100) * 8
+        # PITCH WIDTH FIX: Increased from 4 + ball_control * 8 (max 12m) to
+        # 6 + ball_control * 14 (max 20m) to allow wider diagonal runs.
+        vert_range = 6 + (player.dna.technical.ball_control / 100) * 14
         new_y = y + (0.5 - random.random()) * vert_range
         new_y = max(2, min(66, new_y))
 
@@ -4128,7 +4899,10 @@ class AttackChain(BaseChain):
                         if getattr(d, "position", "") != "GK"
                     ],
                 )
-                success = dribble_res.outcome == "retained"
+                _drb_out = cls._dribble_confirmation_gate(
+                    dribble_res.outcome, shooter, nearest_defender
+                )
+                success = _drb_out == "retained"
                 drb_end_x = dribble_res.contact_point.x
                 drb_physics = episode.physics_meta("pre_shot_dribble")
                 is_heavy_touch = False
@@ -4256,8 +5030,18 @@ class AttackChain(BaseChain):
         shot_res = episode.resolve_shot(flight, gk_motion, blockers, attacks_right=attacks_right)
         shot_out = shot_res.outcome  # goal | saved | woodwork | wide | blocked
         shot_physics = episode.physics_meta("shot")
+        # Opta-style shot speed: the launch velocity baked into the flight
+        # (20-34 m/s for a struck ball; headers are far slower). Reported as
+        # the speed the ball leaves the boot/noggin — not the average over the
+        # arc (which is ball_speed_mps, kept below for continuity).
+        launch_speed = getattr(flight, "initial_speed", 0.0) or 0.0
+        if body_part == "head" or launch_speed < 12.0:
+            launch_speed = _shot_speed_for_player(shooter, body_part)
         shot_physics.update({
             "flight_s": round(shot_res.flight_time, 2),
+            "shot_speed_mps": round(launch_speed, 2),
+            "shot_speed_kmh": round(launch_speed * 3.6, 1),
+            "flight_time_s": round(flight.duration, 2),
             "target_y": round(shot_res.goal_point.y, 2),
             "target_z": round(shot_res.goal_point.z, 2),
             "ball_speed_mps": round(math.hypot(
@@ -4268,41 +5052,93 @@ class AttackChain(BaseChain):
         shot_y_end = shot_res.goal_point.y
 
         if shot_out == "goal":
-            result.shot_on_target = True
-            result.add(cls.make_event(
-                minute, EventType.SHOT_ON_TARGET, attacking_team, shooter.name,
-                phase, gs,
-                secondary_player=gk.name if gk else None,
-                location_x=x, location_y=y,
-                end_x=shot_x_end, end_y=shot_y_end,
-                situation=situation, xg=xg, body_part=body_part,
-                outcome=True,
-                metadata={"zone": zone, "is_big_chance": is_big,
-                          "physics": shot_physics, "resolution": "trajectory"}
-            ))
-            result.goal_scored   = True
-            result.goal_team     = attacking_team
-            result.goal_scorer   = shooter.name
-            result.goal_assistant = creator.name if creator else ""
+            # ── HYBRID CONVERSION GATE (Checkpoint 28) ─────────────────
+            # Geometry is still the PRIMARY authority: it has already decided
+            # this shot placed the ball where the keeper's dive envelope could
+            # NOT reach it — the optimal, "keeper beaten" case. We keep that
+            # as-is for genuine clearcuts. But a scuffed low-quality effort
+            # (tiny xG) that STARTS as a clean-geometry strike can still be
+            # clawed back by the keeper ("worldie"): the final goal/save now
+            # also respects chance quality and finishing, so high-value
+            # chances and clinical finishers convert and junk shots don't
+            # bang in at the same fixed rate (which is what let blowouts and
+            # high-volume teams run away).
+            finishing = float(getattr(
+                getattr(getattr(shooter, "dna", None), "technical", None),
+                "finishing", 50.0))
+            fin_signal = 0.80 + (finishing / 100.0) * 0.40   # 0.82 -> 1.20
+            if is_big:
+                fin_signal += 0.10
+            gate_xg = max(0.0, min(0.99, xg * fin_signal))
+            # Captured inspite of the geometry (keeper worldie) probability
+            # is low for quality chances, high for hope-shots.
+            worldie_p = max(0.0, 1.0 - gate_xg)
+            converted = gate_xg >= 0.40 or random.random() >= worldie_p * 0.5
 
-            result.add(cls.make_event(
-                minute, EventType.GOAL, attacking_team, shooter.name,
-                phase, gs,
-                secondary_player=creator.name if creator else None,
-                location_x=x, location_y=y,
-                end_x=shot_x_end, end_y=shot_y_end,
-                situation=situation,
-                xg=xg,
-                body_part=body_part,
-                outcome=True,
-                metadata={
-                    "zone": zone,
-                    "is_big_chance": is_big,
-                    "body_part": body_part,
-                    "physics": shot_physics,
-                    "resolution": "trajectory",
-                }
-            ))
+            if converted:
+                result.shot_on_target = True
+                result.add(cls.make_event(
+                    minute, EventType.SHOT_ON_TARGET, attacking_team, shooter.name,
+                    phase, gs,
+                    secondary_player=gk.name if gk else None,
+                    location_x=x, location_y=y,
+                    end_x=shot_x_end, end_y=shot_y_end,
+                    situation=situation, xg=xg, body_part=body_part,
+                    outcome=True,
+                    metadata={"zone": zone, "is_big_chance": is_big,
+                              "physics": shot_physics, "resolution": "trajectory"}
+                ))
+                result.goal_scored   = True
+                result.goal_team     = attacking_team
+                result.goal_scorer   = shooter.name
+                result.goal_assistant = creator.name if creator else ""
+
+                result.add(cls.make_event(
+                    minute, EventType.GOAL, attacking_team, shooter.name,
+                    phase, gs,
+                    secondary_player=creator.name if creator else None,
+                    location_x=x, location_y=y,
+                    end_x=shot_x_end, end_y=shot_y_end,
+                    situation=situation,
+                    xg=xg,
+                    body_part=body_part,
+                    outcome=True,
+                    metadata={
+                        "zone": zone,
+                        "is_big_chance": is_big,
+                        "body_part": body_part,
+                        "physics": shot_physics,
+                        "resolution": "trajectory",
+                    }
+                ))
+            else:
+                # Keeper clawed it back — still an on-target save (worldie).
+                result.shot_on_target = True
+                result.add(cls.make_event(
+                    minute, EventType.SHOT_ON_TARGET, attacking_team, shooter.name,
+                    phase, gs,
+                    secondary_player=gk.name if gk else None,
+                    location_x=x, location_y=y,
+                    end_x=shot_x_end, end_y=shot_y_end,
+                    situation=situation, xg=xg, body_part=body_part,
+                    outcome=True,
+                    metadata={"zone": zone, "is_big_chance": is_big,
+                              "physics": shot_physics, "resolution": "trajectory",
+                              "worldie": True}
+                ))
+                result.add(cls.make_event(
+                    minute, EventType.SAVE, defending_team,
+                    gk.name if gk else "GK",
+                    phase, gs,
+                    secondary_player=shooter.name,
+                    location_x=x, location_y=y,
+                    end_x=shot_x_end, end_y=shot_y_end,
+                    xg=xg,
+                    outcome=True,
+                    metadata={"zone": zone, "is_big_chance": is_big,
+                              "physics": shot_physics, "resolution": "trajectory",
+                              "worldie": True}
+                ))
 
         elif shot_out == "saved":
             result.shot_on_target = True
@@ -4484,6 +5320,14 @@ class AttackChain(BaseChain):
             last_evt.metadata["physics"] = shot_physics
             last_evt.metadata["motion_trace"] = episode.condensed_trace()
 
+        # ── SHOT-SPEED STAMP (Opta-style) ─────────────────────────
+        # Every shot event carries the launch velocity + flight time at the
+        # metadata TOP level (consistent with corner/penalty/FK shots below),
+        # so the average-shot-speed aggregator reads one source of truth.
+        for _ev in result.events:
+            if _ev.event_type in SHOT_SPEED_EVENT_TYPES:
+                _stamp_shot_speed(_ev, launch_speed, flight.duration)
+
         # ── OUT-OF-BOUNDS DETECTION (Checkpoint 7) ────────────────
         # Check if shot went out of bounds and emit appropriate restart
         # Get final ball position from last event
@@ -4514,7 +5358,7 @@ class AttackChain(BaseChain):
                     result.restart_y = 34.0
                     result.possession_lost = True
 
-        cls._accumulate_physics_stats(episode, position_engine, minute)
+        result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
         return result
 
     # ── HELPERS ───────────────────────────────────────────────
@@ -4757,6 +5601,8 @@ class AttackChain(BaseChain):
         fin  = shooter.dna.technical.finishing / 100.0
         base += (comp + fin) * 0.05
         base = _get_soul_applicator().modify_shot_quality(shooter, base)
+        if WeatherPhysics.enabled:
+            base *= WeatherPhysics.shot_accuracy_mult()
         # Penalty: always on target (unless catastrophic miss)
         if situation == SituationType.PENALTY:
             return min(0.97, base * 1.5)
@@ -4791,6 +5637,7 @@ class SetPieceChain(BaseChain):
         context_x: Optional[float] = None,
         context_y: Optional[float] = None,
         position_engine=None,
+        routine: Optional[SetPieceRoutine] = None,
     ) -> ChainResult:
         if situation == SituationType.PENALTY:
             return cls._penalty_chain(minute, attacking_team, defending_team,
@@ -4798,12 +5645,14 @@ class SetPieceChain(BaseChain):
         elif situation == SituationType.CORNER:
             return cls._corner_chain(minute, attacking_team, defending_team,
                                       att_players, def_players, state, attacks_right,
-                                      position_engine=position_engine)
+                                      position_engine=position_engine,
+                                      routine=routine)
         else:
             return cls._freekick_chain(minute, attacking_team, defending_team,
                                         att_players, def_players, state, situation, attacks_right,
                                         context_x=context_x, context_y=context_y,
-                                        position_engine=position_engine)
+                                        position_engine=position_engine,
+                                        routine=routine)
 
     @classmethod
     def _penalty_chain(cls, minute, att_team, def_team,
@@ -4825,6 +5674,17 @@ class SetPieceChain(BaseChain):
         pen_quality = taker.dna.technical.penalty_taking / 100.0
         pen_prob    = 0.60 + (pen_quality * 0.30)
 
+        # Opta-style shot speed: penalties are struck at full power from the
+        # spot (≈11 m to the goal line at 20-35 m/s → sub-half-second flight).
+        pen_launch = _shot_speed_for_player(taker, "foot")
+        pen_flight = round(11.0 / pen_launch, 2)
+        pen_speed_md = {
+            "pen_prob": round(pen_prob, 3),
+            "shot_speed_mps": round(pen_launch, 2),
+            "shot_speed_kmh": round(pen_launch * 3.6, 1),
+            "shot_flight_s": pen_flight,
+        }
+
         if gk:
             gk_reflex = gk.dna.gk_attrs.reflexes / 100.0
             pen_prob -= gk_reflex * 0.05
@@ -4839,7 +5699,7 @@ class SetPieceChain(BaseChain):
                 location_y=PitchZone.PENALTY_SPOT[1],
                 xg=0.79, outcome=True,
                 body_part=random.choice(["right_foot", "left_foot"]),
-                metadata={"pen_prob": round(pen_prob, 3)}
+                metadata=dict(pen_speed_md)
             ))
             result.goal_scored    = True
             result.goal_team      = att_team
@@ -4853,7 +5713,7 @@ class SetPieceChain(BaseChain):
                 location_x=ps_x,
                 location_y=PitchZone.PENALTY_SPOT[1],
                 xg=0.79, outcome=False,
-                metadata={"saved_by": gk.name if gk else "GK"}
+                metadata={**pen_speed_md, "saved_by": gk.name if gk else "GK"}
             ))
             if gk:
                 result.add(cls.make_event(
@@ -4869,7 +5729,8 @@ class SetPieceChain(BaseChain):
     @classmethod
     def _corner_chain(cls, minute, att_team, def_team,
                        att_players, def_players, state,
-                       attacks_right=True, position_engine=None) -> ChainResult:
+                       attacks_right=True, position_engine=None,
+                       routine: Optional[SetPieceRoutine] = None) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
         episode = None
@@ -4884,9 +5745,39 @@ class SetPieceChain(BaseChain):
         corner_y  = random.choice([1.0, 67.0])
         corner_side = "right" if corner_y > 34 else "left"
         taker    = cls._pick_sp_taker(att_players, situation="corner", corner_side=corner_side)
-        receiver = cls._pick_aerial_threat(att_players, exclude=taker.name)
-        defender = cls._pick_aerial_defender(def_players)
+        # Feature #3 — committed attacking routine: the scheme decides WHO
+        # attacks the delivery and WHERE it is aimed. Baseline (routine=None)
+        # keeps the classic pure aerial-threat pick.
+        params = corner_delivery(routine)
+        zone = params.get("target_zone")
+        receiver = cls._pick_set_piece_target(att_players, zone, exclude=taker.name)
         gk       = cls._pick_gk_player(def_players)
+
+        # ── CHECKPOINT P1: SET-PIECE DEFENSIVE MARKING GRID ────────────────
+        # Replace the single "pick one jumping CB" aerial duel with a real
+        # corner-defence assignment: the best-suited aerial CB carries the
+        # opponent's biggest aerial threat, a first man guards the near-post
+        # line, and the GK starts on the defended side of the away swing.
+        own_goal_x = 105.0 if attacks_right else 0.0
+        sp_defenders = [
+            (p.name, p.position,
+             getattr(p.dna.physical, "jumping", 60.0),
+             getattr(p.dna.technical, "heading", 60.0))
+            for p in def_players
+        ]
+        sp_attackers = [
+            (p.name, p.position,
+             getattr(p.dna.physical, "jumping", 60.0),
+             getattr(p.dna.technical, "heading", 60.0))
+            for p in att_players if p.position != "GK"
+        ]
+        sp = SetPieceMarkingEngine.build(
+            sp_defenders, sp_attackers, own_goal_x, corner_side=corner_side)
+        aerial_defender_name = sp.aerial_defender
+        defender = next((p for p in def_players
+                         if p.name == aerial_defender_name), None)
+        if defender is None:
+            defender = cls._pick_aerial_defender(def_players)
 
         # Corner taken event — outcome is determined by the aerial physics
         # below, not a pre-roll. Start as True; if no one wins it cleanly
@@ -4912,12 +5803,43 @@ class SetPieceChain(BaseChain):
             # Attacking target: near the penalty spot / front post
             if receiver:
                 rx, ry = _pos(receiver.name)
-                # Keep them in the box — nudge if they drifted too far.
-                if attacks_right and rx < 85:
-                    rx = 88.0 + random.uniform(0.0, 6.0)
-                elif not attacks_right and rx > 20:
-                    rx = 17.0 - random.uniform(0.0, 6.0)
-                ry = max(22.0, min(46.0, ry))
+
+                def _zone_band(_zone, _corner_y):
+                    # near/far swap with the corner side; six/penalty/edge
+                    # stay central in the box.
+                    if _zone == "near":
+                        return (24.0, 30.0) if _corner_y < 34 else (38.0, 44.0)
+                    if _zone == "far":
+                        return (38.0, 44.0) if _corner_y < 34 else (24.0, 30.0)
+                    if _zone == "six":
+                        return (31.0, 37.0)
+                    if _zone == "penalty":
+                        return (32.0, 36.0)
+                    return (26.0, 36.0)  # edge (short-corner pull-back)
+
+                def _zone_x(_zone, _att_right):
+                    if _zone == "six":
+                        return (93.0 + random.uniform(0.0, 2.0)) if _att_right \
+                            else (12.0 - random.uniform(0.0, 2.0))
+                    if _zone == "edge":
+                        return (84.0 + random.uniform(0.0, 3.0)) if _att_right \
+                            else (21.0 - random.uniform(0.0, 3.0))
+                    return (88.0 + random.uniform(0.0, 6.0)) if _att_right \
+                        else (17.0 - random.uniform(0.0, 6.0))
+
+                if zone is not None:
+                    # Feature #3: the routine plants the target at its own
+                    # box zone, not whichever way the receiver drifted.
+                    low, high = _zone_band(zone, corner_y)
+                    rx = _zone_x(zone, attacks_right)
+                    ry = random.uniform(low, high)
+                else:
+                    # Keep them in the box — nudge if they drifted too far.
+                    if attacks_right and rx < 85:
+                        rx = 88.0 + random.uniform(0.0, 6.0)
+                    elif not attacks_right and rx > 20:
+                        rx = 17.0 - random.uniform(0.0, 6.0)
+                    ry = max(22.0, min(46.0, ry))
                 if position_engine is not None:
                     position_engine.record_touch(receiver.name, rx, ry, minute)
             else:
@@ -4964,20 +5886,37 @@ class SetPieceChain(BaseChain):
         # Good crossers (80+) put it in the 2.0–2.4 m sweet spot.
         # Poor crossers (0) float it 2.6–3.0 m (too high) or drive it 1.6–1.9 m (too low).
         corner_height = 2.0 + (1.0 - cross_quality) * random.uniform(0.3, 0.9)
+        # Feature #3: routines only bend the flight of a crosser who CAN
+        # bend it — a poor crosser's ball stays a poor crosser's ball.
+        corner_height = max(2.0, min(3.0, corner_height + params.get("height_bias", 0.0) * cross_quality))
         corner_speed = aerial_delivery_speed(
             float(getattr(taker.dna.passing, "long_passing", 55.0))
         )
         # Target is slightly ahead of the attacker so they run onto it
         target_x = rx + random.uniform(-1.0, 1.0)
         target_y = ry + random.uniform(-1.0, 1.0)
-        # Apex sits just above the delivery height — a looping cross, not a
-        # 6 m goal-kick. Players must be able to reach the contact point.
-        apex_z = corner_height + random.uniform(0.6, 1.2)
-        flight = make_flight(
+        # The flight arc is now ballistic: launch angle and apex fall out of
+        # the taker's crossing speed, not a tuned apex.
+        # An in-swinger bends toward the goalmouth (side spin from the taker's
+        # crossing quality) — the classic corner that sucks the keeper toward
+        # the six-yard box even before the aerial duel is contested.
+        corner_spin = delivery_spin(
+            float(getattr(taker.dna.passing, "crossing", 55.0)),
+            kind="side",
+        )
+        # Feature #3: an out-swinging corner curls AWAY from the goalmouth
+        # (the far-post hunted delivery), the in-swinger toward it. The sign
+        # is made deterministic per corner side; the RNG draw above is kept
+        # for stream parity.
+        if params.get("swing") == "out":
+            out_sign = -1.0 if corner_y < 34 else 1.0
+            corner_spin = BallSpin(corner_spin.rate, corner_spin.kind, out_sign)
+        flight = make_ballistic_flight(
             Vec3(corner_x, corner_y, 0.05),
             Vec3(target_x, target_y, corner_height),
             corner_speed,
-            apex_z=apex_z,
+            loft=0.0,
+            spin=corner_spin,
         )
 
         # ── AERIAL DUEL — outcome authority ────────────────────────
@@ -5028,6 +5967,11 @@ class SetPieceChain(BaseChain):
         for e in result.events:
             if e.event_type == EventType.CORNER_TAKEN:
                 e.outcome = corner_delivery_success
+                _md = dict(e.metadata or {})
+                if routine is not None:
+                    _md["routine"] = routine.value
+                    _md["crowd"] = round(params.get("crowd", 0.0), 2)
+                e.metadata = _md
                 break
 
         # AERIAL_DUEL event
@@ -5044,6 +5988,9 @@ class SetPieceChain(BaseChain):
                 "resolution": "aerial_trajectory" if position_engine is not None else "legacy_roll",
                 "winner": winner_name,
                 "winner_team": winner_team,
+                "set_piece_marking": sp.as_dict() if sp else None,
+                **({"routine": routine.value, "target_zone": zone}
+                   if routine is not None else {}),
             }
         ))
 
@@ -5055,10 +6002,14 @@ class SetPieceChain(BaseChain):
 
         # ── ATTACKER WINS → HEADER SHOT ───────────────────────────
         if att_wins and receiver:
+            # Feature #3: a committed pile (six-yard / spotted crowd) raises
+            # the odds of a BIG_CHANCE-grade header the same way numbers in
+            # the box do in real football.
+            big_odds = 0.35 + params.get("crowd", 0.0) * 0.15
             xg = XGEngine.calculate(
                 zone="inside_box", body_part="head",
                 situation=SituationType.CORNER,
-                is_big_chance=random.random() < 0.35
+                is_big_chance=random.random() < big_odds
             )
             result.xg_generated = xg
             result.xa_generated = xg
@@ -5200,17 +6151,38 @@ class SetPieceChain(BaseChain):
             )
             for e in clearance_result.events:
                 result.add(e)
+            cls._inherit_restart(clearance_result, result)
 
-        # ── GK WINS → CLAIM / SAVE ────────────────────────────────
+        # ── GK WINS → CLAIM / PUNCH / RUNS OUT ───────────────────────
         elif gk_wins and gk:
-            claim_x = gkx + random.uniform(-1.0, 1.0)
-            claim_y = gky + random.uniform(-2.0, 2.0)
+            # The keeper's win is a physical high-ball take: he gets there at
+            # the actual aerial contact point (wherever the delivery carried),
+            # not some placeholder beside the goal line.
+            cpx = aerial.contact_point.x if aerial is not None else target_x
+            cpy = aerial.contact_point.y if aerial is not None else target_y
+            cpx = max(83.0, min(104.5, cpx)) if attacks_right else max(0.5, min(22.0, cpx))
+            cpy = max(24.0, min(44.0, cpy))
+            contact_z = aerial.contact_point.z if aerial is not None else corner_height
+            contested = aerial is not None and aerial.outcome == "contested"
+            challenger_present = aerial is not None and aerial.challenger is not None
+            action, claim_height = GoalkeeperEngine.decide_high_ball(
+                gk, contact_z, contested, challenger_present,
+            )
+
+            event_type_md = "gk_punch" if action == "punch" else "gk_claim"
             result.add(cls.make_event(
                 minute, EventType.SAVE, def_team, gk.name,
                 phase, gs, outcome=True,
-                location_x=claim_x,
-                location_y=claim_y,
-                metadata={"type": "corner_claim", "corner_followup": "gk_claim", "corner_side": corner_side},
+                location_x=cpx,
+                location_y=cpy,
+                metadata={
+                    "type": event_type_md,
+                    "corner_followup": "gk_punch" if action == "punch" else "gk_claim",
+                    "corner_side": corner_side,
+                    "claim_height": claim_height,
+                    "contested": contested,
+                    "contact_z": round((aerial.contact_point.z if aerial is not None else corner_height), 2),
+                },
             ))
 
         # ── NO CLEAR WINNER → BALL FALLS LOOSE ────────────────────
@@ -5218,15 +6190,33 @@ class SetPieceChain(BaseChain):
             loose_x = max(85.0, min(100.0, target_x + random.uniform(-2.0, 2.0)))
             loose_y = max(24.0, min(44.0, target_y + random.uniform(-2.0, 2.0)))
             result.add(cls.make_event(
-                minute, EventType.BALL_RECOVERY, att_team,
-                receiver.name if receiver else taker.name,
-                phase, gs,
-                location_x=loose_x, location_y=loose_y,
-                outcome=True,
-                metadata={"loose_ball": True, "corner_followup": "loose"},
-            ))
+                    minute, EventType.BALL_RECOVERY, att_team,
+                    receiver.name if receiver else taker.name,
+                    phase, gs,
+                    location_x=loose_x, location_y=loose_y,
+                    outcome=True,
+                    metadata={"loose_ball": True, "corner_followup": "loose"},
+                ))
 
-        cls._accumulate_physics_stats(episode, position_engine, minute)
+        result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
+
+        # ── SHOT-SPEED STAMP (Opta-style) ─────────────────────────
+        # Corner headers/rebound shots carry the SHOT event's body_part, so the
+        # stamp loop derives each effort's launch velocity (head ≈ far slower
+        # than a struck ball) and its ~flight time to the goal line.
+        _goal_line_x = 105.0 if attacks_right else 0.0
+        for _ev in result.events:
+            if _ev.event_type in SHOT_SPEED_EVENT_TYPES:
+                _bp = getattr(_ev, "body_part", "head")
+                _shooter = next(
+                    (p for p in att_players if p.name == _ev.player), receiver
+                )
+                _spd = _shot_speed_for_player(_shooter, "head" if _bp == "head" else "foot")
+                _stamp_shot_speed(
+                    _ev, _spd,
+                    max(0.1, abs(_goal_line_x - _ev.location_x) / _spd),
+                )
+
         return result
 
     @classmethod
@@ -5235,7 +6225,8 @@ class SetPieceChain(BaseChain):
                          attacks_right=True,
                          context_x: Optional[float] = None,
                          context_y: Optional[float] = None,
-                         position_engine=None) -> ChainResult:
+                         position_engine=None,
+                         routine: Optional[SetPieceRoutine] = None) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
         episode = None
@@ -5251,6 +6242,13 @@ class SetPieceChain(BaseChain):
             fk_y = random.uniform(20, 48)
         direct_range = fk_x > 78 if attacks_right else fk_x < 27
         fk_type = "direct" if situation == SituationType.DIRECT_FREEKICK and direct_range else "crossed"
+        # Feature #3: a committed TRAINED_CROSS hands the ball to the box even
+        # in the direct half-circle (very common in real football);
+        # DIRECT_ATTEMPT strikes the goal-mouth.
+        if (routine == SetPieceRoutine.TRAINED_CROSS
+                and situation == SituationType.DIRECT_FREEKICK
+                and direct_range):
+            fk_type = "crossed"
         taker = cls._pick_sp_taker(att_players, situation="freekick", freekick_type=fk_type)
         gk    = cls._pick_gk_player(def_players)
 
@@ -5261,11 +6259,12 @@ class SetPieceChain(BaseChain):
 
         # Direct or crossed?
         direct_range = fk_x > 78 if attacks_right else fk_x < 27
-        if situation == SituationType.DIRECT_FREEKICK and direct_range:
+        if situation == SituationType.DIRECT_FREEKICK and direct_range and fk_type == "direct":
             # Direct shot
             result.add(cls.make_event(
                 minute, EventType.FREEKICK_DIRECT, att_team, taker.name,
-                phase, gs, location_x=fk_x, location_y=fk_y
+                phase, gs, location_x=fk_x, location_y=fk_y,
+                metadata={"routine": routine.value} if routine is not None else {},
             ))
 
             xg = XGEngine.calculate(
@@ -5322,10 +6321,15 @@ class SetPieceChain(BaseChain):
             # Crossed free kick — becomes like a corner
             result.add(cls.make_event(
                 minute, EventType.FREEKICK_CROSS, att_team, taker.name,
-                phase, gs, location_x=fk_x, location_y=fk_y
+                phase, gs, location_x=fk_x, location_y=fk_y,
+                metadata={"routine": routine.value} if routine is not None else {},
             ))
-            # Resolve like a corner
-            sub = cls._corner_chain(minute, att_team, def_team, att_players, def_players, state, attacks_right)
+            # Resolve like a corner (Feature #3: the corner routine shapes the
+            # crossed free kick too; the position engine stays threaded in).
+            sub = cls._corner_chain(minute, att_team, def_team, att_players,
+                                    def_players, state, attacks_right,
+                                    position_engine=position_engine,
+                                    routine=routine)
             # Inherit events (minus the duplicate corner taken)
             result.events.extend(sub.events[1:])
             result.goal_scored    = sub.goal_scored
@@ -5336,7 +6340,22 @@ class SetPieceChain(BaseChain):
             result.xa_generated   = sub.xa_generated
             result.shot_on_target = sub.shot_on_target
 
-        cls._accumulate_physics_stats(episode, position_engine, minute)
+        # ── SHOT-SPEED STAMP (Opta-style) ─────────────────────────
+        # Direct free-kick attempts: fired at pace — base shot velocity lifted
+        # by the taker's dead-ball skill.
+        for _ev in result.events:
+            if _ev.event_type in SHOT_SPEED_EVENT_TYPES:
+                _fk_lift = 0.90 + (float(getattr(
+                    getattr(taker.dna, "technical", None), "free_kick", 50.0,
+                )) / 100.0) * 0.30
+                _spd = _shot_speed_for_player(taker, "foot") * _fk_lift
+                _goal_x = 105.0 if attacks_right else 0.0
+                _stamp_shot_speed(
+                    _ev, _spd,
+                    max(0.1, abs(_goal_x - _ev.location_x) / _spd),
+                )
+
+        result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
         return result
 
     # ── HELPERS ───────────────────────────────────────────────
@@ -5459,6 +6478,7 @@ class TransitionChain(BaseChain):
         state: MatchState,
         position_engine: Optional[PositionEngine] = None,
         attacks_right: bool = True,
+        counterpress: Optional[Dict[str, Any]] = None,
     ) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
@@ -5474,19 +6494,33 @@ class TransitionChain(BaseChain):
         press_x = random.uniform(55, 85)
         press_y = random.uniform(10, 58)
 
+        # ── COUNTERPRESS BURST (P2) ────────────────────────────────
+        # When the pressing team has just lost possession, its first
+        # defensive action is anchored at the recovery zone (right where
+        # the ball was lost) and its press is more likely to succeed — the
+        # "win it back immediately" hunt at the exact loss location.
+        cp_boost = 1.0
+        if counterpress and counterpress.get("active"):
+            press_x = counterpress.get("x", press_x)
+            press_y = counterpress.get("y", press_y)
+            cp_boost = state.COUNTERPRESS_INTENSITY_MULT
+
         result.add(cls.make_event(
             minute, EventType.PRESS, pressing_team, presser.name,
             phase, gs,
             secondary_player=pressed.name,
             location_x=press_x,
             location_y=press_y,
+            metadata={"counterpress": bool(cp_boost > 1.0)},
         ))
 
         # Press success?
-        press_success_rate = (
+        press_success_rate = min(
+            0.96,
             press_profile.press_success_rate
             * (presser.dna.physical.pace / 100.0 * 0.3 + 0.7)
             * (1.0 - pressed.dna.press_resistance / 100.0 * 0.4)
+            * cp_boost,
         )
         # Checkpoint 7: soul pressers (Pressing Evangelist, Sweeper Sage)
         # win the ball back more often — their defining trait. Also flows
@@ -5572,11 +6606,14 @@ class TransitionChain(BaseChain):
         x = anchor_x if anchor_x is not None else random.uniform(55, 75)
         y = anchor_y if anchor_y is not None else random.uniform(15, 53)
 
-        # Carry forward fast from the anchor
+        # Carry forward fast from the anchor. Direction is the counter team's
+        # own attacking way (counter_attacks_right), so an away-side counter
+        # breaks TOWARD the opponent goal (x to 0), not back toward its own.
         carry_dist, adv_ratio = cls._carry_distance_advance(
             carrier, x, counter_profile, is_counter=True
         )
-        end_x = min(103, x + carry_dist * adv_ratio)
+        advance_x = carry_dist * adv_ratio if counter_attacks_right else -carry_dist * adv_ratio
+        end_x = cls.clamp_x(x + advance_x, counter_attacks_right)
         vert_range = 4 + (carrier.dna.technical.ball_control / 100) * 8
         end_y = y + (0.5 - random.random()) * vert_range
         end_y = max(5, min(63, end_y))
@@ -5594,7 +6631,8 @@ class TransitionChain(BaseChain):
 
         # Pass to shooter or shoot directly?
         if shooter and shooter != carrier and random.random() < 0.55:
-            pass_end_x = min(105, x + random.uniform(6, 14))
+            pass_adv = random.uniform(6, 14) if counter_attacks_right else -random.uniform(6, 14)
+            pass_end_x = cls.clamp_x(x + pass_adv, counter_attacks_right)
             pass_end_y = y + random.uniform(-6, 6)
             pass_end_y = max(5, min(63, pass_end_y))
             result.add(cls.make_event(
@@ -5618,6 +6656,7 @@ class TransitionChain(BaseChain):
                 state, SituationType.FAST_BREAK,
                 context_x=pass_end_x, context_y=pass_end_y,
                 position_engine=position_engine,
+                attacks_right=counter_attacks_right,
             )
             result.events.extend(attack.events)
             result.goal_scored    = attack.goal_scored
@@ -5636,6 +6675,7 @@ class TransitionChain(BaseChain):
                 state, SituationType.FAST_BREAK,
                 context_x=x, context_y=y,
                 position_engine=position_engine,
+                attacks_right=counter_attacks_right,
             )
             result.events.extend(attack.events)
             result.goal_scored    = attack.goal_scored
@@ -5760,18 +6800,43 @@ class DefensiveChain(BaseChain):
         y = max(0, min(68, y))
 
         if action_type == "tackle":
+            # ── CRAFT THE TACKLE RATE ──────────────────────────────
             tackle_rate = DNAFactory.get_tackle_success_rate(defender.dna)
-            success = tackle_rate > random.random()
-            result.add(cls.make_event(
-                minute,
-                EventType.TACKLE_WON if success else EventType.TACKLE_LOST,
-                defending_team, defender.name,
-                phase, gs,
-                secondary_player=attacker.name if attacker else None,
-                location_x=x, location_y=y,
-                outcome=success,
-                metadata={"danger_before": round(danger_level, 1)},
-            ))
+
+            # 1) Attacker voice — a skilled carrier erodes the defender's
+            #    edge. Uses the same attacking-skill differential as the
+            #    physics-race path (_dribble_confirmation_gate) so a
+            #    90-dribbling winger is measurably harder to win the ball
+            #    from than a leaden teammate in possession.
+            if attacker is not None:
+                tackle_rate -= cls._tackle_attacker_resistance(attacker, defender)
+
+            # 2) Danger panic — mirroring clearance panic: a last-ditch
+            #    challenge is rushed and mistimed (lower success, and the
+            #    higher foul_base below). Zero danger → no change, so the
+            #    routine-challenge baseline roll is preserved.
+            risk = max(0.0, min(1.0, danger_level / 100.0))
+            tackle_rate -= 0.10 * risk
+
+            # 3) Aggression/bravery tradeoff — committed (aggressive/brave)
+            #    tacklers dive in: the challenge is less reliable (this rate
+            #    is discounted — mistimed more often), but when it lands the
+            #    crunch wins the ball clean more often (the conversion roll
+            #    in the failure branch below).
+            aggression = float(getattr(
+                getattr(defender.dna, "tendencies", None),
+                "tackles_aggressively", 0.40))
+            bravery = float(getattr(
+                getattr(defender.dna, "mental", None), "bravery", 60.0)) / 100.0
+            commitment = max(0.0, min(1.0, 0.5 * aggression + 0.5 * bravery))
+            tackle_rate *= (1.0 - 0.12 * commitment)
+
+            tackle_rate = max(0.08, min(0.92, tackle_rate))
+            success = random.random() < tackle_rate
+            clean_won = False
+
+            # ── FAILURE RESOLUTION (foul vs clean-win vs dribble-past) ──
+            foul_committed = False
             if not success:
                 # Not every failed tackle is a foul — depends on aggression.
                 # A foul off a bad challenge is the minority outcome (~40%
@@ -5781,11 +6846,39 @@ class DefensiveChain(BaseChain):
                 foul_base = 0.40
                 if defender.dna.tendencies.tackles_aggressively > 0.6:
                     foul_base *= 1.3
+                # Danger makes the lunge mistimed: last-ditch tackles foul
+                # more, the same panic that lowered the success rate above.
+                foul_base *= (1.0 + 0.60 * risk)
                 foul_base *= max(0.5, defender.dna.tendencies.commits_fouls * 2.0)
                 pos_mult = {"CDM": 1.4, "CB": 1.3, "CM": 1.15, "LB": 1.1, "RB": 1.1}.get(defender.position, 1.0)
-                is_foul = random.random() < (foul_base * pos_mult)
+                foul_committed = random.random() < (foul_base * pos_mult)
 
-                if is_foul:
+                if not foul_committed:
+                    # Clean win on the committed challenge: before conceding
+                    # the dribble-past, an aggressive/brave tackler who dove
+                    # in has a real chance the crunch actually won the ball.
+                    conversion = max(0.0, min(0.30, commitment * 0.30 - 0.04))
+                    if random.random() < conversion:
+                        success = True
+                        clean_won = True
+
+            result.add(cls.make_event(
+                minute,
+                EventType.TACKLE_WON if success else EventType.TACKLE_LOST,
+                defending_team, defender.name,
+                phase, gs,
+                secondary_player=attacker.name if attacker else None,
+                location_x=x, location_y=y,
+                outcome=success,
+                metadata={
+                    "danger_before": round(danger_level, 1),
+                    "tackle_rate": round(tackle_rate, 3),
+                    "committed": round(commitment, 2),
+                    "clean_commitment": clean_won,
+                },
+            ))
+            if not success:
+                if foul_committed:
                     result.foul_committed = True
                     result.add(cls.make_event(
                         minute, EventType.FOUL_COMMITTED,
@@ -5812,12 +6905,18 @@ class DefensiveChain(BaseChain):
                     # aggression / discipline record.
                     card_prob = (
                         0.15
-                        * (0.5 + referee_strictness)
+                        * (0.55 + 0.80 * referee_strictness)
                         * (defender.dna.tendencies.tackles_aggressively * 1.5 + 0.3)
                         * (0.6 + defender.dna.tendencies.commits_fouls)
                     )
                     if random.random() < card_prob:
-                        is_red = random.random() < 0.04
+                        # Straight-red tail scales with strictness too: a
+                        # lenient ref almost never sends a player off for a bad
+                        # challenge, a strict one will. Old code used a flat
+                        # 0.04, so tackles produced reds every match no matter
+                        # how lenient the referee was set.
+                        straight_red_chance = 0.04 * (0.15 + referee_strictness)
+                        is_red = random.random() < straight_red_chance
                         result.card_issued = True
                         result.card_type = "red" if is_red else "yellow"
                         result.carded_player = defender.name
@@ -5949,6 +7048,20 @@ class DefensiveChain(BaseChain):
                     **extra,
                 }
             ))
+
+            # ── THROW-IN DETECTION (Checkpoint 8 extension) ────────
+            # A clearance to the touchline (end_y at 0/68) puts the ball
+            # dead for a throw-in. The clearing DEFENDING team touched the
+            # ball last, so the throw is awarded to the ATTACKING team.
+            # Without this the ball was silently going out of play with no
+            # restart ever queued — throw-ins could never fire in a match.
+            if extra.get("dest") == "touchline":
+                result.restart_required = True
+                result.restart_type = "throw_in"
+                result.restart_team = attacking_team
+                result.restart_x = end_x
+                result.restart_y = end_y
+                result.possession_lost = True
 
             if failure_cause == "own_goal":
                 # The panic clearance redirects the ball into the defender's
@@ -6358,13 +7471,19 @@ class DisciplineChain(BaseChain):
             already_booked = fouler.name in booked_players
 
         # Real football: roughly 15% of fouls become a card (a ~3.5-4
-        # yellow match off ~25 fouls). Referee strictness is the main dial
-        # (~0.45x lenient → ~1.55x strict), with the fouler's discipline
-        # record and personality nudging it on top.
+        # yellow match off ~25 fouls). Referee strictness is the main dial,
+        # but it must reach a genuinely LOW rate at 0.0 (lenient) and only a
+        # modestly higher one at 1.0 (strict) — the old (0.45 + 1.1*strict)
+        # floor still booked ~45% of the baseline even from the most lenient
+        # referee, which is what made cards (and the straight-red tail that
+        # hangs off them) appear in essentially every match regardless of
+        # strictness. The new floor is ~0.55x and the ceiling ~1.35x, so a
+        # 0.0 ref is truly lenient and a 1.0 ref is firm without emptying a
+        # whole team into the book.
         card_prob = (
             0.15
             * PhaseEngine.card_mult(phase)
-            * (0.45 + 1.1 * referee_strictness)
+            * (0.55 + 0.80 * referee_strictness)
             * (0.6 + fouler.dna.tendencies.commits_fouls)
             * card_risk
         )
@@ -6386,7 +7505,14 @@ class DisciplineChain(BaseChain):
                 is_straight_red = False  # It's a second-yellow red
                 second_yellow = True
             else:
-                is_straight_red = random.random() < 0.06
+                # Straight-red chance is GATED by strictness: a lenient ref
+                # (0.0) almost never reaches for a straight red, while a
+                # strict ref (1.0) does so at roughly the old baseline. The
+                # previous code used a flat 0.06 regardless of strictness, so
+                # red cards were issued in basically every match no matter how
+                # lenient the referee was supposed to be.
+                straight_red_chance = 0.05 * (0.15 + referee_strictness)
+                is_straight_red = random.random() < straight_red_chance
                 second_yellow = False
 
             card_type = "red" if (is_straight_red or second_yellow) else "yellow"
@@ -6489,6 +7615,7 @@ class ChainDispatcher:
         def_press_intensity: Optional[float] = None,
         def_style_key: Optional[str] = None,
         att_style_key: Optional[str] = None,
+        counterpress: Optional[Dict[str, Any]] = None,
     ) -> ChainResult:
         return PossessionChain.generate(
             minute, attacking_team, players, team_profile, state, seq_length,
@@ -6498,6 +7625,7 @@ class ChainDispatcher:
             def_press_intensity=def_press_intensity,
             def_style_key=def_style_key,
             att_style_key=att_style_key,
+            counterpress=counterpress,
         )
 
     @staticmethod
@@ -6510,6 +7638,7 @@ class ChainDispatcher:
         delayed_offside=False,
         attacks_right: bool = True,
     ) -> ChainResult:
+        print(f"DEBUG ChainDispatcher.attack: att_team={att_team} attacks_right={attacks_right}")
         res = AttackChain.generate(
             minute, att_team, def_team,
             att_players, def_players,
@@ -6529,6 +7658,7 @@ class ChainDispatcher:
         context_x: Optional[float] = None,
         context_y: Optional[float] = None,
         position_engine=None,
+        routine: Optional[SetPieceRoutine] = None,
     ) -> ChainResult:
         return SetPieceChain.generate(
             minute, att_team, def_team,
@@ -6537,6 +7667,7 @@ class ChainDispatcher:
             context_x=context_x,
             context_y=context_y,
             position_engine=position_engine,
+            routine=routine,
         )
 
     @staticmethod
@@ -6545,12 +7676,14 @@ class ChainDispatcher:
         press_players, retreat_players,
         press_profile, state, position_engine=None,
         attacks_right: bool = True,
+        counterpress: Optional[Dict[str, Any]] = None,
     ) -> ChainResult:
         return TransitionChain.generate(
             minute, pressing_team, retreating_team,
             press_players, retreat_players,
             press_profile, state, position_engine=position_engine,
             attacks_right=attacks_right,
+            counterpress=counterpress,
         )
 
     @staticmethod
@@ -6851,7 +7984,11 @@ class GoalkeeperEngine:
             reach = base_reach * (0.7 + height_factor * 0.3)
         else:
             reach = base_reach
-        
+
+        if WeatherPhysics.enabled:
+            reach *= WeatherPhysics.gk_reach_mult()
+            reaction_time *= WeatherPhysics.gk_reaction_mult()
+
         return {
             'start_x': round(start_x, 1),
             'start_y': round(start_y, 1),
@@ -6949,6 +8086,68 @@ class GoalkeeperEngine:
         # Higher = harder to score (easier to save)
         save_mult = reach_factor * angle_factor * reaction_factor * placement_factor
         return round(save_mult, 3)
+
+    @staticmethod
+    def decide_high_ball(gk, contact_z: float, contested: bool,
+                         challenger_present: bool = False) -> Tuple[str, str]:
+        """DECISION (audited, no flat roll): a goalkeeper winning a high ball
+        (corner, crossed free kick, or open-play cross) must commit to one of
+        two real handling choices — CLAIM it cleanly or PUNCH it clear.
+
+        Inputs are all physical, real things that already happened in the
+        simulation, not post-hoc stat heuristics:
+            contact_z       — the 3D height the ball was won at (the delivery
+                              was either within a two-handed secure range or
+                              not)
+            contested       — whether the aerial duel had a genuine challenger
+                              physically arriving (traffic means a clean two-
+                              handed catch is not available)
+            challenger_present — the challenger exists at all (physics gate)
+
+        The punch tendency genuinely rises with delivery height (above a
+        keeper's secure two-handed reach the only safe way to clear a cross is
+        a fist) and with contest traffic, and genuinely falls with the GK's own
+        handling, aerial command and composure from his DNA.
+
+        Returns (action, height) with action in {"claim", "punch"} and height
+        in {"high", "medium", "low"} (the actual height at which the ball was
+        taken).
+        """
+        # ── Claim height bands from the REAL contact height ──────────
+        # A "high" claim is a full-extension take at or above the crossbar
+        # zone (~2.4m+ for a 6'3" keeper); "medium" is a normal head/chest
+        # take (~1.9-2.4m); "low" is gathered at waist or floor height.
+        if contact_z >= 2.4:
+            height = "high"
+        elif contact_z >= 1.9:
+            height = "medium"
+        else:
+            height = "low"
+
+        # ── Chosen action: claim vs punch (multi-cause decision) ─────
+        punch_tendency = 0.0
+        if contested and challenger_present:
+            punch_tendency += 0.40    # an attacker is in the arc — can't wrap cleanly
+        elif challenger_present:
+            punch_tendency += 0.20
+        if contact_z >= 2.6:
+            punch_tendency += 0.30    # delivery above secure two-handed reach
+        elif contact_z >= 2.3:
+            punch_tendency += 0.15
+
+        if gk is not None and getattr(gk, "dna", None) is not None:
+            gk_dna = gk.dna
+            handling = float(getattr(getattr(gk_dna, "gk_attrs", None), "handling", 60.0)) / 100.0
+            aerial   = float(getattr(getattr(gk_dna, "gk_attrs", None), "aerial_gk", 60.0)) / 100.0
+            composure = float(getattr(getattr(gk_dna, "mental", None), "composure", 60.0)) / 100.0
+            # Secure handlers / dominant aerial keepers / calm keepers punch less.
+            punch_tendency -= handling * 0.22
+            punch_tendency -= aerial   * 0.20
+            punch_tendency -= composure * 0.08
+
+        punch_tendency = max(0.10, min(0.80, punch_tendency))
+        action = "punch" if random.random() < punch_tendency else "claim"
+        return action, height
 
     @staticmethod
     def evaluate_save(xg: float, shooter_quality: float, shot_x: float, shot_y: float, gk, last_ball_x: float, last_ball_y: float):
@@ -7228,11 +8427,11 @@ class GoalKickChain(BaseChain):
                     gk_aerial_speed = aerial_delivery_speed(
                         float(getattr(gk.dna.passing, "long_passing", 55.0)) if gk else 55.0
                     )
-                    flight = make_flight(
+                    flight = make_ballistic_flight(
                         Vec3(6.0, 34.0, 0.05),
                         Vec3(end_x, end_y, gk_aerial_height),
                         gk_aerial_speed,
-                        apex_z=max(gk_aerial_height * 1.5, 3.5),
+                        loft=0.0,
                     )
                     aerial_attackers = [
                         cls._moving_player(target_att, position_engine)
@@ -7274,7 +8473,7 @@ class GoalKickChain(BaseChain):
                 if not att_win:
                     result.possession_lost = True
 
-        cls._accumulate_physics_stats(episode, position_engine, minute)
+        result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
         return result
 
 
@@ -7334,7 +8533,7 @@ class ThrowInChain(BaseChain):
 
             # Pick aerial threat in box
             receiver = cls.pick_weighted(
-                throw_players,
+                cls._outfield_players(throw_players),
                 lambda p: (p.dna.physical.jumping + p.dna.technical.heading) / 2 if p.name != taker.name else 0.1
             )
             defender = cls.pick_weighted(
@@ -7350,11 +8549,11 @@ class ThrowInChain(BaseChain):
                     throw_aerial_speed = aerial_delivery_speed(
                         float(getattr(taker.dna.passing, "long_passing", 55.0))
                     )
-                    flight = make_flight(
+                    flight = make_ballistic_flight(
                         Vec3(x, y, 0.05),
                         Vec3(end_x, end_y, throw_aerial_height),
                         throw_aerial_speed,
-                        apex_z=max(throw_aerial_height * 1.5, 3.0),
+                        loft=0.0,
                     )
                     aerial_attackers = [
                         cls._moving_player(receiver, position_engine)
@@ -7416,11 +8615,12 @@ class ThrowInChain(BaseChain):
 
         else:
             # ── STANDARD SHORT THROW-IN ─────────────────────────────
+            _outfield = cls._outfield_players(throw_players)
             receiver = cls.pick_weighted(
-                throw_players,
+                _outfield,
                 lambda p: 3.0 if p.position in ("CM", "CAM", "LW", "RW", "ST") else 1.0,
                 exclude=taker.name
-            ) or throw_players[0]
+            ) or (_outfield[0] if _outfield else None)
 
             end_x = max(2.0, min(103.0, x + random.uniform(-4, 6)))
             end_y = max(4.0, min(64.0, y + (5.0 if y < 34 else -5.0)))
@@ -7428,22 +8628,26 @@ class ThrowInChain(BaseChain):
             result.add(cls.make_event(
                 minute, EventType.THROW_IN, throwing_team, taker.name,
                 phase, gs,
-                secondary_player=receiver.name,
+                secondary_player=receiver.name if receiver else None,
                 location_x=x, location_y=y,
                 end_x=end_x, end_y=end_y,
                 outcome=True
             ))
 
-            result.add(cls.make_event(
-                minute, EventType.BALL_RECEIPT, throwing_team, receiver.name,
-                phase, gs,
-                location_x=end_x, location_y=end_y,
-                outcome=True
-            ))
+            if receiver:
+                result.add(cls.make_event(
+                    minute, EventType.BALL_RECEIPT, throwing_team, receiver.name,
+                    phase, gs,
+                    location_x=end_x, location_y=end_y,
+                    outcome=True
+                ))
+            else:
+                result.possession_lost = True
 
             if position_engine:
                 position_engine.record_touch(taker.name, x, y, minute)
-                position_engine.record_touch(receiver.name, end_x, end_y, minute)
+                if receiver:
+                    position_engine.record_touch(receiver.name, end_x, end_y, minute)
 
-        cls._accumulate_physics_stats(episode, position_engine, minute)
+        result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
         return result

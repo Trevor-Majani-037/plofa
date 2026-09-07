@@ -5,7 +5,7 @@ Each ball carrier evaluates the pitch as a dynamic spatial network:
 
     shooting window   -> shot_score  (distance decay × pressure tax × angle × finishing)
     passing corridors -> lane_clearance (defender blocking along the carrier→target segment)
-    teammate value    -> strategic_value (lane × [0.45·progress + 0.35·freedom + 0.20·depth])
+    teammate value    -> strategic_value (lane × [0.30·progress + 0.45·freedom + 0.20·depth])
 
 and resolves one of:
     SHOOT            — take the shot (hands off to AttackChain's existing pipeline)
@@ -248,10 +248,13 @@ def strategic_value(
     attacks_right: bool = True,
 ) -> float:
     """
-    V_strategic = lane × (0.45·progress + 0.35·freedom + 0.20·depth)
+    V_strategic = lane × (0.30·progress + 0.45·freedom + 0.20·depth)
 
-    progress : how much closer to the goal this pass takes the ball.
+    progress : how much closer to the goal this pass takes the ball
+               (softened ramp: saturates only 30m+ closer, not 10m).
     freedom  : 1.0 if no opponent within 3m of the target, else ramps down.
+               NOW the dominant term — unmarked support beats a deep target
+               who is marked or straight-forward.
     depth    : how deep into the attacking third the target sits.
     """
     lane = lane_clearance(x, y, tx, ty, defenders, position_engine)
@@ -269,11 +272,18 @@ def strategic_value(
     gx = _goal_x(attacks_right)
     d_ag = math.hypot(x - gx, y - GOAL_CENTER_Y)
     d_tg = math.hypot(tx - gx, ty - GOAL_CENTER_Y)
-    progress = _clamp01(0.5 + (d_ag - d_tg) / 20.0)
+    progress = _clamp01(0.5 + (d_ag - d_tg) / 30.0)
 
     depth = _clamp01((tx - 35.0) / 70.0) if attacks_right else _clamp01((35.0 - tx) / 70.0)
 
-    return lane * (0.45 * progress + 0.35 * freedom + 0.20 * depth)
+    # VERTICALITY RE-BALANCE: the option score used to be dominated by
+    # forward terms (0.45·progress + 0.20·depth), which funneled the ball
+    # toward the deepest receiver on nearly every touch. The weights now
+    # prize an UNMARKED receiver (freedom) over simply being the furthest
+    # forward one, and the progress ramp is softened (/30 rather than /20)
+    # so a runner 10m upfield no longer saturates the forward preference.
+    # Support / lateral recycle options stay fully alive.
+    return lane * (0.30 * progress + 0.45 * freedom + 0.20 * depth)
 
 
 def shot_threshold(dna, scenario: str) -> float:
@@ -449,7 +459,10 @@ class AttackingMatrix:
             gx = _goal_x(attacks_right)
             d_ag = math.hypot(x - gx, y - GOAL_CENTER_Y)
             d_tg = math.hypot(tx - gx, ty - GOAL_CENTER_Y)
-            progress = _clamp01(0.5 + (d_ag - d_tg) / 20.0)
+            # VERTICALITY RE-BALANCE: softened progress ramp (/30 rather than
+            # /20) — a receiver must be further upfield to earn the same
+            # forward preference as before.
+            progress = _clamp01(0.5 + (d_ag - d_tg) / 30.0)
             depth = _clamp01((tx - 35.0) / 70.0) if attacks_right else _clamp01((35.0 - tx) / 70.0)
 
             # Encourage wide fullback-to-wing combinations when the fullback
@@ -527,7 +540,14 @@ class AttackingMatrix:
             # able to go backwards under the press).
             ellipse = position_engine.ball_centric_weight(tm.name, x, y)
 
-            value = lane * (0.45 * progress + 0.35 * freedom + 0.20 * depth + same_flank_bonus + winger_flank_bonus + midfield_coverage_bonus + false_nine_bonus)
+            # VERTICALITY RE-BALANCE (see strategic_value): the option value
+            # used to be dominated by forward progression (0.45·progress +
+            # 0.20·depth), which pushed nearly every touch at the deepest
+            # receiver. Progress weight is cut to 0.30 and the unmarked /
+            # support term (freedom) raised to 0.45 so the ball circulates
+            # more before trying the killer ball — still progressive, just
+            # not direct-on-touch.
+            value = lane * (0.30 * progress + 0.45 * freedom + 0.20 * depth + same_flank_bonus + winger_flank_bonus + midfield_coverage_bonus + false_nine_bonus)
             # Checkpoint 24 — a WIDE carrier playing INTO the box is the
             # cross mechanism's job; the generic pass path must stop aiming
             # there or every disposal gets stamped (and counted) as a cross.
@@ -726,7 +746,11 @@ class AttackingMatrix:
             return _shoot("elite_shot")
 
         # 2. COUNTER CHANCE — a clean far option into space.
-        if scenario == "counter" and far_lane >= 0.55 and far_val >= 0.50 and not under_pressure:
+        # VERTICALITY RE-BALANCE: the far-option threshold follows the new
+        # option-value scale (progress weight 0.45→0.30 lower every far
+        # value), so the counter trigger is eased 0.50→0.42 — a counter's
+        # verticality is correct football and must survive the softening.
+        if scenario == "counter" and far_lane >= 0.55 and far_val >= 0.42 and not under_pressure:
             return _pass(best_far, "KEY_PASS", "counter_through_ball")
 
         # 3. LOW-BLOCK PANIC — parked-bus sides still have a go from range.

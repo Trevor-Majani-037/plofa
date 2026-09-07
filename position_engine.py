@@ -42,6 +42,14 @@ from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
 from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_Y, CENTER_Y
+from tactical_shapes import (
+    FormationStance,
+    stance_delta_roles,
+)
+from attack_patterns import (
+    AttackPattern,
+    pattern_role_deltas,
+)
 from winger_behavior import (
     WingerRegistry,
     WingerBehaviorEngine,
@@ -52,6 +60,7 @@ from fullback_behavior import FullbackRegistry, FullbackBehaviorEngine
 from midfielder_behavior import MidfieldRegistry, MidfielderBehaviorEngine
 from striker_behavior import StrikerRegistry, StrikerBehaviorEngine
 from block_awareness import HalfSpaceMagnet
+from marking import MarkingEngine, MarkAssignment
 
 if TYPE_CHECKING:
     from match_engine import TeamProfile, MatchPhase, GameState
@@ -89,9 +98,88 @@ ELLIPSE_SIGMA_ALONG: Dict[str, float] = {
 # it was reverted: wide delivery is now delivered by receive_option_quality
 # (reach + direction + post discipline) and flank_bias_y (the pass is aimed at
 # the wide player's home channel), not by a fattened lateral sigma.
-ELLIPSE_SIGMA_ACROSS: float = 9.0
-ELLIPSE_FORWARD_SHIFT: float = 8.0
+# PITCH WIDTH FIX: Increased from 9.0 to 13.0 to allow wider lateral drift
+# for receiving, improving touchline usage and reducing center concentration.
+ELLIPSE_SIGMA_ACROSS: float = 13.0
+# VERTICALITY RE-BALANCE: forward_shift 8 -> 5m. The ellipse is still
+# anchored AHEAD of the ball (so through-ball geometry survives and the
+# P2 preservation guard holds), but a runner must sit closer to the ball
+# line to earn the same receive weight — lateral and backward support
+# outlets are no longer doubly-taxed by a long forward anchor.
+ELLIPSE_FORWARD_SHIFT: float = 5.0
 ELLIPSE_COMPOSE_FLOOR: float = 0.35
+
+# Checkpoint 34 — WIDE FLANK OUTLET.
+# A wide player standing within WIDE_OUTLET_CHANNEL_HALF metres of his flank
+# anchor (home_y) right now is treated as a standing outlet in
+# receive_option_quality() when the ball is central. Without this, the
+# ellipse's lateral taper taxes a touchline target ~2.4x (direction ≈ 0.4)
+# vs a central option (≈ 0.98), starving the wide channels at the SELECTION
+# stage — the ball rarely gets switched wide because wide receivers score
+# poorly the moment the ball is central. Lifting the direction floor for a
+# genuinely-in-channel wide outlet lets the pass selection reach the touchline
+# from a central ball (the delivery code already aims at the touchline band).
+WIDE_OUTLET_CHANNEL_HALF: float = 10.0
+WIDE_OUTLET_DIRECTION_FLOOR: float = 0.80
+
+# Checkpoint 35 — PITCH-STRETCH RULE.
+# Wide roles (LW/RW/LB/RB) are the team's WIDTH PROVIDERS. It is a
+# structural duty — a RULE, not a preference — that they stretch the pitch
+# when the middle is packed: the winger holds/pushes toward his touchline
+# channel so the opposition block has to cover the full 68m, opening the
+# central lanes the ball then exploits. The detector is the "spine weight"
+# of the live ball: the deeper the ball sits in the central band (18-50m,
+# peak 24-44m), the more convincingly the middle is crowded and the harder
+# wide players pin the line. Every stretch movement clamps y INSIDE the
+# pitch bounds (a stretch never leaves the field of play).
+STRETCH_CENTER_LOW: float = 18.0
+STRETCH_CENTER_HIGH: float = 50.0
+STRETCH_SPINE_PEAK_LO: float = 24.0
+STRETCH_SPINE_PEAK_HI: float = 44.0
+# Strength additions, scaled by the spine weight (0..1):
+STRETCH_DRIFF_BOOST: float = 0.5    # flank-anchor pull in drift_minute
+STRETCH_TOUCH_BOOST: float = 0.30   # flank-hold pull in record_touch
+STRETCH_TARGET_BOOST: float = 0.30  # off-ball target steer (match_engine)
+# Selection floor lift on top of WIDE_OUTLET_DIRECTION_FLOOR at full spine.
+STRETCH_FLOOR_LIFT: float = 0.12
+# Hard lateral clamp for wide roles under the rule — inside the pitch,
+# a few metres off the ad boards. LB/LW anchor y=6, RB/RW y=62.
+STRETCH_CLAMP_LOW: float = 3.0
+STRETCH_CLAMP_HIGH: float = 65.0
+
+# Checkpoint 36 — TRIANGLE SUPPORT RULE.
+# Midfielders (CDM/CM/CAM) are the team's SHORT-PASSING LINKS: when the team
+# holds the ball they must be ABLE to complete a passing triangle — the
+# classic third-man shape — both on the wings (near-side CM joining the
+# winger + full-back cluster) and in the centre (CM pair split around the
+# ball with the CDM pivot behind). Before this checkpoint the live 10 Hz
+# machine only compacted midfields 7% toward the ball's y, so the near-side
+# CM physically could never reach a wide-support socket. The steer below is
+# another TARGET steer (never a position jump), pace-preserving, bounded to
+# half-space depth so a CM never pins the touchline like a winger does.
+TRI_MIDFIELD_ROLES: tuple = ("CDM", "CM", "CAM")
+TRI_WIDE_BAND: float = 18.0         # |ball_y - 34| above this = wide cluster
+TRI_HALF_SPACE_MAX: float = 17.0    # near-side support lands <= 17m off centre
+TRI_NEAR_ALPHA: float = 0.55        # near-side CM commits to the wing triangle
+TRI_FAR_ALPHA: float = 0.15         # far-side CM balance shift (subtle)
+TRI_PIVOT_ALPHA: float = 0.25       # CDM slides toward the ball side on wide play
+TRI_CENTRAL_ALPHA: float = 0.22     # central-ball triangle spread strength
+TRI_SUPPORT_BACK: float = 0.12      # support node sits 12% behind the play
+TRI_CENTRAL_CM_OFFSET: float = 8.0  # CM pair split metres around the ball
+
+
+def pitch_spine_weight(y: float) -> float:
+    """Checkpoint 35 — how central/crowded a ball y-coordinate is: 0.0 on
+    either touchline, 1.0 inside the 24-44m spine, linear taper through the
+    outer 18m/50m edges of the central band. The wide-stretch duty grows
+    with this value (0 = ball already wide, no need to stretch)."""
+    if y < STRETCH_CENTER_LOW or y > STRETCH_CENTER_HIGH:
+        return 0.0
+    if y <= STRETCH_SPINE_PEAK_LO:
+        return (y - STRETCH_CENTER_LOW) / (STRETCH_SPINE_PEAK_LO - STRETCH_CENTER_LOW)
+    if y >= STRETCH_SPINE_PEAK_HI:
+        return (STRETCH_CENTER_HIGH - y) / (STRETCH_CENTER_HIGH - STRETCH_SPINE_PEAK_HI)
+    return 1.0
 
 
 def ball_centric_ellipse_weight(
@@ -181,8 +269,10 @@ class ZoneGrid:
 BASE_HOME_POSITIONS: Dict[str, Tuple[float, float]] = {
     "GK":  (8.0,  34.0),
     "CB":  (24.0, 34.0),
-    "LB":  (26.0, 10.0),
-    "RB":  (26.0, 58.0),
+    # TOUCHLINE FIX: moved from y=10/58 to y=6/62 — 4m closer to each touchline.
+    # Fullbacks need to be tight to the line in both build-up and overlap runs.
+    "LB":  (26.0, 6.0),
+    "RB":  (26.0, 62.0),
     "CDM": (40.0, 34.0),
     "CM":  (52.0, 34.0),
     "CAM": (66.0, 34.0),
@@ -193,8 +283,12 @@ BASE_HOME_POSITIONS: Dict[str, Tuple[float, float]] = {
     # always full; the winger's home is the flank, 15-20m further forward
     # than the old CAM-adjacent position. This is the single biggest
     # difference between modern wingers and old inside-forwards.
-    "LW":  (82.0, 10.0),
-    "RW":  (82.0, 58.0),
+    # TOUCHLINE FIX: moved from y=10/58 to y=6/62 — 4m closer to each touchline.
+    # Real EPL wingers operate 2-7m off the line. Old 10/58 kept them in the
+    # wide-midfielder corridor. Everything that used these as anchors (carry
+    # steering, winger_behavior, band-proximity) now naturally pulls them wider.
+    "LW":  (82.0, 6.0),
+    "RW":  (82.0, 62.0),
     "ST":  (88.0, 34.0),
     "CF":  (85.0, 34.0),
 }
@@ -245,15 +339,21 @@ class FormationEngine:
 
         # Width affects wide players' y (push toward touchline) and
         # narrows/widens fullback y slightly too.
+        # TOUCHLINE FIX: Old formula was base_y * (0.6 + width * 0.8) which
+        # is INVERTED — at width=1.0 it gave LW home_y=14 (14m from touchline).
+        # New formula: width REDUCES distance from touchline. At width=0.5
+        # (default) player sits at base_y. At width=1.0 they're 3m closer to
+        # touchline; at width=0.0 they're 3m further in. Keeps shape coherent.
         width = getattr(profile, "width", 0.5)
         y = base_y
         if position in ("LW", "LB"):
-            # base_y already near touchline (small y); width pulls further out
-            y = base_y * (0.6 + width * 0.8)
+            # Low y = touchline side. Width pulls TOWARD y=0, not away.
+            inward_offset = (0.5 - width) * 6.0   # +3m at width=0, -3m at width=1
+            y = base_y + inward_offset
         elif position in ("RW", "RB"):
-            # mirror around 68
-            dist_from_touch = 68.0 - base_y
-            y = 68.0 - dist_from_touch * (0.6 + width * 0.8)
+            # High y = touchline side. Width pulls TOWARD y=68, not away.
+            inward_offset = (width - 0.5) * 6.0   # -3m at width=0, +3m at width=1
+            y = base_y + inward_offset
 
         # Spread multiple same-position players (e.g. 2 CBs, 2 CMs)
         spread = POSITION_SPREAD_Y.get(position)
@@ -261,7 +361,9 @@ class FormationEngine:
             offset = spread[slot_index % len(spread)]
             y = y + offset
 
-        y = max(3.0, min(65.0, y))
+        # TOUCHLINE FIX: widened from max(3.0, min(65.0)) to max(2.0, min(66.0))
+        # so wide players can actually be homed near the touchline (y=2-6, y=62-66).
+        y = max(2.0, min(66.0, y))
         return (round(x, 1), round(y, 1))
 
 
@@ -442,6 +544,16 @@ class PositionEngine:
         # MatchEngine after _update_block_shapes(). Consumed by drift_minute's
         # HalfSpaceMagnet integration (in-possession half-space occupation).
         self._block_context: Tuple[Optional[object], Optional[object]] = (None, None)
+        # Feature #1/#2 — in-match shape state. Base homes are captured at
+        # kickoff; formation stances (score reaction) and attack patterns
+        # (identity overloads) are applied as ADDITIVE role deltas on top, so
+        # the XI actually takes the chasing/overload/box shape instead of just
+        # switching dials. Applied from MatchEngine once per minute.
+        self._formation_base_homes: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        self._stance_deltas: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        self._pattern_deltas: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        self._applied_stance_key: Dict[str, tuple] = {}
+        self._applied_pattern: Dict[str, Optional[AttackPattern]] = {}
 
     def set_block_context(self, home_block, away_block) -> None:
         """Refresh the per-minute block shapes used by drift_minute's magnet."""
@@ -485,6 +597,12 @@ class PositionEngine:
             if name not in self.team_rosters[team_name]:
                 self.team_rosters[team_name].append(name)
 
+        # Feature #1/#2 — remember the authored shape as the STABLE base for
+        # additive in-match stance / attack-pattern home deltas.
+        self._capture_base_homes(team_name)
+        self._applied_stance_key.pop(team_name, None)
+        self._applied_pattern[team_name] = AttackPattern.NONE
+
         # Checkpoint 18 — register all wingers' spatial profiles (touchline
         # anchor, flank commitment, byline instinct, isolation thirst).
         self.winger_registry.register_team(players)
@@ -518,6 +636,10 @@ class PositionEngine:
             top_speed_mpm=self._pace_mpm_for(player),
         )
         self.team_rosters.setdefault(team_name, []).append(name)
+        # Feature #1/#2 — the sub's home join the base-shape capture so the
+        # in-match stance/pattern deltas apply to them like everyone else.
+        self._capture_base_homes(team_name)
+        self._applied_stance_key.pop(team_name, None)
         # Checkpoint 18 — register the sub's winger profile if they're a winger.
         self.winger_registry.register_player(player)
         # Checkpoint 32 — register the sub's fullback profile if they're a FB.
@@ -525,6 +647,80 @@ class PositionEngine:
         # Checkpoint 33 — register midfielder / striker profile if applicable.
         self.midfield_registry.register_player(player)
         self.striker_registry.register_player(player)
+
+    # ── FEATURE #1/#2: IN-MATCH SHAPE STATE ────────────────────────────
+    # Formation stances (chasing / seeing it out / man down ...) and attack
+    # patterns (overloads, box midfield, wing isolation ...) are expressed as
+    # ADDITIVE per-role home deltas on TOP of the authored shape. Home anchors
+    # feed receiver quality (the pass network), restart snaps, width-stretch
+    # steering and delivery aim — so a changed shape genuinely re-shapes the
+    # live XI instead of only flipping a dial.
+
+    def _capture_base_homes(self, team_name: str) -> None:
+        """Record every current home anchor as the stable authored base."""
+        self._formation_base_homes[team_name] = {
+            name: (st.home_x, st.home_y)
+            for name, st in self.states.items()
+            if st.team == team_name
+        }
+
+    def apply_formation_stance(
+        self,
+        team_name: str,
+        stance: FormationStance,
+        own_red_cards: int = 0,
+        avg_stamina: float = 100.0,
+    ) -> bool:
+        """Apply a formation stance's role deltas to a team's home anchors.
+
+        Idempotent: returns True only when the composite shape actually
+        changed (so the caller can start a reshape animation). Man-down and
+        fatigue are stacked modifiers exactly as the dials are (which is why
+        they are accepted here alongside the stance)."""
+        key = (stance, own_red_cards > 0, avg_stamina < 75.0)
+        if self._applied_stance_key.get(team_name) == key:
+            return False
+        self._stance_deltas[team_name] = stance_delta_roles(
+            stance, own_red_cards=own_red_cards, avg_stamina=avg_stamina
+        )
+        self._applied_stance_key[team_name] = key
+        self._recompute_homes(team_name)
+        return True
+
+    def apply_attack_pattern(
+        self, team_name: str, pattern: AttackPattern
+    ) -> bool:
+        """Apply an attack pattern's role deltas (empty for NONE).
+
+        Idempotent; returns True only when the pattern actually changed.
+        A team OOP is given NONE so its shape is the pure defensive stance —
+        patterns are possession shapes."""
+        if self._applied_pattern.get(team_name) == pattern:
+            return False
+        self._pattern_deltas[team_name] = pattern_role_deltas(pattern)
+        self._applied_pattern[team_name] = pattern
+        self._recompute_homes(team_name)
+        return True
+
+    def _recompute_homes(self, team_name: str) -> None:
+        """home = base + stance_delta + pattern_delta, mirrored for left-
+        attacking teams, clamped to the pitch. Both delta tables map by ROLE
+        in attacking-right normalised space, so the away-mirror is just a
+        sign flip (dx on the x-axis, dy on the y-axis)."""
+        base = self._formation_base_homes.get(team_name, {})
+        sgn = 1.0 if self.team_attacks_right.get(team_name, True) else -1.0
+        sd = self._stance_deltas.get(team_name, {})
+        pd = self._pattern_deltas.get(team_name, {})
+        for name, st in self.states.items():
+            if st.team != team_name:
+                continue
+            bx, by = base.get(name, (st.home_x, st.home_y))
+            sdx = sd.get(st.position, (0.0, 0.0))
+            pdx = pd.get(st.position, (0.0, 0.0))
+            dx = (sdx[0] + pdx[0]) * sgn
+            dy = (sdx[1] + pdx[1]) * sgn
+            st.home_x = max(4.0, min(101.0, bx + dx))
+            st.home_y = max(2.0, min(66.0, by + dy))
 
     @staticmethod
     def _drift_tolerance_for(position: str, player) -> float:
@@ -568,7 +764,7 @@ class PositionEngine:
         """
         phys = getattr(getattr(player, "dna", None), "physical", None)
         pace = getattr(phys, "pace", 65.0) if phys is not None else 65.0
-        return max(6.0, min(13.0, 6.0 + (pace - 50.0) / 45.0 * 7.0))
+        return max(16.0, min(40.0, 14.0 + (pace - 50.0) / 45.0 * 26.0))
 
     # ── LIVE UPDATES ──────────────────────────────────────────
 
@@ -595,14 +791,21 @@ class PositionEngine:
             # Pull any wide player back onto his flank channel on touch —
             # scaled by flank commitment so a touchline hugger holds harder
             # than an inverted inside-forward. Bounded: only fires when the
-            # touch has dragged the player >6m OFF his flank channel, so an
-            # on-flank touch is tracked exactly (preservation contract) and
-            # the pull always moves y TOWARD home_y, never away. The x stays
-            # at the ball (he IS at the ball); only the lateral placement is
-            # anchored.
+            # touch has dragged the player >FLANK_HOLD_TRIGGER_M OFF his
+            # flank channel, so an on-flank touch is tracked exactly
+            # (preservation contract) and the pull always moves y TOWARD
+            # home_y, never away. The x stays at the ball (he IS at the
+            # ball); only the lateral placement is anchored.
+            # Checkpoint 34: trigger narrowed 6.0 -> 3.0. Wingers were
+            # equilibrating ~8m off the line (peak receptions at y≈14 vs a
+            # home anchor at y=6) because any reception landing 3-6m infield
+            # was tracked exactly and pinned the half-space equilibrium in
+            # place. Snapping at >3m instead drags the reception band back
+            # toward the touchline.
+            FLANK_HOLD_TRIGGER_M = 3.0
             if state.position in ("LB", "RB", "LW", "RW"):
                 anchor_y = state.home_y
-                if abs(anchor_y - state.current_y) > 6.0:
+                if abs(anchor_y - state.current_y) > FLANK_HOLD_TRIGGER_M:
                     pull = 0.35
                     if state.position in ("LW", "RW"):
                         wp = self.winger_registry.get(player_name)
@@ -614,7 +817,17 @@ class PositionEngine:
                             # action after receiving infield is to rip back
                             # out to the touchline — pull hard.
                             pull = 0.40 + 0.35 * wp.flank_commitment
+                    # Checkpoint 35 — PITCH-STRETCH RULE: a touch that
+                    # pinned the wide player on the CENTRAL spine (packed
+                    # middle) must snap back to the line harder than a
+                    # half-space touch; the spine weight adds stretch power
+                    # so the width duty survives a central reception. Clamped
+                    # so the player can never be flung past the line.
+                    pull = min(0.95, pull + STRETCH_TOUCH_BOOST * pitch_spine_weight(state.current_y))
                     state.current_y += (anchor_y - state.current_y) * pull
+                    state.current_y = max(
+                        STRETCH_CLAMP_LOW, min(STRETCH_CLAMP_HIGH, state.current_y)
+                    )
             self._anchor_gk_in_own_box(state)
 
             # Finalize the real distance covered by this touch event
@@ -643,9 +856,9 @@ class PositionEngine:
             return
         attacks_right = self.team_attacks_right.get(state.team, True)
         if attacks_right:
-            state.current_x = max(0.0, min(35.0, state.current_x))
+            state.current_x = max(0.0, min(28.0, state.current_x))
         else:
-            state.current_x = max(70.0, min(105.0, state.current_x))
+            state.current_x = max(77.0, min(105.0, state.current_x))
 
     # ── MOVEMENT ACCOUNTING (real distance / sprint data) ──────────
     #
@@ -808,10 +1021,19 @@ class PositionEngine:
     BALL_PROXIMITY_BAND: Dict[str, tuple] = {
         "CDM": (12.0, 16.0),
         "CM": (14.0, 18.0),
+        # CB support radius: When a CB has the ball, his partner CB should
+        # stay close enough for a safe sideways pass but far enough to
+        # stretch the opponent's press (typical CB-to-CB distance 15-20m).
+        "CB": (14.0, 20.0),
         # CAM deliberately excluded: his home already sits where the ball
         # usually is, so the band anchor (which pulls radial/behind the
         # ball) fights his pocket-roam targets. _cam_pocket_roam owns the
         # #10's in-possession movement instead.
+        # Winger support radius: When ball is on their flank (especially
+        # with fullback or fellow winger), stay within 15-22m to offer
+        # support angle. Wider than midfielders to maintain pitch width.
+        "LW": (15.0, 22.0),
+        "RW": (15.0, 22.0),
         "LB": (18.0, 25.0),
         "RB": (18.0, 25.0),
     }
@@ -842,6 +1064,16 @@ class PositionEngine:
         independent home markers drifting in isolation.
         """
         phase_name = getattr(phase, "value", str(phase))
+
+        # Checkpoint 33b — CONTINUITY CLAMP snapshot. Capture each player's
+        # position at the start of this minute so we can enforce a realistic
+        # per-minute displacement cap at the end (no player may "teleport"
+        # more than his top sprint speed allows in one tick), for EVERY
+        # position and EVERY state — not just committed runs.
+        _start_snap = {
+            n: (s.current_x, s.current_y)
+            for n, s in self.states.items() if s is not None
+        }
 
         # Dynamic home shift: losing late -> whole team's home_x nudges forward.
         # Winning late (protecting) -> home_x nudges back (compact/defend).
@@ -1014,7 +1246,18 @@ class PositionEngine:
                 pull = (0.30 if in_possession else 0.20) * (0.5 + commitment * 0.5)
             else:
                 pull = 0.12
+            # Checkpoint 35 — PITCH-STRETCH RULE: when the live ball sits on
+            # the central spine the wide player's flank hold is a DUTY, not
+            # a drift habit — boost the anchor pull by the spine weight so
+            # he re-asserts the touchline while the middle is packed, and
+            # clamp the result inside the pitch.
+            pull *= 1.0 + STRETCH_DRIFF_BOOST * (
+                pitch_spine_weight(ball_y) if ball_y is not None else 0.0
+            )
             state.current_y += (state.home_y - state.current_y) * pull
+            state.current_y = max(
+                STRETCH_CLAMP_LOW, min(STRETCH_CLAMP_HIGH, state.current_y)
+            )
 
             # ── FORWARD X-ANCHOR ────────────────────────────────────
             # In possession, a winger who has drifted back toward midfield
@@ -1178,12 +1421,148 @@ class PositionEngine:
                 team_name, minute, ball_x, ball_y,
                 self.team_attacks_right.get(team_name, True),
                 opponent_players or [],
+                opp_block=opp_block,
             )
             self._striker_run_step(
                 team_name, minute, ball_x, ball_y,
                 self.team_attacks_right.get(team_name, True),
                 opponent_players or [],
             )
+
+        else:
+            # Checkpoint 33c — OUT-OF-POSSESSION midfield. The engine's
+            # press/recovery instincts were built but never consumed; this
+            # drives them: ball-winners step onto the carrier, holders drop
+            # to screen the block, the rest hold shape. Pace-capped like the
+            # possession run steps. Runs every OOP minute, but is itself
+            # bounded by the continuity clamp below.
+            self._midfield_defensive_step(
+                team_name, minute, ball_x, ball_y,
+                self.team_attacks_right.get(team_name, True),
+                opponent_players or [],
+            )
+
+        # Checkpoint 33b — CONTINUITY CLAMP. Enforce a realistic per-minute
+        # displacement cap for EVERY player in EVERY state (not just the
+        # committed-run steps), so no one teleports/jumps more than his top
+        # sprint speed allows in a single tick. Touched players (placed by
+        # record_touch this minute) are skipped — their ball coordinates are
+        # authoritative and must not be yanked off the ball they received.
+        for name in self.team_rosters.get(team_name, []):
+            st = self.states.get(name)
+            if st is None or name not in _start_snap:
+                continue
+            if st.last_active_minute == minute:
+                continue
+            sx, sy = _start_snap[name]
+            dx = st.current_x - sx
+            dy = st.current_y - sy
+            dist = math.hypot(dx, dy)
+            cap = st.top_speed_mpm
+            if dist > cap:
+                f = cap / dist
+                st.current_x = sx + dx * f
+                st.current_y = sy + dy * f
+
+    def wide_stretch_blend(
+        self, player_name: str, ball_y: float,
+    ) -> float:
+        """Checkpoint 35 — PITCH-STRETCH RULE: the blend weight a wide role's
+        off-ball shape target is steered toward its touchline channel.
+
+        Returns W (0..1) that the continuous off-ball machine
+        (match_engine._offball_move_player) applies to the target y:
+            `ty = ty + (home_y - ty) * W`,
+        scaled by the live ball's spine weight so the stretch duty engages
+        exactly when the middle is packed:
+            - ball wide / already on a flank  -> 0  (no stretch needed)
+            - ball on the 24-44m spine        -> ~0.30 toward the line/tick
+        Steering the TARGET (not the position) keeps the actual movement
+        pace-capped by the jog integrator, so the player physically re-asserts
+        the line without teleporting. Non-wide roles return 0.
+        """
+        state = self.states.get(player_name)
+        if state is None or state.position not in ("LB", "RB", "LW", "RW"):
+            return 0.0
+        return STRETCH_TARGET_BOOST * pitch_spine_weight(ball_y)
+
+    def midfielder_triangle_support(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """Checkpoint 36 — TRIANGLE SUPPORT RULE: the off-ball TARGET steer a
+        midfielder should take to complete a passing triangle.
+
+        Returns ``{name: (alpha, tx, ty)}`` for the team's CDM/CM/CAM — alpha
+        in (0..1] applied by match_engine._offball_move_player to the shape
+        target (`tx += (trix - tx)*alpha`, same pattern as the pitch-stretch),
+        or an empty dict when the team is out of possession (their movement
+        belongs to the defensive block / press, not triangles).
+
+        Geometry:
+          - WIDE ball (|ball_y-34| > TRI_WIDE_BAND) on a flank → the NEAR-SIDE
+            CM commits toward a half-space support socket off the wide cluster
+            (winger + full-back triangle); the far-side CM takes a subtle
+            balance shift; the CDM pivot slides toward the ball side.
+          - CENTRAL ball → the CM pair spreads either side of the ball with
+            the CDM dropping as the pivot behind — the central triangle.
+
+        Sides are formation-ordered (the 4-3-3's first CM is the left man,
+        the second the right) so the rule is deterministic. The socket y is
+        capped inside the pitch (half-space, never the touchline — CMs are
+        links, not width providers). Steering the TARGET keeps the 10 Hz
+        integrator's pace-capping intact.
+        """
+        if not has_ball or ball_x is None or ball_y is None:
+            return {}
+        roster = self.team_rosters.get(team_name, []) or []
+        mid_names = [
+            n for n in roster
+            if self.states.get(n)
+            and self.states[n].position in TRI_MIDFIELD_ROLES
+        ]
+        if not mid_names:
+            return {}
+        # Deterministic left/right split for repeated central roles, by lineup
+        # order: the first CM/CAM is the left man, the second the right.
+        sides = {}
+        cm_seq = 0
+        for n in mid_names:
+            pos = self.states[n].position
+            if pos == "CDM":
+                sides[n] = 0
+            else:
+                sides[n] = -1 if cm_seq % 2 == 0 else 1
+                cm_seq += 1
+        ball_side = -1 if ball_y < 34.0 else (1 if ball_y > 34.0 else 0)
+        wide = abs(ball_y - 34.0) > TRI_WIDE_BAND
+        own_goal_x = 0.0 if attacks_right else 105.0
+        out = {}
+        for n in mid_names:
+            st = self.states[n]
+            s = sides.get(n, 0)
+            if wide and ball_side != 0:
+                if s == ball_side:
+                    alpha = TRI_NEAR_ALPHA
+                    sy = 34.0 + ball_side * min(
+                        0.60 * abs(ball_y - 34.0), TRI_HALF_SPACE_MAX)
+                elif s == 0:
+                    alpha = TRI_PIVOT_ALPHA
+                    sy = 34.0 + ball_side * min(
+                        0.40 * abs(ball_y - 34.0), TRI_HALF_SPACE_MAX)
+                else:
+                    alpha = TRI_FAR_ALPHA
+                    sy = st.home_y - ball_side * 3.0
+                sx = ball_x + (own_goal_x - ball_x) * TRI_SUPPORT_BACK
+            else:
+                # Central ball -> central triangle: CM pair split around the
+                # ball, CDM pivot drops behind it.
+                alpha = TRI_CENTRAL_ALPHA
+                sy = ball_y + s * TRI_CENTRAL_CM_OFFSET
+                depth = 0.18 if st.position == "CDM" else 0.10
+                sx = ball_x + (own_goal_x - ball_x) * depth
+            out[n] = (alpha, sx, sy)
+        return out
 
     def _opponent_pressure_at(
         self, x: float, y: float,
@@ -1334,20 +1713,24 @@ class PositionEngine:
         team_name: str, minute: int,
         ball_x: Optional[float], ball_y: Optional[float],
         attacks_right: bool, opponent_players: Optional[List],
+        opp_block=None,
     ) -> None:
         """
         Checkpoint 33 — CONTINUOUS, SHAPE-AWARE central-midfield runs (CM).
 
         CMs decide a run from the MidfielderBehaviorEngine: drop to receive
-        (pivot), carry forward through the lines, or a late box arrival.
-        The target is cached and travelled at a pace-capped rate (same
-        machinery as the wide runs), bending off opponent pressure.
+        (pivot), carry forward through the lines, a late box arrival, or
+        drift to the far-side open channel (orbit).  The target is cached
+        and travelled at a pace-capped rate (same machinery as the wide
+        runs), bending off opponent pressure.
 
         CAMs are NOT handled here — their between-the-lines movement is
         owned by _cam_pocket_roam (made registry-aware below), to avoid
         double-moving them.
         """
         sign = 1.0 if attacks_right else -1.0
+        committed_carry = False
+        block_channels = getattr(opp_block, "channels", None) if opp_block else None
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
             if state is None or state.position != "CM":
@@ -1369,19 +1752,30 @@ class PositionEngine:
                 prof, x, y, attacks_right, ball_x, ball_y,
                 in_possession=True, defenders=opponent_players,
                 position_engine=self, anchor_y=anchor_y,
+                block_channels=block_channels,
             )
+            # Coordination: only ONE midfielder commits a carry per tick so
+            # the pivot isn't vacated by two runners at once.
+            if m == "carry" and committed_carry:
+                m = None
             if m == "drop":
                 target = prof.drop_target(attacks_right, anchor_y)
                 mode = "drop"
             elif m == "carry":
-                tx = min(max(x + sign * 12.0, 30.0), 82.0)
-                ty = (CENTER_Y + HALF_SPACE_WIDTH_M * 0.5) if anchor_y <= CENTER_Y \
-                    else (CENTER_Y - HALF_SPACE_WIDTH_M * 0.5)
-                target = (tx, ty)
+                target = MidfielderBehaviorEngine.carry_target(
+                    prof, x, y, attacks_right, anchor_y,
+                    defenders=opponent_players, position_engine=self)
                 mode = "carry"
+                committed_carry = True
             elif m == "late":
                 target = prof.box_arrival_target(ball_x, ball_y, attacks_right)
                 mode = "late"
+            elif m == "orbit":
+                target = prof.orbit_target(
+                    x, y, ball_x, ball_y, attacks_right, anchor_y,
+                    block_channels=block_channels,
+                    defenders=opponent_players, position_engine=self)
+                mode = "orbit"
 
             if target is None:
                 state.run_mode = None
@@ -1399,6 +1793,55 @@ class PositionEngine:
                 target[0], target[1], mode)
             dx = target[0] - state.current_x
             dy = target[1] - state.current_y
+            dist = math.hypot(dx, dy)
+            if dist < 1e-4:
+                continue
+            step = min(dist, state.top_speed_mpm)
+            state.current_x += dx / dist * step
+            state.current_y += dy / dist * step
+
+    def _midfield_defensive_step(
+        self,
+        team_name: str, minute: int,
+        ball_x: Optional[float], ball_y: Optional[float],
+        attacks_right: bool, opponent_players: Optional[List],
+    ) -> None:
+        """
+        Checkpoint 33c — CONTINUOUS, shape-aware OUT-OF-POSSESSION
+        midfield movement (CM + CAM). Driven by the MidfielderBehaviorEngine's
+        decide_defensive_role: a ball-winner steps onto the carrier
+        (press_target), a holder drops to screen the block (recover_target),
+        and everyone else holds the shape. Pace-capped by top_speed_mpm, and
+        still bounded by the continuity clamp in the caller.
+        """
+        if ball_x is None or ball_y is None:
+            return
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position not in ("CM", "CAM"):
+                continue
+            if state.last_active_minute == minute:
+                continue
+            prof = self.midfield_registry.get(name)
+            if prof is None:
+                continue
+            x, y = state.current_x, state.current_y
+            anchor_y = state.home_y
+            role = MidfielderBehaviorEngine.decide_defensive_role(
+                prof, x, y, attacks_right, ball_x, ball_y,
+                opponent_players, self,
+            )
+            if role == "press":
+                target = prof.press_target(x, y, opponent_players, self, attacks_right)
+            elif role == "recover":
+                target = prof.recover_target(attacks_right, anchor_y)
+            else:
+                target = None
+            if target is None:
+                continue
+            tx, ty = target
+            dx = tx - state.current_x
+            dy = ty - state.current_y
             dist = math.hypot(dx, dy)
             if dist < 1e-4:
                 continue
@@ -1485,12 +1928,18 @@ class PositionEngine:
         Returns the anchor (hx, hy) rescaled radially about the ball so its
         distance sits inside the position's median band:
 
+          CB  14-20m — partner CB support for build-up play: close enough
+              for safe sideways pass, far enough to stretch the press.
           CDM 12-16m — immediate anchor / recycling option, hovering just
               outside pressing cover shadows to keep passing lines alive.
           CM  14-18m — one passing tier away: far enough to stretch the
               block, close enough for a secure pass under pressure (the
               ~5.9m StatsBomb receive cushion lives INSIDE this macro-
               distance).
+          LW/RW 15-22m — support radius when ball is on their flank (winger
+              or fullback has it). Only applies when ball is on their side
+              of the pitch to maintain width and avoid both wingers
+              collapsing centrally.
           LB/RB      — high variance. Weak side / advanced ball: width
               wins, anchor untouched. Own flank + build-up zone: tightened
               to 12-15m as a direct progressive passing outlet.
@@ -1500,6 +1949,8 @@ class PositionEngine:
         distance changes.
         """
         lo, hi = self.BALL_PROXIMITY_BAND[state.position]
+        
+        # Fullback special case: tighten to outlet distance when on own flank in build-up
         if state.position in ("LB", "RB"):
             on_own_flank = abs(ball_y - state.home_y) < 22.0
             ball_in_build_zone = (
@@ -1508,6 +1959,17 @@ class PositionEngine:
             if not (on_own_flank and ball_in_build_zone):
                 return hx, hy
             lo, hi = self.BALL_PROXIMITY_FULLBACK_OUTLET
+        
+        # Winger special case: only apply support radius when ball is on their flank
+        # This prevents both wingers collapsing centrally when one has the ball
+        elif state.position in ("LW", "RW"):
+            # Ball must be on same side of pitch as winger's home position
+            ball_on_same_side = (
+                (ball_y < 34.0 and state.home_y < 34.0) or  # Both on left
+                (ball_y >= 34.0 and state.home_y >= 34.0)   # Both on right
+            )
+            if not ball_on_same_side:
+                return hx, hy  # Don't adjust if ball is on opposite flank
 
         dx = hx - ball_x
         dy = hy - ball_y
@@ -1575,14 +2037,18 @@ class PositionEngine:
             dx_ahead, dy = patterns[(minute + seed_v) % len(patterns)]
             tx = max(25.0, min(94.0, ball_x + dir_x * dx_ahead))
             ty = max(6.0, min(62.0, ball_y + dy))
-            # Checkpoint 33 — registry-aware CAM bias. A shadow striker
-            # (high late_box_instinct) is pulled further forward into the
-            # goal-side seam instead of hovering in the classic #10 pocket;
-            # a classic ten keeps the standard pocket roam.
+            # Checkpoint 33 — registry-aware CAM bias. The base roam target
+            # is now blended with the engine's own pocket geometry
+            # (cam_pocket_target), so the profile's pocket_target() is the
+            # authoritative seam while the roaming offset keeps minute-to-
+            # minute variation. A shadow striker is pulled further forward
+            # into the goal-side seam; a classic ten holds the pocket.
             cam_prof = self.midfield_registry.get(name)
-            if cam_prof is not None and cam_prof.late_box_instinct > 0.50:
-                tx = max(45.0, min(96.0, ball_x + dir_x * 26.0))
-                ty = ball_y + (CENTER_Y - ball_y) * 0.15
+            if cam_prof is not None:
+                ptx, pty = MidfielderBehaviorEngine.cam_pocket_target(
+                    cam_prof, ball_x, ball_y, attacks_right)
+                tx = tx * 0.45 + ptx * 0.55
+                ty = ty * 0.45 + pty * 0.55
             awareness_bonus = max(0.0, min(0.12, (state.geometric_awareness - 50.0) / 350.0))
             pull = (0.40 + awareness_bonus) * pull_mult
             state.current_x += (tx - state.current_x) * pull
@@ -1612,7 +2078,8 @@ class PositionEngine:
             state.current_x += (tx - state.current_x) * 0.55
             state.current_y += (ty - state.current_y) * 0.55
 
-    def _apply_line_cohesion(self, team_name: str, pull_strength: float = 0.12):
+    def _apply_line_cohesion(self, team_name: str, pull_strength: float = 0.12,
+                             compactness: Optional[float] = None):
         """
         Checkpoint 6: back-line (CB/LB/RB) and midfield-line (CDM/CM/CAM)
         players nudge toward their line-mates' average current position
@@ -1624,7 +2091,13 @@ class PositionEngine:
         preserved, so they are only lightly nudged toward the line's
         average y-position. This prevents the back four from collapsing
         centrally just because the centre-backs remain in a tighter block.
+
+        P5 — `compactness` (0→1) strengthens the sideways nudge when the
+        defending side is a packed/narrow block. Only callers that opt in
+        (i.e. defensive_block with a non-zero dial) raise the pull; the
+        default `None` keeps this method behaviourally identical.
         """
+        y_boost = 1.0 + 0.5 * (compactness or 0.0)
         for group in (self.DEFENSIVE_LINE_POSITIONS, self.MIDFIELD_LINE_POSITIONS):
             members = [
                 self.states[n] for n in self.team_rosters.get(team_name, [])
@@ -1639,6 +2112,7 @@ class PositionEngine:
                     y_pull = pull_strength * 0.08
                 else:
                     y_pull = pull_strength
+                y_pull = min(1.0, y_pull * y_boost)
                 m.current_y += (avg_y - m.current_y) * y_pull
                 m.current_x += (avg_x - m.current_x) * (pull_strength * 0.5)
 
@@ -2092,6 +2566,9 @@ class PositionEngine:
         danger_level: float,
         minute: int = 0,
         pull_strength: float = 0.5,
+        defensive_line: float = 0.5,
+        compactness: float = 0.0,
+        attacking_team: Optional[str] = None,
     ) -> None:
         """
         Pull the defensive line into a coordinated goal-side block.
@@ -2105,6 +2582,25 @@ class PositionEngine:
         onto the six-yard line (bodies on the line); at low danger it steps
         up just behind the ball. Laterally the whole unit shifts toward the
         ball side, with near-side players (closer to ball_y) shifting harder.
+
+        Style-aware offside line: `defensive_line` (0=deep, 1=high line)
+        controls how far the block is allowed to STEP UP off its own goal.
+        A deep low-block team (defensive_line ~0.1) sinks the whole unit to
+        within ~18m of the goal even at moderate danger and compresses
+        harder as danger spikes; a high-line team (defensive_line ~0.9)
+        resists the pull and holds the block up around 40m out, only caving
+        to the six-yard line at CRITICAL danger.
+
+        CHECKPOINT P1 — MARKING LAYER:
+        When `attacking_team` is supplied, the block is ALSO anchored to the
+        OPPONENT'S attackers, not just the ball's coordinates. Each defender
+        is assigned a man by MarkingEngine (an aerial threat draws the best
+        CB, a breaking winger draws the near-side fullback); the defender is
+        then pulled toward a GOAL-SIDE slot ON their man rather than the bare
+        ball-geometry line. A defender whose man is out of reach ("beaten")
+        recovers goal-ward instead of chasing — the classic "stop the ball,
+        don't chase the man" rule. Without `attacking_team` the method is the
+        pure ball-geometry block (backwards-compatible).
         """
         if danger_level < 25.0:
             return
@@ -2120,19 +2616,75 @@ class PositionEngine:
 
         dir_toward_goal = 1.0 if goal_x == 105.0 else -1.0
         risk = max(0.0, min(1.0, danger_level / 100.0))
+        line_style = max(0.0, min(1.0, defensive_line))
+
+        # Style-aware ceiling on how far the block may step OFF its own goal:
+        # deep blocks only allow ~15m out at LOW defensive_line; high lines
+        # hold the shape up to ~45m out (i.e. near the halfway line).
+        max_upfield_m = 15.0 + 30.0 * line_style
 
         # Line sits a few metres goal-side of the ball, deepening with danger.
+        # Deep teams (low defensive_line) sink harder as danger spikes; high
+        # lines hold their ground better.
         behind = 10.0 - 8.0 * risk
-        deepen = risk * 6.0
+        deepen = risk * (6.0 + (1.0 - line_style) * 6.0)
         line_x = ball_x + dir_toward_goal * (behind + deepen)
         if goal_x == 105.0:
-            line_x = max(52.0, min(103.0, line_x))
+            # Stay at least `max_upfield_m` from the defended goal line.
+            line_x = min(103.0, max((105.0 - max_upfield_m), line_x))
         else:
-            line_x = max(2.0, min(53.0, line_x))
+            line_x = max(2.0, min((0.0 + max_upfield_m), line_x))
 
         # Lateral anchor: the unit shifts to the ball's side of the pitch.
         lateral = max(12.0, min(56.0, ball_y))
-        intensity = pull_strength * (0.30 + 0.70 * risk)
+        # Deep teams respond more decisively to danger; high lines hold.
+        intensity = pull_strength * (0.30 + 0.70 * risk) \
+            * (1.0 - 0.20 * line_style)
+
+        # ── CHECKPOINT P1: MARKING ASSIGNMENTS (attacker-aware) ─────────────
+        # Solve the defender->attacker assignment once per block. Attackers
+        # come from the defending team's own roster list, so we use only the
+        # OPPONENTS' spatial states (self.states[].team == attacking_team).
+        assignments: Dict[str, MarkAssignment] = {}
+        if attacking_team and attacking_team != team_name:
+            defenders = [
+                (n, s.position, s.current_x, s.current_y)
+                for n, s in self.states.items()
+                if s.team == team_name and s.position in self.BLOCK_POSITIONS
+                and s.position != "GK"
+            ]
+            attackers = []
+            for n, s in self.states.items():
+                if s.team != attacking_team or s.position == "GK":
+                    continue
+                is_runner = s.position in ("ST", "CF", "LW", "RW")
+                aerial = 50.0
+                pace = 50.0
+                # Prefer DNA-backed speed/aerial when available on the state.
+                # (state does not carry DNA; fall back to role defaults.)
+                attackers.append((n, s.position, s.current_x, s.current_y,
+                                  (is_runner, aerial, pace)))
+            if attackers:
+                assignments, _ = MarkingEngine.assign(
+                    defenders, attackers, own_goal_x, ball_x, ball_y,
+                    danger_level=danger_level,
+                )
+
+        # ── P5 COMPACTNESS DIAL ───────────────────────────────────────
+        # A narrow/packed team (compactness→1.0) keeps its back four hugged
+        # together: every non-marking outfield target gets pulled toward the
+        # line's own lateral centroid so the block leaves no pockets between
+        # bodies. A spread team (compactness→0.0) is untouched (default), so
+        # this is a pure no-op wherever the dial is not supplied.
+        block_centroid_y = lateral
+        if compactness > 0.0:
+            bk = [
+                s.current_y
+                for n, s in self.states.items()
+                if s.team == team_name and s.position in ("CB", "LB", "RB")
+            ]
+            if bk:
+                block_centroid_y = sum(bk) / len(bk)
 
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
@@ -2148,21 +2700,65 @@ class PositionEngine:
                 state.current_y += (target_y - state.current_y) * k_intensity
                 continue
 
+            mark = assignments.get(name)
+            if mark is not None and mark.covers_someone:
+                # ── MAN-MARKING BRANCH ─────────────────────────────
+                # The defender is responsible for a specific attacker.
+                # Body-on-man: sit goal-side of the attacker, on the line
+                # between the man and the goal, a touch closer to goal than
+                # the attacker. If the mark is BEATEN, recover goal-ward
+                # instead (don't chase a man who is already gone — take the
+                # space between him and the goal).
+                ax, ay = mark.attacker_x, mark.attacker_y
+                if mark.marker_state == "beaten":
+                    # Recover to a goal-side pocket of the beaten man.
+                    target_x = ax + dir_toward_goal * 6.0
+                    target_y = ay
+                else:
+                    # Goal-side stand-off, ~1.5m goal-side of the attacker.
+                    target_x = ax + dir_toward_goal * 1.5
+                    target_y = ay
+
+                if goal_x == 105.0:
+                    target_x = min(103.0, max((105.0 - max_upfield_m), target_x))
+                else:
+                    target_x = max(2.0, min((0.0 + max_upfield_m), target_x))
+
+                # The defender commits to his man properly:
+                #   • tight  — sticks to the man goal-side, heavy pull
+                #   • free   — balances the man with a firm covering pull
+                #   • beaten — he lost the race: recover HARD to the goal-side
+                #              pocket (never chase the man who is already gone).
+                if mark.marker_state == "beaten":
+                    mark_intensity = intensity * 1.0
+                else:
+                    stick = 0.55 + 0.35 * mark.tightness
+                    mark_intensity = intensity * stick
+                state.current_x += (target_x - state.current_x) * mark_intensity
+                state.current_y += (target_y - state.current_y) * mark_intensity
+                continue
+
             if state.position == "CDM":
                 # Screens the line from the ball side, a few metres in front.
                 target_x = line_x - dir_toward_goal * 6.0
                 target_y = lateral
+                if compactness > 0.0:
+                    # Pack the screen toward the line's own centre too.
+                    target_y = block_centroid_y + (target_y - block_centroid_y) * (1.0 - 0.5 * compactness)
             else:
                 # CB/LB/RB: sit on the line; near-side players shift harder.
                 target_x = line_x
                 near = 1.0 if abs(state.current_y - ball_y) < 20.0 else 0.4
                 target_y = state.current_y + (lateral - state.current_y) * near
+                if compactness > 0.0:
+                    # Compact sides pinch the line laterally toward its centroid.
+                    target_y = block_centroid_y + (target_y - block_centroid_y) * (1.0 - 0.5 * compactness)
 
             state.current_x += (target_x - state.current_x) * intensity
             state.current_y += (target_y - state.current_y) * intensity
 
         # Keep the four-line shape cohesive after the block pull.
-        self._apply_line_cohesion(team_name)
+        self._apply_line_cohesion(team_name, compactness=compactness)
 
     # ── CHECKPOINT 11: ATTACKING BOX CRASH ─────────────────
     # The attacking mirror of defensive_block. When a wide teammate enters
@@ -2299,6 +2895,32 @@ class PositionEngine:
         )
         direction = ELLIPSE_COMPOSE_FLOOR + (1.0 - ELLIPSE_COMPOSE_FLOOR) * ell
 
+        # ── CHECKPOINT 34: WIDE FLANK OUTLET BONUS ─────────────────
+        # A wide player standing in his flank channel right now is a real
+        # standing outlet (checkpoints 18 / 21d). When the ball is CENTRAL
+        # the ellipse's lateral taper taxes a touchline target ~2.4x
+        # (direction ≈ 0.4) vs a central option (≈ 0.98), starving the wide
+        # channels at the SELECTION stage — before the flank-aiming delivery
+        # code ever sees the ball. Lift the direction floor for an
+        # in-channel wide outlet so the ball can be switched/flipped to the
+        # line from a central ball. Non-wide roles, wide players out of their
+        # channel, and balls already on a flank are untouched — central-option
+        # preference and the anisotropy guards survive for everyone else.
+        # Checkpoint 35 — PITCH-STRETCH RULE: the floor scales with the
+        # spine weight, so a deep-pitch-middle ball (packed middle) makes the
+        # wide outlet an almost-central option (floor 0.80 -> 0.92), while a
+        # ball near the edge of the band only nudges it (+0.00 at the edges).
+        if (
+            state.position in ("LW", "RW", "LB", "RB")
+            and abs(hy - state.current_y) <= WIDE_OUTLET_CHANNEL_HALF
+            and 18.0 <= ball_y <= 50.0
+        ):
+            spine = pitch_spine_weight(ball_y)
+            direction = max(
+                direction,
+                WIDE_OUTLET_DIRECTION_FLOOR + spine * STRETCH_FLOOR_LIFT,
+            )
+
         # 3) Post discipline: how far the player has drifted from their home
         #    post. This is the direct anti-clump term — a striker standing in
         #    the centre circle (36m from his box post) is a worse target than
@@ -2318,16 +2940,19 @@ class PositionEngine:
 
         When a wide player (LB/RB/LW/RW) is the target of a delivery, the
         ball is aimed at a point ON their flank channel, not at wherever they
-        have drifted. Returns a y-coordinate biased 65% of the way from
-        `current_y` toward the player's touchline post, so each wide
-        reception drags the ball (and the player) back onto the flank and the
-        width re-asserts itself. Non-wide roles are returned unchanged.
+        have drifted. Returns a y-coordinate biased toward the player's
+        touchline post from `current_y`, so each wide reception drags the
+        ball (and the player) back onto the flank and the width re-asserts
+        itself. Non-wide roles are returned unchanged.
+        Checkpoint 35 — PITCH-STRETCH RULE: the delivery is now aimed 75% of
+        the way to the channel (up from 65%) — the pass itself is a width
+        statement; the ball must find the line a touch sooner than the man.
         """
         state = self.states.get(player_name)
         if state is None or state.position not in ("LB", "RB", "LW", "RW"):
             return current_y
         anchor_y = state.home_y
-        return current_y + (anchor_y - current_y) * 0.65
+        return current_y + (anchor_y - current_y) * 0.75
 
     def ball_centric_weight(self, player_name: str, ball_x: float, ball_y: float) -> float:
         """

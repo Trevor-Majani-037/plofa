@@ -63,7 +63,8 @@ ADDITIVE_STATS = {
     "last_man_tackles", "dribbled_past",
     "interceptions_def_third", "interceptions_mid_third", "interceptions_att_third",
     "recoveries_def_third", "recoveries_mid_third", "recoveries_att_third",
-    "saves", "goals_conceded", "high_claims", "punches", "sweeper_actions",
+    "saves", "goals_conceded", "claims", "high_claims", "medium_claims",
+    "low_claims", "punches", "catches", "runs_out",
     "saves_inside_box", "saves_outside_box", "goalline_saves",
     "xgot_faced", "goals_prevented",
     "fouls_committed", "fouls_won",
@@ -318,7 +319,7 @@ class SeasonStatsAccumulator:
     @classmethod
     def load(cls, path: str = "season_stats.json") -> "SeasonStatsAccumulator":
         acc = cls()
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         acc.season = data.get("season", "26/27")
         acc.players = data.get("players", {})
@@ -333,7 +334,7 @@ class SeasonStatsAccumulator:
             if fname.endswith(".json"):
                 full = os.path.join(dir_path, fname)
                 try:
-                    with open(full, encoding="utf-8") as f:
+                    with open(full, encoding="utf-8-sig") as f:
                         data = json.load(f)
                     if "match" in data and "players" in data:
                         return full
@@ -342,7 +343,7 @@ class SeasonStatsAccumulator:
         return None
 
     def _process_match_json(self, path: str):
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
 
         match_info = data.get("match", {})

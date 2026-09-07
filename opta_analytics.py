@@ -786,6 +786,8 @@ class OptaAnalytics:
                 pace = getattr(getattr(obj, "dna", None), "physical", None)
                 pace = getattr(pace, "pace", 50.0) or 50.0
             top_speed = 26.0 + pace * 0.13
+            if getattr(obj, "position", "?") == "GK":
+                top_speed = min(top_speed, 28.0)
 
             sprints = run["sprints"]
             high_speed_sprints = run["high_speed_sprints"]
@@ -811,7 +813,7 @@ class OptaAnalytics:
                     high_speed_sprints = max(baseline_high, int(physics["high_speed_sprint_count"]))
                     runs_val = max(baseline_runs, int(physics["sprint_count"] + physics["high_speed_sprint_count"] * 0.5))
                 if physics.get("top_speed_mps", 0.0) > 0:
-                    top_speed = physics["top_speed_mps"]
+                    top_speed = physics["top_speed_mps"] * 3.6
 
             self.player_data[name] = {
                 "standing_seconds": round(act["standing"], 1),

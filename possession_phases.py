@@ -98,13 +98,13 @@ BLOCKED_MARKING: float = 0.62
 # Tempo circulation (Checkpoint 23): the support-pass geometry. A circulation
 # target must be close enough that the pass is routine, but not standing on
 # the carrier's toes.
-CIRCULATION_RANGE_M: float = 26.0
+CIRCULATION_RANGE_M: float = 35.0
 CIRCULATION_MIN_RANGE_M: float = 3.0
 
 # How far AHEAD of the ball a teammate may sit and still count as a
 # circulation (tempo) target rather than a progressive option — a support
 # runner half a step ahead is still a lateral pass.
-CIRCULATION_AHEAD_TOLERANCE_M: float = 6.0
+CIRCULATION_AHEAD_TOLERANCE_M: float = 8.0
 
 # Role appetite for receiving a circulation pass. Midfielders and the back
 # line ARE the circulation network; wingers hold width (their ball is the
@@ -210,6 +210,8 @@ class PossessionPhaseEngine:
         gk: GKSnapshot,
         style_key: str = "balanced",
         carrier_iq: float = 0.70,
+        favored_flank: Optional[str] = None,
+        pattern_key: Optional[str] = None,
     ):
         self.gk = gk
         self.style_key = style_key
@@ -217,6 +219,12 @@ class PossessionPhaseEngine:
         # playmakers sustain a little less because they spot the vertical
         # ball earlier — circulation is patience, never a cap on ambition.
         self.carrier_iq = max(0.0, min(1.0, carrier_iq))
+        # Feature #2 — the team's live attack pattern (overload side / box
+        # midfield identity). Normalised "R" = own-right flank, "L" = own-
+        # left flank. Only used to SHAPE the circulation/switch weighting, so
+        # a side overload lives on its flank until the far lane really opens.
+        self.favored_flank = favored_flank
+        self.pattern_key = pattern_key
 
     # ── PUBLIC API ──────────────────────────────
 
@@ -397,12 +405,16 @@ class PossessionPhaseEngine:
                 )
             if current_phase == PossessionPhase.MIDFIELD_CIRCULATION:
                 if self._wing_available(forward_options):
-                    return PossessionDecision(
-                        PossessionPhase.WING_ISOLATION,
-                        TacticalDirective.WING_SWITCH,
-                        target=self._pick_wing(forward_options),
-                        reason="stretch_to_wings",
+                    wing = self._pick_wing(
+                        forward_options, ball_x, ball_y, attacks_right
                     )
+                    if wing is not None:
+                        return PossessionDecision(
+                            PossessionPhase.WING_ISOLATION,
+                            TacticalDirective.WING_SWITCH,
+                            target=wing,
+                            reason="stretch_to_wings",
+                        )
                 return PossessionDecision(
                     PossessionPhase.BOX_PENETRATION,
                     TacticalDirective.PROGRESS,
@@ -525,6 +537,16 @@ class PossessionPhaseEngine:
             w = CIRCULATION_ROLE_WEIGHT.get(t.role, 0.8)
             w *= 1.0 / (1.0 + d / 9.0)        # short passes dominate
             w *= 1.0 - 0.7 * t.marking         # free men get the ball
+            # Feature #2 — pattern flank pull: tempo circulation deliberately
+            # gravitates toward the overload/iso side so the shape is built
+            # there before the switch (the pass-map signature of a side
+            # overload). Mild, symmetric, attack-direction-normalised.
+            if self.favored_flank:
+                gy = t.y if attacks_right else 68.0 - t.y
+                if (gy >= 34.0) == (self.favored_flank == "R"):
+                    w *= 1.25
+                else:
+                    w *= 0.80
             dy_abs = abs(t.y - ball_y)
             if abs(ahead) <= 4.0 and dy_abs >= 3.0:
                 w *= 1.60                      # the square ball is the heartbeat
@@ -608,10 +630,36 @@ class PossessionPhaseEngine:
     def _wing_available(self, forward_options: List[TeammateSnapshot]) -> bool:
         return any(t.role in WING_ROLES for t in forward_options)
 
-    def _pick_wing(self, forward_options: List[TeammateSnapshot]) -> Optional[str]:
-        wings = [t for t in forward_options if t.role in WING_ROLES]
+    def _pick_wing(
+        self,
+        forward_options: List[TeammateSnapshot],
+        ball_x: float,
+        ball_y: float,
+        attacks_right: bool,
+    ) -> Optional[str]:
+        """Choose the target wing, biased by the team's overload flank.
+
+        A side-overload team feeds the overloaded channel (that is where the
+        3v2 and the numerical weight live); the ball going the other way is
+        the far-side SWITCH, which still happens when the overload flank has
+        no free wing running into it. Weighted so the identity shows without
+        becoming a straightjacket."""
+        wings = [t for t in forward_options if t.role in ("LW", "RW")]
+        if not wings:
+            wings = [t for t in forward_options if t.role in WING_ROLES]
         if not wings:
             return None
+        if self.favored_flank:
+            def _side(t) -> str:
+                ty = t.y if attacks_right else 68.0 - t.y
+                return "R" if ty >= 34.0 else "L"
+
+            weights = []
+            for t in wings:
+                w = 1.0 / (1.0 + t.marking)
+                w *= 1.6 if _side(t) == self.favored_flank else 0.55
+                weights.append(w)
+            return random.choices(wings, weights=weights, k=1)[0].name
         return min(wings, key=lambda t: t.marking).name
 
     @staticmethod

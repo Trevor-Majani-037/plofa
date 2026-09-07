@@ -190,7 +190,7 @@ class StrikerBehaviorEngine:
         if profile.in_final_third(ball_x, attacks_right):
             return False
         prob = profile.hold_up_instinct * 0.6
-        return random.random() and random.random() < prob
+        return random.random() < prob
 
     @staticmethod
     def should_pin_last_line(

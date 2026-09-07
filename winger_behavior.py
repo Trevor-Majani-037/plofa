@@ -130,7 +130,9 @@ FLANK_DRIFT_LIMIT_M = 4.0
 # so the equilibrium settled around |y-centre| ≈ 15-17 — classic wide-
 # midfielder width. Real touchline wingers live 3-8m off their anchor;
 # beyond 7m the carry steering must re-assert the touchline.
-FLANK_CHANNEL_HALF_WIDTH_M = 7.0
+# PITCH WIDTH FIX: Increased from 7.0 to 10.0 to allow wingers more lateral 
+# movement while still being considered "in their flank" for receiver weighting.
+FLANK_CHANNEL_HALF_WIDTH_M = 10.0
 
 # ── HALF-SPACE GEOMETRY ──────────────────────────────────────────
 # The half-space is the corridor between a winger's flank channel and

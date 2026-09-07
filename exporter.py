@@ -38,6 +38,7 @@ from collections import defaultdict
 import numpy as np
 from scipy.stats import poisson as scipy_poisson
 import pandas as pd
+import seaborn as sns
 import matplotlib
 from openpyxl.styles import Font
 
@@ -175,6 +176,10 @@ class MatchFinancials:
         home_avg_rating: float,
         away_avg_rating: float,
         big6_teams: Optional[set] = None,
+        start_time: Optional[Any] = None,
+        weather: Optional[Any] = None,
+        is_weekend: bool = True,
+        standings: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Compute attendance, ticket price, and revenue for a match.
@@ -191,6 +196,11 @@ class MatchFinancials:
             Average overall rating of each team's squad (proxy for "bigness").
         big6_teams : set, optional
             Names of the "Big 6" clubs. Auto-detected if None.
+        standings : dict, optional
+            Season performance per team: {team: {position, points, played,
+            form}}. A team doing well in the season (high position / hot
+            form) slightly raises attendance; a struggling team lowers it.
+            Defaults to neutral (no effect) when empty or None.
 
         Returns
         -------
@@ -254,6 +264,70 @@ class MatchFinancials:
         quality_modifier = (avg_rating - 65.0) / 100.0  # -0.15 to +0.35
         base_fill += quality_modifier
 
+        # Checkpoint: Fixture-Time & Weather Physics on Attendance
+        time_mult = 1.0
+        weather_fill_mult = 1.0
+        try:
+            from weather_physics import WeatherPhysics, FixtureTimeEffect
+            if WeatherPhysics.enabled or WeatherPhysics.is_active(weather):
+                time_mult = FixtureTimeEffect.attendance_mult(start_time, is_weekend=is_weekend, is_derby=is_derby)
+                if weather is not None:
+                    w_cond = WeatherPhysics._resolve_condition(weather)
+                    if w_cond and w_cond.rain_intensity > 0.65:
+                        weather_fill_mult = max(0.94, 1.0 - (w_cond.rain_intensity - 0.65) * 0.15)
+        except Exception:
+            pass
+
+        base_fill *= (time_mult * weather_fill_mult)
+
+        # ── Team season-performance modifier on attendance ─────────
+        # Real football: fans pack the ground when the side is doing well
+        # in the season (league position) and riding a hot/cold streak.
+        # Home team drives most of the gate; the away side contributes a
+        # smaller traveling contingent. Absent standings data this stays
+        # exactly 1.0 (zero regression).
+        perf_mult = 1.0
+        try:
+            standings = standings or {}
+
+            def _form_score(form: str) -> float:
+                if not form:
+                    return 0.0
+                f = form.strip()
+                if not f:
+                    return 0.0
+                n = len(f)
+                return (f.count("W") - f.count("L")) / n  # -1..+1
+
+            def _season_score(team: str):
+                info = standings.get(team)
+                if not info:
+                    return 0.0, 0.0
+                played = info.get("played", 0) or 0
+                if info.get("position") is None or played == 0:
+                    return 0.0, _form_score(info.get("form", ""))
+                n_teams = max(len(standings), 2)
+                pos = info["position"]
+                # pos 1 (leader) -> +1, bottom -> -1
+                pos_score = 1.0 - 2.0 * ((pos - 1) / (n_teams - 1))
+                return pos_score, _form_score(info.get("form", ""))
+
+            h_pos, h_form = _season_score(home_team)
+            a_pos, a_form = _season_score(away_team)
+
+            perf_mult = (
+                1.0
+                + 0.10 * h_pos     # home league position (largest driver)
+                + 0.05 * h_form    # home recent form
+                + 0.03 * a_pos     # away league position (traveling fans)
+                + 0.015 * a_form   # away recent form
+            )
+            perf_mult = max(0.90, min(1.10, perf_mult))
+        except Exception:
+            perf_mult = 1.0
+
+        base_fill *= perf_mult
+
         # Random match-day factor (weather, day of week, form, etc.)
         random_factor = random.uniform(-0.04, 0.06)
 
@@ -271,6 +345,7 @@ class MatchFinancials:
             "money_gained_home": money_gained_home,
             "match_tier":        match_tier,
             "stadium_capacity":  stadium_capacity,
+            "start_time":        start_time,
         }
 
 
@@ -287,12 +362,14 @@ class StatAccumulator:
     """
 
     def __init__(self, result: MatchResult, all_players: Dict[str, List[PlayerProfile]],
-                 big6_teams: Optional[set] = None):
+                 big6_teams: Optional[set] = None,
+                 standings: Optional[Dict[str, Dict[str, Any]]] = None):
         self.result  = result
         self.config  = getattr(result, 'config', None)
         self.players = all_players   # {team_name: [PlayerProfile]}
         self.stats: Dict[str, Dict] = {}
         self.big6_teams = big6_teams or set()
+        self.standings = standings or {}   # season performance -> attendance
         # Financial data (computed in _finalise)
         self.match_financials: Dict[str, Any] = {}
         self._build()
@@ -386,7 +463,19 @@ class StatAccumulator:
         """
         attacks_right = team == self.result.config.home_team
         goal_x = 105.0 if attacks_right else 0.0
-        sign = 1.0 if attacks_right else -1.0
+
+        # Safety net: override goal_x when the shot position contradicts
+        # the team-name-based attacking direction. This catches cases
+        # where the match engine recorded the shot in the wrong half
+        # (e.g. an away-team shot landing at x≈90 instead of x≈10).
+        # Shots in the right half (>70) attack the right goal (x=105);
+        # shots in the left half (<35) attack the left goal (x=0).
+        if x < 35:
+            goal_x = 0.0
+        elif x > 70:
+            goal_x = 105.0
+
+        sign = 1.0 if goal_x == 105.0 else -1.0
 
         # Deterministic pseudo-random offset from the origin coordinates so
         # shots from similar positions don't all share one identical line.
@@ -515,8 +604,9 @@ class StatAccumulator:
             "recoveries_def_third": 0, "recoveries_mid_third": 0, "recoveries_att_third": 0,
 
             # GK
-            "saves": 0, "goals_conceded": 0, "high_claims": 0,
-            "punches": 0, "sweeper_actions": 0,
+            "saves": 0, "goals_conceded": 0, "claims": 0,
+            "high_claims": 0, "medium_claims": 0, "low_claims": 0,
+            "punches": 0, "catches": 0, "runs_out": 0,
             "saves_inside_box": 0, "saves_outside_box": 0,
             "goalline_saves": 0, "clean_sheet": False,
             "xgot_faced": 0.0, "goals_prevented": 0.0,
@@ -684,15 +774,21 @@ class StatAccumulator:
             actor["pen_goals"] += 1
             self._add_xg(actor, 0.79, SituationType.PENALTY)
             actor["shots_on_target"] += 1
-            actor["shot_map"].append({"x": 94, "y": 34, "outcome": "goal",
-                                       "xg": 0.79, "body_part": "foot", "situation": "penalty"})
+            actor["shot_map"].append({
+                "x": e.location_x or 94, "y": e.location_y or 34,
+                "outcome": "goal", "xg": 0.79,
+                "body_part": e.body_part or "foot", "situation": "penalty"
+            })
 
         elif e.event_type == EventType.PENALTY_MISSED:
             actor["pen_missed"] += 1
             actor["shots_on_target"] += 1
             self._add_xg(actor, 0.79, SituationType.PENALTY)
-            actor["shot_map"].append({"x": 94, "y": 34, "outcome": "saved",
-                                       "xg": 0.79, "body_part": "foot", "situation": "penalty"})
+            actor["shot_map"].append({
+                "x": e.location_x or 94, "y": e.location_y or 34,
+                "outcome": "saved", "xg": 0.79,
+                "body_part": e.body_part or "foot", "situation": "penalty"
+            })
 
         # ── SHOTS ────────────────────────────────────────────
         elif e.event_type == EventType.SHOT_ON_TARGET:
@@ -772,21 +868,52 @@ class StatAccumulator:
 
         # ── SAVES ─────────────────────────────────────────────
         elif e.event_type == EventType.SAVE:
-            actor["saves"] += 1
-            if e.metadata.get("goalline_save", False):
-                actor["goalline_saves"] += 1
-            is_box = e.location_x is not None and (
-                (e.location_x >= 83.0 and actor.get("team") == self.result.config.away_team) or
-                (e.location_x <= 22.0 and actor.get("team") == self.result.config.home_team)
-            )
-            if is_box:
-                actor["saves_inside_box"] += 1
+            etype = e.metadata.get("type")
+            # Sweeper exit: the goalkeeper left his line and won a
+            # through ball inside his own box. A sweep is a
+            # run-out and is not counted as a shot save, claim,
+            # punch or catch.
+            if etype == "gk_sweep":
+                actor["runs_out"] += 1
             else:
-                actor["saves_outside_box"] += 1
-            if e.metadata.get("type") == "high_claim":
-                actor["high_claims"] += 1
-            if e.metadata.get("penalty_save"):
-                actor["saves"] += 0  # Already counted
+                actor["saves"] += 1
+                if e.metadata.get("goalline_save", False):
+                    actor["goalline_saves"] += 1
+                is_box = e.location_x is not None and (
+                    (e.location_x >= 83.0 and actor.get("team") == self.result.config.away_team) or
+                    (e.location_x <= 22.0 and actor.get("team") == self.result.config.home_team)
+                )
+                if is_box:
+                    actor["saves_inside_box"] += 1
+                else:
+                    actor["saves_outside_box"] += 1
+                # GK high-ball handling: a claim (by height) or a punch.
+                # These are decided by the engine from real physics
+                # (delivery height, contest traffic, GK attributes),
+                # not inferred from the save itself.
+                if etype in ("gk_claim", "corner_claim"):
+                    actor["claims"] += 1
+                    cheight = e.metadata.get("claim_height")
+                    if cheight == "high":
+                        actor["high_claims"] += 1
+                    elif cheight == "medium":
+                        actor["medium_claims"] += 1
+                    elif cheight == "low":
+                        actor["low_claims"] += 1
+                elif etype == "gk_punch":
+                    actor["punches"] += 1
+                # Shot saves: the keeper either cleanly caught the ball
+                # or parried it wide — the engine decided this from
+                # dive geometry.
+                if e.metadata.get("save_type") == "catch":
+                    actor["catches"] += 1
+                # Runs out: the keeper physically secured the high ball
+                # off his line (position committed beyond the
+                # six-yard box).
+                if e.metadata.get("runs_out", False):
+                    actor["runs_out"] += 1
+                if e.metadata.get("penalty_save"):
+                    actor["saves"] += 0  # Already counted
 
         # ── GOAL KICKS (Counted as Passes) ────────────────────
         elif e.event_type == EventType.GOAL_KICK:
@@ -1217,6 +1344,13 @@ class StatAccumulator:
         home_avg = np.mean(home_ratings) if home_ratings else 75.0
         away_avg = np.mean(away_ratings) if away_ratings else 75.0
 
+        start_time = getattr(config, "start_time", None)
+        weather = getattr(config, "weather", None)
+        match_date = getattr(config, "match_date", None)
+        is_weekend = True
+        if match_date and hasattr(match_date, "weekday"):
+            is_weekend = match_date.weekday() in (5, 6)
+
         self.match_financials = MatchFinancials.compute(
             stadium_capacity=config.stadium_capacity,
             is_derby=config.is_derby,
@@ -1225,6 +1359,10 @@ class StatAccumulator:
             home_avg_rating=home_avg,
             away_avg_rating=away_avg,
             big6_teams=self.big6_teams,
+            start_time=start_time,
+            weather=weather,
+            is_weekend=is_weekend,
+            standings=self.standings,
         )
 
     def _count_off_ball_runs(self):
@@ -1874,12 +2012,14 @@ class PLOFAExporter:
         away_color: str = None,
         sub_controller=None,   # SubstitutionController from squad_manager
         big6_teams: Optional[set] = None,
+        standings: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         self.result  = result
         self.players = all_players
         self.config  = result.config
         self.state   = result.state
-        self.accumulator = StatAccumulator(result, all_players, big6_teams=big6_teams)
+        self.accumulator = StatAccumulator(result, all_players, big6_teams=big6_teams,
+                                           standings=standings)
         self.df = self.accumulator.to_dataframe()
         self.sub_controller = sub_controller
 
@@ -1978,6 +2118,7 @@ class PLOFAExporter:
         self.plot_momentum(f"{base_path}/{name}_momentum.png")
         self.plot_match_summary(f"{base_path}/{name}_summary.png")
         self.plot_pressure_map(f"{base_path}/{name}_pressure_map.png")
+        self.plot_ball_motion(f"{base_path}/{name}_ball_motion.png")
         self.plot_player_heatmap(f"{base_path}/{name}_player_heatmap.png")
         self.plot_soul_dashboards(base_path)
 
@@ -2591,7 +2732,7 @@ class PLOFAExporter:
                 "Minute": g.minute,
                 "Team": g.team,
                 "Scorer": g.player,
-                "Assist": g.secondary_player or "",
+                "Assist": "" if g.event_type == EventType.OWN_GOAL else (g.secondary_player or ""),
                 "Situation": g.situation.value if g.situation else "open_play",
                 "xG": round(g.xg, 3),
                 "Body Part": g.body_part or "",
@@ -3097,6 +3238,15 @@ class PLOFAExporter:
                 "date": str(self.config.match_date),
                 "added_time": self.state.added_time,
                 "is_derby": self.config.is_derby,
+                # Measured time-in-possession (real Opta-style possession %),
+                # NOT a pass-share proxy — consumers should read these over
+                # any pass-count-derived figure.
+                "home_possession_pct": (round(100.0 * self.state.home_possession_s / (self.state.home_possession_s + self.state.away_possession_s), 1)
+                                        if (self.state.home_possession_s + self.state.away_possession_s) > 0 else 50.0),
+                "away_possession_pct": (round(100.0 - 100.0 * self.state.home_possession_s / (self.state.home_possession_s + self.state.away_possession_s), 1)
+                                        if (self.state.home_possession_s + self.state.away_possession_s) > 0 else 50.0),
+                "home_possession_s": round(self.state.home_possession_s, 1),
+                "away_possession_s": round(self.state.away_possession_s, 1),
             },
             "timeline": self._timeline_json(),
             "financials": {
@@ -3110,7 +3260,8 @@ class PLOFAExporter:
             "goals": [
                 {
                     "minute": g.minute, "team": g.team,
-                    "scorer": g.player, "assist": g.secondary_player or "",
+                    "scorer": g.player,
+                    "assist": "" if g.event_type == EventType.OWN_GOAL else (g.secondary_player or ""),
                     "situation": g.situation.value if g.situation else "open_play",
                     "xg": round(g.xg, 3),
                 }
@@ -3264,160 +3415,159 @@ class PLOFAExporter:
 
     def plot_shot_map(self, filepath: str):
         """
-        Shot map for both teams on a vertical pitch.
-        StatsBomb/Opta-style: ALL shots are circular markers sized by xG.
-        High-xG shots (≥0.5) get large, prominent circles.
-        Low-xG shots (≤0.05) get tiny circles.
-        Goals are distinguished with a gold edge and slightly larger size.
-        Opacity scales with xG so low-value shots fade into the background.
+        Shot map for both teams on a single full-size pitch (jointgrid style,
+        inspired by the mplsoccer jointgrid example / plot_jointgrid.py).
+
+        Home team attacks right toward the away goal (x→120); away team attacks
+        left toward the home goal (x→0). Both teams' shots are plotted on the
+        same pitch — no separate panels, no per-team coordinate mirroring — so
+        trajectory endpoints always point toward the correct goal.
+
+        All shots are circular markers sized by xG and colored by outcome, with
+        dotted trajectory lines and marginal rug plots showing shot-position
+        distributions on each side of the pitch.
         """
-        fig, axes = plt.subplots(1, 2, figsize=(16, 10),
-                                  facecolor=PLOFAStyle.BG_DARK)
+        # Collect all shots from both teams into flat lists
+        home_shots, away_shots = [], []
+        for s in self.accumulator.stats.values():
+            shots = s.get("shot_map", [])
+            if not shots:
+                continue
+            if s["team"] == self.config.home_team:
+                home_shots.extend(shots)
+            elif s["team"] == self.config.away_team:
+                away_shots.extend(shots)
+
+        # Full-size pitch with jointgrid marginals (plot_jointgrid.py style)
+        pitch = Pitch(
+            pitch_type="statsbomb",
+            pitch_color=PLOFAStyle.PITCH_GREEN,
+            line_color=PLOFAStyle.PITCH_LINE,
+            pad_top=0.05, pad_right=0.05, pad_bottom=0.05, pad_left=0.05,
+            line_zorder=2,
+        )
+        fig, axs = pitch.jointgrid(
+            figheight=10,
+            left=None, bottom=0.075, marginal=0.1,
+            space=0, grid_width=0.9,
+            title_height=0, axis=False, endnote_height=0,
+            grid_height=0.8,
+        )
+        pitch_ax = axs['pitch']
+
+        outcome_colors = {
+            "goal":     PLOFAStyle.GOAL_COLOR,
+            "saved":    PLOFAStyle.SOT_COLOR,
+            "miss":     PLOFAStyle.MISS_COLOR,
+            "blocked":  PLOFAStyle.BLOCK_COLOR,
+            "woodwork": PLOFAStyle.ACCENT_GOLD,
+        }
+
+        def _plot_shots(shots, color, team):
+            """Plot one team's shots on the shared pitch. Returns (xs, ys) for marginals."""
+            xs, ys = [], []
+            for shot in shots:
+                # Scale sim coords (0-105, 0-68) to pitch coords (0-120, 0-80)
+                sx = (shot["x"] / 105) * 120
+                sy = (shot["y"] / 68) * 80
+                ex = shot.get("end_x", shot["x"])
+                ey = shot.get("end_y", shot["y"])
+                
+                # Mirror away-team shots that ended up in the wrong half
+                # (match engine occasionally records away shots at x>70 instead
+                # of the expected x<35). Only mirror shots clearly in the
+                # attacking-team's own half so we don't double-mirror penalties
+                # or correctly-placed shots.
+                if team == self.config.away_team and sx > 80:
+                    sx = 120 - sx
+                    ex = 120 - ex if ex is not None else None
+                
+                eb_x = (ex / 105) * 120 if ex is not None else sx
+                eb_y = (ey / 68) * 80 if ey is not None else sy
+                xs.append(sx)
+                ys.append(sy)
+
+                xg_val = shot.get("xg", 0.05)
+                outcome = shot.get("outcome", "miss")
+                c = outcome_colors.get(outcome, PLOFAStyle.MISS_COLOR)
+
+                # Size scales with xG: xG=0 → 5, xG=0.99 → ~485
+                size = 5 + (xg_val ** 0.6) * 480
+
+                # Opacity: low-xG shots fade, high-xG are solid
+                alpha = max(0.20, min(0.95, 0.25 + xg_val * 0.85))
+
+                # Goals get a white border and size bump
+                edge_color = "white" if outcome == "goal" else "none"
+                edge_width = 2.5 if outcome == "goal" else 0
+                if outcome == "goal":
+                    size *= 1.15
+
+                # Dotted trajectory line (away-team shots in the wrong half are
+                # mirrored above so trajectories point toward the correct goal)
+                pitch.lines(sx, sy, eb_x, eb_y, ax=pitch_ax,
+                            ls=":", lw=1.0, color="white", alpha=0.35, zorder=3)
+
+                # Shot marker
+                pitch.scatter(sx, sy, ax=pitch_ax,
+                              s=size, c=c, marker="o",
+                              alpha=alpha, zorder=5,
+                              edgecolors=edge_color, linewidths=edge_width)
+            return xs, ys
+
+        home_xs, home_ys = _plot_shots(home_shots, self.home_color, self.config.home_team)
+        away_xs, away_ys = _plot_shots(away_shots, self.away_color, self.config.away_team)
+
+        # Marginal rug plots (shot position distributions, jointgrid style)
+        if home_xs:
+            sns.rugplot(x=home_xs, ax=axs['top'], color=self.home_color, height=0.8, lw=1.5)
+            sns.rugplot(y=home_ys, ax=axs['left'], color=self.home_color, height=0.8, lw=1.5)
+        if away_xs:
+            sns.rugplot(x=away_xs, ax=axs['top'], color=self.away_color, height=0.8, lw=1.5)
+            sns.rugplot(y=away_ys, ax=axs['right'], color=self.away_color, height=0.8, lw=1.5)
+
+        # Dark background for marginal axes
+        for key in ('left', 'top', 'right'):
+            axs[key].set_facecolor(PLOFAStyle.BG_DARK)
+
+        # Team labels near each goal line
+        pitch_ax.text(x=12, y=5, s=self.config.home_team,
+                      color=self.home_color, ha='center', va='center',
+                      fontsize=16, fontweight='bold',
+                      path_effects=[pe.withStroke(linewidth=2, foreground=PLOFAStyle.BG_DARK)])
+        pitch_ax.text(x=108, y=5, s=self.config.away_team,
+                      color=self.away_color, ha='center', va='center',
+                      fontsize=16, fontweight='bold',
+                      path_effects=[pe.withStroke(linewidth=2, foreground=PLOFAStyle.BG_DARK)])
+
+        # Attacking direction annotations
+        _add_attacking_direction(pitch_ax, self.config.home_team, self.config, is_half=False)
+        _add_attacking_direction(pitch_ax, self.config.away_team, self.config, is_half=False)
+
+        # Title
         fig.suptitle(
-            f"SHOT MAP\n{self.config.home_team} {self.state.home_goals}–{self.state.away_goals} {self.config.away_team}",
+            f"SHOT MAP\n{self.config.home_team} {self.state.home_goals}-{self.state.away_goals} {self.config.away_team}",
             color=PLOFAStyle.TEXT_PRIMARY, fontsize=15, fontweight="bold", y=0.98
         )
 
-        teams = [self.config.home_team, self.config.away_team]
-        colors = [self.home_color, self.away_color]
-
-        for ax, team, color in zip(axes, teams, colors):
-            pitch = VerticalPitch(
-                pitch_type="statsbomb",
-                pitch_color=PLOFAStyle.PITCH_GREEN,
-                line_color=PLOFAStyle.PITCH_LINE,
-                half=True,
-                line_zorder=2,
-            )
-            pitch.draw(ax=ax)
-            _add_attacking_direction(ax, team, self.config, is_half=True)
-            ax.set_facecolor(PLOFAStyle.BG_DARK)
-
-            # Collect shots for this team
-            team_stats = {
-                n: s for n, s in self.accumulator.stats.items()
-                if s["team"] == team
-            }
-
-            # StatsBomb/Opta-style: all shots are circles sized by xG.
-            # xG ~ 0.80+ → larger circle (high-quality chance)
-            # xG ~ 0.15   → medium circle
-            # xG ~ 0.02   → small circle (fades into the background)
-            # Size range: ~50 (0 xG) to ~500 (0.99 xG) — deliberately
-            # compact, matching the modest dot sizes used in real
-            # Opta/StatsBomb shot maps.
-            # Opacity: 0.25 (low xG) → 0.95 (high xG)
-            home_panel = (team == self.config.home_team)
-            for name, s in team_stats.items():
-                for shot in s.get("shot_map", []):
-                    sx = shot["x"]
-                    sy = shot["y"]
-                    # Each panel shows THAT team attacking the goal at the
-                    # top. Home attacks right (x→105), away attacks left
-                    # (x→0). Away x is mirrored so shots in the away half
-                    # land in the same visual panel half as home shots;
-                    # y is kept identical (no flip) so the goal mouth
-                    # and shot width align with the home panel.
-                    if home_panel:
-                        sb_x = (sx / 105) * 120
-                        sb_y = (sy / 68)  * 80
-                    else:
-                        sb_x = ((105 - sx) / 105) * 120
-                        sb_y = (sy / 68)   * 80
-
-                    # Trajectory destination (where the shot went), same
-                    # mirror on x; y is kept identical.
-                    ex = shot.get("end_x", sx)
-                    ey = shot.get("end_y", sy)
-                    if home_panel:
-                        eb_x = (ex / 105) * 120
-                        eb_y = (ey / 68) * 80
-                    else:
-                        # Mirror start position so away shots land in the same
-                        # visual half as home shots, but do NOT mirror the endpoint
-                        # because goal_x=0 for away team already points toward the
-                        # away goal (visual left). Mirroring would send it to x=120
-                        # creating a horizontal line instead of pointing at the goal.
-                        eb_x = (ex / 105) * 120
-                        eb_y = (ey / 68)  * 80
-
-                        # Fix away-team trajectory corruption: when a shot
-                        # originates in the defensive half (x > 52.5), the
-                        # mirrored start lands at the bottom of the panel
-                        # while the goal sits at the top, producing a long
-                        # horizontal line across the whole pitch. Cap the
-                        # trajectory so it always points toward the goal
-                        # without spanning the entire panel.
-                        max_traj = 72.0
-                        if eb_x - sb_x > max_traj:
-                            eb_x = sb_x + max_traj
-
-                    outcome = shot.get("outcome", "miss")
-                    xg_val = shot.get("xg", 0.05)
-
-                    # Size scales with xG: exponential-style so high-xG shots
-                    # stand out. xG=0 → 25, xG=0.99 → ~500
-                    size = 5 + (xg_val ** 0.6) * 480
-
-                    # Opacity: low-xG shots are faded, high-xG are solid
-                    alpha = max(0.20, min(0.95, 0.25 + xg_val * 0.85))
-
-                    # Color by outcome (Opta/StatsBomb style)
-                    outcome_colors = {
-                        "goal":     PLOFAStyle.GOAL_COLOR,
-                        "saved":    PLOFAStyle.SOT_COLOR,
-                        "miss":     PLOFAStyle.MISS_COLOR,
-                        "blocked":  PLOFAStyle.BLOCK_COLOR,
-                        "woodwork": PLOFAStyle.ACCENT_GOLD,
-                    }
-                    c = outcome_colors.get(outcome, PLOFAStyle.MISS_COLOR)
-
-                    # Edge: goals get a prominent white border
-                    edge_color = "white" if outcome == "goal" else "none"
-                    edge_width = 2.5 if outcome == "goal" else 0
-
-                    # Goals get a small size bump for prominence
-                    if outcome == "goal":
-                        size *= 1.15
-
-                    # Dotted trajectory showing where each shot went
-                    pitch.lines(
-                        sb_x, sb_y, eb_x, eb_y, ax=ax,
-                        ls=":", lw=1.0, color="white", alpha=0.35, zorder=3,
-                    )
-
-                    pitch.scatter(
-                        sb_x, sb_y, ax=ax,
-                        s=size, c=c, marker="o",
-                        alpha=alpha, zorder=5,
-                        edgecolors=edge_color,
-                        linewidths=edge_width,
-                    )
-
-            # xG total
-            team_xg = self.state.home_xg if team == self.config.home_team else self.state.away_xg
-            total_goals = self.state.home_goals if team == self.config.home_team else self.state.away_goals
-
-            ax.set_title(
-                f"{team}\nGoals: {total_goals}  |  xG: {team_xg:.2f}",
-                color=color, fontsize=12, fontweight="bold", pad=10
-            )
-
-        # Legend with size reference
+        # Legend
         legend_elements = [
             mpatches.Patch(color=PLOFAStyle.GOAL_COLOR, label="Goal"),
             mpatches.Patch(color=PLOFAStyle.SOT_COLOR,  label="On Target"),
             mpatches.Patch(color=PLOFAStyle.MISS_COLOR,  label="Off Target"),
             mpatches.Patch(color=PLOFAStyle.BLOCK_COLOR, label="Blocked"),
             mpatches.Patch(color=PLOFAStyle.ACCENT_GOLD, label="Woodwork"),
+            mpatches.Patch(color=self.home_color, label=f"{self.config.home_team} (Home)"),
+            mpatches.Patch(color=self.away_color, label=f"{self.config.away_team} (Away)"),
         ]
         fig.legend(handles=legend_elements, loc="lower center",
-                   ncol=5, facecolor=PLOFAStyle.BG_CARD,
+                   ncol=7, facecolor=PLOFAStyle.BG_CARD,
                    labelcolor=PLOFAStyle.TEXT_PRIMARY, fontsize=9,
                    framealpha=0.8)
 
-        # Add xG size reference annotation
-        fig.text(0.5, 0.01, "Circle size ∝ xG (bigger = higher quality chance) · dotted lines = shot trajectory",
+        # Footnote
+        fig.text(0.5, 0.01,
+                 "Circle size = xG · dotted lines = shot trajectory · rug = shot distribution",
                  ha="center", fontsize=8, color=PLOFAStyle.TEXT_MUTED,
                  fontstyle="italic")
 
@@ -3714,7 +3864,8 @@ class PLOFAExporter:
         for i, g in enumerate(self.result.goals):
             y = y_start - 0.04 - (i * 0.035)
             color = self.home_color if g.team == home else self.away_color
-            assist = f" (assist: {g.secondary_player})" if g.secondary_player else ""
+            assist = (f" (assist: {g.secondary_player})"
+                      if g.secondary_player and g.event_type != EventType.OWN_GOAL else "")
             ax.text(0.5, y, f"{g.minute}'  {g.player}{assist}",
                     ha="center", va="center", fontsize=10, color=color)
 
@@ -3903,3 +4054,71 @@ class PLOFAExporter:
                     facecolor=PLOFAStyle.BG_DARK)
         plt.close()
         print(f"   🔥 Pressure Map   → {filepath}")
+
+    def plot_ball_motion(self, filepath: str):
+        """Draw every possession's REAL continuous ball path on a pitch.
+
+        Each possession sequence exposes its persistent whole-possession
+        ``ball_motion`` trace (kind-tagged carry/pass/shot points on a 0.1 s
+        clock). We render one poly-line per possession — the ball now visibly
+        travels instead of snapping between event endpoints. Degrades
+        gracefully when no trace was captured.
+        """
+        def to_sb(x: float, y: float, home: bool):
+            # Map the sim's 105x68 pitch into mplsoccer statsbomb space
+            # (120x80), mirroring away attacks like plot_shot_map does.
+            sx = (x / 105.0) * 120.0
+            sy = (y / 68.0) * 80.0
+            if not home:
+                sx = (105.0 - x) / 105.0 * 120.0
+            return sx, sy
+
+        paths = []
+        for e in self.result.timeline:
+            bm = (e.metadata or {}).get("ball_motion")
+            if bm and len(bm) >= 2:
+                paths.append((e.team, bm))
+
+        fig, ax = plt.subplots(figsize=(9, 13), facecolor=PLOFAStyle.BG_DARK)
+        pitch = VerticalPitch(
+            pitch_type="statsbomb",
+            pitch_color=PLOFAStyle.PITCH_GREEN,
+            line_color=PLOFAStyle.PITCH_LINE,
+            line_zorder=2,
+        )
+        pitch.draw(ax=ax)
+        ax.set_facecolor(PLOFAStyle.BG_DARK)
+
+        if not paths:
+            ax.set_title(
+                "BALL MOTION — no continuous trace captured",
+                color=PLOFAStyle.TEXT_PRIMARY, fontsize=13, fontweight="bold",
+            )
+            plt.tight_layout()
+            plt.savefig(filepath, dpi=150, bbox_inches="tight",
+                        facecolor=PLOFAStyle.BG_DARK)
+            plt.close()
+            print(f"   ⚽ Ball Motion    → {filepath} (no trace)")
+            return
+
+        total_pts = 0
+        for team, bm in paths:
+            home = (team == self.config.home_team)
+            color = self.home_color if home else self.away_color
+            mx = [to_sb(p["x"], p["y"], home)[0] for p in bm]
+            my = [to_sb(p["x"], p["y"], home)[1] for p in bm]
+            total_pts += len(mx)
+            ax.plot(mx, my, color=color, lw=0.8, alpha=0.35, zorder=3)
+            ax.scatter(mx[0], my[0], color=color, s=14, zorder=4)
+            ax.scatter(mx[-1], my[-1], color=color, s=20, marker="x", zorder=4)
+
+        ax.set_title(
+            f"BALL MOTION — {len(paths)} possessions, {total_pts} path points\n"
+            f"per line = one possession (start ●, end ✕)",
+            color=PLOFAStyle.TEXT_PRIMARY, fontsize=13, fontweight="bold",
+        )
+        plt.tight_layout()
+        plt.savefig(filepath, dpi=150, bbox_inches="tight",
+                    facecolor=PLOFAStyle.BG_DARK)
+        plt.close()
+        print(f"   ⚽ Ball Motion    → {filepath}")

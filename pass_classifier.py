@@ -239,6 +239,7 @@ class PassClassification:
     end_third: str = "middle_third"
     channel: str = "centre"
     exclusion: str = ""            # "" | cross | throw_in | keeper_throw
+    wind_drift_m: float = 0.0      # Aerodynamic lateral drift in meters
 
     def as_dict(self) -> Dict:
         return {
@@ -255,7 +256,46 @@ class PassClassification:
             "end_third": self.end_third,
             "channel": self.channel,
             "exclusion": self.exclusion,
+            "wind_drift_m": round(self.wind_drift_m, 2),
         }
+
+
+def apply_wind_deflection(
+    to_x: float, to_y: float,
+    from_x: float, from_y: float,
+    wind_speed: float,
+    wind_direction_deg: float,
+    is_airborne: bool = False,
+    pitch_x: float = PITCH_X,
+    pitch_y: float = PITCH_Y,
+) -> Tuple[float, float, float]:
+    """Calculate lateral and longitudinal wind deflection for a pass in flight.
+    
+    Returns (adj_x, adj_y, lateral_drift_m).
+    """
+    import math
+    if wind_speed < 0.5:
+        return to_x, to_y, 0.0
+
+    dist = math.hypot(to_x - from_x, to_y - from_y)
+    if dist < 2.0:
+        return to_x, to_y, 0.0
+
+    ball_speed = 20.0 if is_airborne else 15.0
+    flight_time = dist / ball_speed
+
+    rad = math.radians(wind_direction_deg)
+    w_vx = wind_speed * math.cos(rad)
+    w_vy = wind_speed * math.sin(rad)
+
+    k_drag = 0.09 if is_airborne else 0.02
+    drift_x = w_vx * flight_time * k_drag
+    drift_y = w_vy * flight_time * k_drag
+
+    adj_x = max(0.0, min(pitch_x, to_x + drift_x))
+    adj_y = max(0.0, min(pitch_y, to_y + drift_y))
+    lateral_drift = math.hypot(adj_x - to_x, adj_y - to_y)
+    return adj_x, adj_y, lateral_drift
 
 
 def classify_pass(
@@ -270,6 +310,7 @@ def classify_pass(
     under_pressure: bool = False,
     is_dead: bool = False,
     attacks_right: bool = True,
+    wind_drift_m: float = 0.0,
 ) -> PassClassification:
     """Full Opta-style classification of a single pass delivery.
 
@@ -281,6 +322,7 @@ def classify_pass(
                         `attacks_right`.
         is_cross / is_throw_in / is_keeper_throw: categorical exclusions.
         is_airborne / is_headed / under_pressure / is_dead: physical flags.
+        wind_drift_m:   aerodynamic lateral displacement (meters).
     """
     dist_m = pass_distance_m(from_x, from_y, to_x, to_y)
     dist_yd = pass_distance_yards(from_x, from_y, to_x, to_y)
@@ -291,12 +333,14 @@ def classify_pass(
     # Categorical exclusions first.
     if is_cross:
         return PassClassification(False, exclusion="cross",
-                                  distance_m=dist_m, distance_yards=dist_yd)
+                                  distance_m=dist_m, distance_yards=dist_yd,
+                                  wind_drift_m=wind_drift_m)
     if is_throw_in or is_keeper_throw:
         return PassClassification(
             False,
             exclusion="throw_in" if is_throw_in else "keeper_throw",
-            distance_m=dist_m, distance_yards=dist_yd)
+            distance_m=dist_m, distance_yards=dist_yd,
+            wind_drift_m=wind_drift_m)
 
     length = classify_length(dist_m)
     length_class = classify_length_class(dist_m)
@@ -319,6 +363,7 @@ def classify_pass(
         start_third=start_third(from_x),
         end_third=start_third(to_x),
         channel=channel(from_y),
+        wind_drift_m=wind_drift_m,
     )
 
 

@@ -215,6 +215,12 @@ class ChanceCreationLedger:
         for r in self.records:
             if r.creator:
                 covered.add((r.minute, r.shooter))
+        # Build lookup for goal xG values from analyzed shots
+        goal_xg: Dict[Tuple[int, str], float] = {}
+        for r in self.records:
+            if r.outcome == "goal":
+                goal_xg[(r.minute, r.shooter)] = r.xg
+
         for e in self.timeline:
             if e.event_type not in (EventType.CHANCE_CREATED, EventType.BIG_CHANCE_CREATED):
                 continue
@@ -238,6 +244,23 @@ class ChanceCreationLedger:
                 p["open_play_cc"] = p.get("open_play_cc", 0) + 1
             else:
                 p["setpiece_cc"] = p.get("setpiece_cc", 0) + 1
+            if shot_key in goal_xg:
+                xg_val = goal_xg[shot_key]
+                p["goal_assists"] = p.get("goal_assists", 0) + 1
+                p["assists"] = p.get("assists", 0) + 1
+                if is_open:
+                    p["open_play_assists"] = p.get("open_play_assists", 0) + 1
+                    p["xa_open_play"] = p.get("xa_open_play", 0.0) + xg_val
+                else:
+                    p["setpiece_assists"] = p.get("setpiece_assists", 0) + 1
+                    p["xa_setpiece"] = p.get("xa_setpiece", 0.0) + xg_val
+                p["xa"] = p.get("xa", 0.0) + xg_val
+            else:
+                p["shot_assists"] = p.get("shot_assists", 0) + 1
+                if is_open:
+                    p["open_play_shot_assists"] = p.get("open_play_shot_assists", 0) + 1
+                else:
+                    p["setpiece_shot_assists"] = p.get("setpiece_shot_assists", 0) + 1
 
     def _finalize_shot_assists(self) -> None:
         """Redefine shot_assists as: all non-goal chances created by the

@@ -29,6 +29,16 @@
 """
 #C:\Users\Trevor Majani\AppData\Local\Python\bin>python "C:\Users\Trevor Majani\Downloads\plofa_checkpoint6\plofa\auto_run_match.py"
 #THIS IS THE DEFAULT FOR RUNNING MATCHES NOT run_match.py because it automatically handles squads, bench, subs, and availability from the Excel file and match history. Use run_match.py for manual match runs with custom squads and settings. 
+#
+# ⛔ OFFICIAL RUNNER — TREVOR ONLY. DO NOT RUN VIA AI/AGENT.
+# This is the official, canonical match runner. It overwrites the authoritative
+# season_state.json (form, fatigue, injuries, suspensions, season minutes) on
+# every run. A fixture may ONLY be run once, by the human runner (Trevor), who
+# supplies the real date / home team / weather / referee inputs per match.
+# AI assistants or automated agents must NEVER execute or re-run this file:
+# an accidental rerun of a played fixture corrupts the season ledger. A fixture's
+# results are authoritative once recorded and must never be re-run.
+# For agent-controlled test simulations (scratch, non-canonical) use run_match.py. 
 
 from __future__ import annotations
 import os
@@ -43,6 +53,7 @@ from exporter import PLOFAExporter
 from squad_manager import SubstitutionController, AvailabilityChecker, AvailabilityStatus
 from roster_loader import RosterLoader, get_loader, auto_team_style
 from season_manager import SeasonState
+from referee_pool import RefereeManager
 
 
 class _TeamEntry(TypedDict):
@@ -58,38 +69,36 @@ class _TeamEntry(TypedDict):
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 8, 23) # Year, Month, Day
-MATCHDAY     = 1 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 9, 6) # Year, Month, Day
+MATCHDAY     = 3 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "Lige-8"
-AWAY_TEAM  = "Red Wolves"
+HOME_TEAM  = "Natrican"
+AWAY_TEAM  = "Tryox City"
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = "West 1977 City"
-CAPACITY  = 65_000
+VENUE     = "Natrican Stadium"
+CAPACITY  = 45_000
 
-# ── Referee ────────────────────────────────────────────────────────────
-REFEREE    = "Jofart Eli"
-STRICTNESS = 0.1 # 0.0 = very lenient  |  1.0 = very strict
-
-#PLOFA LEAGUE REFS FOR 26/27 SEASON (9, 1/MATCH, TOTAL 9)
-#Marcus Osei (0.3),
-#Juri Yuresh (0.0), 
-#Eric Vanam (0.2), 
-#Daniel Liu (0.0), 
-#Ashley Mantu (0.1),
-#Feriza Maria (0.0),
-#William Hurte (0.0),
-#Jofart Eli (0.1),
-#Carlos Caper (0.1),
+# ── Referee (auto-assigned by default) ──────────────────────────────
+# Set FORCE_REF to a referee name to override rotation (e.g. for a derby).
+# Leave as None to let the system auto-pick based on EPL rotation rules.
+FORCE_REF = None  # e.g. "Marcus Osei" or None for auto-assign
+REFEREE    = None  # auto-filled below
+STRICTNESS = None  # auto-filled below
 
 
 # ── Conditions ─────────────────────────────────────────────────────────
-WEATHER    = "clear"   # clear | rain | wind | fog
+# 'WEATHER' accepts a fixed condition (clear | rain | wind | fog) OR 'auto'
+# to derive real seasonal climate (weather + temperature) from venue & date.
+WEATHER        = "auto"
 IS_DERBY   = False     # True for a local rivalry
+# Toggle weather/fixture-time physics ON (True) or OFF (False). OFF keeps
+# Checkpoint-6 behaviour exactly; ON activates pass/shot/stamina/GK
+# multipliers and kickoff-time attendance with real per-match climate.
+WEATHER_ENABLED = True
 
 # ── Substitution behaviour ─────────────────────────────────────────────
 MANAGER_STUBBORNNESS = 0.35   # 0 = subs quickly  |  1 = never subs for stamina
@@ -220,12 +229,12 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#E0E0E0",
         "style":         TeamStyle.GEGENPRESSING,
         "playing_style": PlayingStyle.HIGH_PRESS,
-        "intensity":     Intensity.VERY_HIGH,
+        "intensity":     Intensity.HIGH,
     },
     "Pearls": {
         "home_color": "#C0C0C0",
         "away_color": "#8B008B",
-        "style":         TeamStyle.ULTRA_ATTACKING,
+        "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.PATIENT_BUILD_UP,
         "intensity":     Intensity.HIGH,
     },
@@ -246,7 +255,7 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
     "Triumpher": {
         "home_color": "#FFFFFF",
         "away_color": "#E23C8F",
-        "style":         TeamStyle.ULTRA_ATTACKING,
+        "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.POSSESSION,
         "intensity":     Intensity.VERY_HIGH,
     },
@@ -260,9 +269,9 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
     "Red Wolves": {
         "home_color": "#CC0000",
         "away_color": "#1C1C1C",
-        "style":         TeamStyle.ULTRA_ATTACKING,
+        "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.TRANSITION_FOCUSED,
-        "intensity":     Intensity.VERY_HIGH,
+        "intensity":     Intensity.HIGH,
     },
     "Telbey": {
         "home_color": "#005B8E",
@@ -318,21 +327,21 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#EA09AA",
         "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.COUNTER,
-        "intensity":     Intensity.MEDIUM,
+        "intensity":     Intensity.LOW,
     },
     "Ganester":{
         "home_color": "#EAF207",
         "away_color": "#0F22CD",
         "style":         TeamStyle.ROUTE_ONE,
         "playing_style": PlayingStyle.PATIENT_BUILD_UP,
-        "intensity":     Intensity.MEDIUM,
+        "intensity":     Intensity.LOW,
     },
     "Rodice": {
         "home_color": "#0B3E0C",
         "away_color": "#090202",
         "style":         TeamStyle.GEGENPRESSING,
         "playing_style": PlayingStyle.MIXED,
-        "intensity":     Intensity.MEDIUM,
+        "intensity":     Intensity.LOW,
     }
 }
 # fmt: on
@@ -529,6 +538,15 @@ def _persist_post_match(
         away_squad["starters"] + away_squad["substitutes"]
     )
 
+    # Record the fixture into the league standings so attendance reflects
+    # each team's season performance (position + recent form).
+    season_state.record_team_result(
+        result.config.home_team,
+        result.config.away_team,
+        result.home_goals,
+        result.away_goals,
+    )
+
     played_names: set[str] = set()
     try:
         for player in all_players:
@@ -549,6 +567,7 @@ def _persist_post_match(
                 injury_type=stamina_state.injury_type if stamina_state else "none",
                 matches_out=stamina_state.matches_out() if stamina_state else 0,
                 match_date=match_date,
+                assists=s.get("assists", 0),
             )
             played_names.add(player.name)
 
@@ -563,19 +582,90 @@ def _persist_post_match(
         season_state.save()
 
 
+def _resolve_fixture_info(loader: RosterLoader) -> dict:
+    """
+    Pull fixture metadata (Start Time, Venue, Capacity) for this matchday's
+    fixture from the Excel FIXTURES sheet. Returns a dict with keys
+    start_time / venue / capacity (None when not found / not playable).
+    """
+    try:
+        from weather_physics import load_fixture_info as _load_fixture_info
+        excel_path = getattr(loader, "excel_path", None)
+        if not excel_path:
+            return {"start_time": None, "venue": None, "capacity": None}
+        info = _load_fixture_info(excel_path, MATCHDAY, HOME_TEAM, AWAY_TEAM)
+        return {
+            "start_time": info.get("start_time"),
+            "venue": info.get("venue"),
+            "capacity": info.get("capacity"),
+        }
+    except Exception:
+        return {"start_time": None, "venue": None, "capacity": None}
+
+
+def _activate_weather(fixture_info: dict, weather_str: str, enabled: bool) -> dict:
+    """
+    Resolve the WeatherCondition to use for this match.
+      - disabled: return {"condition": None, "enabled": False} (zero regression).
+      - enabled:  derive the condition from the fixture's real climate when no
+                  explicit weather override is set; otherwise map the string.
+    Activates the WeatherPhysics engine and returns the resolved metadata.
+    """
+    start_time = fixture_info["start_time"]
+    if not enabled:
+        return {"condition": None, "enabled": False, "start_time": start_time}
+
+    from weather_physics import (
+        WeatherPhysics, WeatherCondition, resolve_real_weather,
+    )
+
+    if weather_str and str(weather_str).strip().lower() not in ("", "auto", "real"):
+        condition = WeatherCondition.from_string(weather_str, temperature_c=15.0)
+    else:
+        # Real weather first (Open-Meteo, no key), seasonal climate as fallback.
+        # The club name (HOME_TEAM) is the location key — each club owns a ground.
+        condition = resolve_real_weather(
+            venue=HOME_TEAM or (fixture_info["venue"] or f"{HOME_TEAM} Stadium"),
+            match_date=MATCH_DATE,
+            start_time=start_time,
+        )
+
+    WeatherPhysics.set_active_weather(condition, enabled=True)
+    return {"condition": condition, "enabled": True, "start_time": start_time}
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────
 
 def run():
     sys.stdout.reconfigure(encoding="utf-8")
 
-    venue = VENUE if VENUE else f"{HOME_TEAM} Stadium"
+    # ── Fixture metadata (Start Time / Venue / Capacity) from Excel ──
+    _fixture_info = _resolve_fixture_info(get_loader())
+    _weather_meta = _activate_weather(_fixture_info, WEATHER, WEATHER_ENABLED)
+    START_TIME = _weather_meta["start_time"]
+
+    venue = VENUE if VENUE else (_fixture_info["venue"] or f"{HOME_TEAM} Stadium")
+    # Prefer the user's explicit CAPACITY; fall back to the Excel fixture
+    # capacity only when the venue itself is auto-resolved from Excel.
+    _capacity = CAPACITY
+    if not VENUE and _fixture_info["capacity"]:
+        _capacity = _fixture_info["capacity"]
+
+    # ── Auto-assign referee ──────────────────────────────────
+    ref_mgr = RefereeManager()
+    chosen_ref = ref_mgr.assign(MATCHDAY, HOME_TEAM, AWAY_TEAM, force_ref=FORCE_REF)
+    REFEREE = chosen_ref.name
+    STRICTNESS = chosen_ref.strictness
 
     print(f"\n{'═' * 64}")
     print(f"  PLOFA {SEASON} — Matchday {MATCHDAY}")
     print(f"  {HOME_TEAM}  vs  {AWAY_TEAM}")
-    print(f"  {MATCH_DATE.strftime('%A %d %B %Y')}  |  {venue}")
+    print(f"  {MATCH_DATE.strftime('%A %d %B %Y')}  |  {venue}  |  KO {START_TIME if START_TIME else 'TBC'}")
     print(f"  Referee: {REFEREE}  (strictness: {STRICTNESS})")
-    print(f"  Weather: {WEATHER}{'  |  DERBY' if IS_DERBY else ''}")
+    _weather_label = WEATHER
+    if _weather_meta["enabled"] and _weather_meta["condition"] is not None:
+        _weather_label = _weather_meta["condition"].summary()
+    print(f"  Weather: {_weather_label}{'  |  PHYSICS ON' if _weather_meta['enabled'] else ''}{'  |  DERBY' if IS_DERBY else ''}")
     print(f"{'═' * 64}")
 
     # ── Load Excel roster ─────────────────────────────────────
@@ -586,6 +676,20 @@ def run():
             print(f"\n  ❌ Team '{team}' not found in Excel.")
             print(f"     Available clubs: {', '.join(clubs)}")
             sys.exit(1)
+
+    # ── Managers (assigned from pool; auto-generated for promoted) ──
+    from manager_profile import ManagerPool
+    style_lookup = {
+        name: entry.get("style").value if entry.get("style") else ""
+        for name, entry in TEAM_CATALOG.items()
+    }
+    mgr_pool = ManagerPool(clubs=clubs, style_lookup=style_lookup)
+    home_mgr = mgr_pool.manager_for(HOME_TEAM)
+    away_mgr = mgr_pool.manager_for(AWAY_TEAM)
+    print(f"  🧑‍💼 {HOME_TEAM}: {home_mgr.name}  ({home_mgr.tactical_philosophy})  "
+          f"[{home_mgr.job_status()}]")
+    print(f"  🧑‍💼 {AWAY_TEAM}: {away_mgr.name}  ({away_mgr.tactical_philosophy})  "
+          f"[{away_mgr.job_status()}]")
 
     # ── Season state (cross-matchday persistence) ─────────────
     season_state = SeasonState(SEASON, SEASON_STATE_FILE)
@@ -663,6 +767,16 @@ def run():
     )
     _apply_starting_stamina(all_players_flat, {**home_avail, **away_avail}, season_state, MATCH_DATE)
 
+    # ── Pre-match fatigue briefing: let the manager READ their own
+    #    fatigue before kickoff — true projected start %, carryover drain,
+    #    seasonal load, rotation calls, and bench readiness. Shows the real
+    #    number, flagging [floored→70%] where the engine's clamp would
+    #    otherwise hide genuine exhaustion. ───────────────────────
+    season_state.print_fatigue_briefing(HOME_TEAM, home_squad["starters"],
+                                        bench=home_squad["substitutes"], match_date=MATCH_DATE)
+    season_state.print_fatigue_briefing(AWAY_TEAM, away_squad["starters"],
+                                        bench=away_squad["substitutes"], match_date=MATCH_DATE)
+
     # ── Attach soul players ───────────────────────────────────
     souls_attached = _attach_souls(all_players_flat)
     if souls_attached:
@@ -683,11 +797,13 @@ def run():
         season=SEASON,
         competition=COMPETITION,
         venue=venue,
-        stadium_capacity=CAPACITY,
+        stadium_capacity=_capacity,
         referee=REFEREE,
         referee_strictness=STRICTNESS,
         is_derby=IS_DERBY,
-        weather=WEATHER,
+        weather=(_weather_meta["condition"] if _weather_meta["enabled"] else WEATHER),
+        start_time=START_TIME,
+        weather_enabled=_weather_meta["enabled"],
     )
 
     # ── Substitution controller ───────────────────────────────
@@ -701,6 +817,9 @@ def run():
         manager_stubbornness=MANAGER_STUBBORNNESS,
     )
     sub_controller.MAX_SUBS = MAX_SUBS
+    # Per-manager substitution patience (overrides the flat constant).
+    sub_controller.set_manager_stubbornness(HOME_TEAM, home_mgr.stubbornness())
+    sub_controller.set_manager_stubbornness(AWAY_TEAM, away_mgr.stubbornness())
 
     # Register pre-planned tactical sub minutes.
     # Format: {player_OFF_name: minute_they_come_off}
@@ -748,6 +867,7 @@ def run():
     engine.set_squad(HOME_TEAM, home_squad["starters"], home_squad["substitutes"])
     engine.set_squad(AWAY_TEAM, away_squad["starters"], away_squad["substitutes"])
     engine.set_stamina_controller(sub_controller)
+    engine.set_managers(home_manager=home_mgr, away_manager=away_mgr)
 
     result = engine.simulate()
     print(result.summary())
@@ -807,6 +927,7 @@ def run():
         away_color=away_color,
         sub_controller=sub_controller,
         big6_teams=BIG6_TEAMS,
+        standings=season_state.standings_info(),
     )
 
     # ── Persist season state BEFORE export ────────────────────
@@ -847,8 +968,33 @@ def run():
                       f"Shot Assists: {s['shot_assists']}  "
                       f"Carries: {s['carries']}")
 
+    # ── Record referee assignment for rotation tracking ──────
+    ref_mgr.record_assignment(chosen_ref, MATCHDAY, HOME_TEAM, AWAY_TEAM)
+    ref_mgr.save()
+
+    # ── Record manager results for job security ──────────────
+    home_pts, away_pts = 3, 0
+    if result.home_goals == result.away_goals:
+        home_pts = away_pts = 1
+    elif result.home_goals < result.away_goals:
+        home_pts, away_pts = 0, 3
+    # Expected-points proxy: a neutral expectation is 1.0 for a tie, ~1.5
+    # if a team overperformed this matchday, ~0.5 if underperformed. We
+    # anchor xP to the actual xG differential so it's emergent, not random.
+    home_xg, away_xg = result.home_xg, result.away_xg
+    home_xp = 1.0 + (home_xg - away_xg) * 0.6
+    away_xp = 1.0 + (away_xg - home_xg) * 0.6
+    home_mgr.record_result(MATCHDAY, home_pts, max(0.0, home_xp))
+    away_mgr.record_result(MATCHDAY, away_pts, max(0.0, away_xp))
+    mgr_pool.save()
+
     print(f"\n  ✅ Done. Output → {output_path}/")
     print(f"  📊 Season state updated. Injuries/suspensions carry to next matchday.\n")
+    print(f"  🟨 {ref_mgr.summary()}")
+    print(f"  🧑‍💼 {HOME_TEAM} manager risk: {home_mgr.sack_risk():.0%}  "
+          f"({home_mgr.job_status()})")
+    print(f"  🧑‍💼 {AWAY_TEAM} manager risk: {away_mgr.sack_risk():.0%}  "
+          f"({away_mgr.job_status()})")
 
 
 if __name__ == "__main__":

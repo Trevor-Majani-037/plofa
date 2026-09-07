@@ -28,11 +28,10 @@
 from datetime import date
 from match_engine import MatchEngine, MatchConfig, TeamProfile, TeamStyle, PlayingStyle, Intensity
 from player_dna import SquadBuilder
-from player_soul import PlayerSoul, SoulArchetype, GreatnessPillars, SoulApplicator
+from player_soul import PlayerSoul, SoulArchetype, GreatnessPillars
 from exporter import PLOFAExporter
 from squad_manager import SubstitutionController, AvailabilityChecker
-from roster_loader import get_loader
-from season_manager import SeasonState
+from manager_profile import ManagerPool
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -256,6 +255,17 @@ def run():
     print(f"  Referee: {REFEREE} (strictness: {STRICTNESS})")
     print(f"{'═'*64}\n")
 
+    # ── Managers (auto-assigned; override via ManagerPool.MANAGER_OVERRIDES) ──
+    mgr_pool = ManagerPool(clubs=[HOME_TEAM, AWAY_TEAM],
+                           style_lookup={HOME_TEAM: HOME_STYLE.style.value,
+                                         AWAY_TEAM: AWAY_STYLE.style.value})
+    home_mgr = mgr_pool.manager_for(HOME_TEAM)
+    away_mgr = mgr_pool.manager_for(AWAY_TEAM)
+    print(f"  🧑‍💼 {HOME_TEAM}: {home_mgr.name}  ({home_mgr.tactical_philosophy})  "
+          f"[{home_mgr.job_status()}]")
+    print(f"  🧑‍💼 {AWAY_TEAM}: {away_mgr.name}  ({away_mgr.tactical_philosophy})  "
+          f"[{away_mgr.job_status()}]")
+
     # ── Build squads ─────────────────────────────────────────
     home_squad = SquadBuilder.build(
         team_name=HOME_TEAM,
@@ -347,6 +357,9 @@ def run():
         manager_stubbornness=MANAGER_STUBBORNNESS,
     )
     sub_controller.MAX_SUBS = MAX_SUBS
+    # Per-manager substitution patience (overrides the flat constant).
+    sub_controller.set_manager_stubbornness(HOME_TEAM, home_mgr.stubbornness())
+    sub_controller.set_manager_stubbornness(AWAY_TEAM, away_mgr.stubbornness())
 
     # Register pre-planned tactical sub minutes.
     # Format: {player_OFF_name: minute_they_come_off}
@@ -391,6 +404,7 @@ def run():
     engine.set_squad(HOME_TEAM, home_squad["starters"], home_squad["substitutes"])
     engine.set_squad(AWAY_TEAM, away_squad["starters"], away_squad["substitutes"])
     engine.set_stamina_controller(sub_controller)
+    engine.set_managers(home_manager=home_mgr, away_manager=away_mgr)
 
     result = engine.simulate()
     print(result.summary())
@@ -449,44 +463,10 @@ def run():
                           f"{', '.join(f'+{v} {k}' for k,v in bonuses.items())}")
 
     # ── Persist season state ──────────────────────────────────
-    try:
-        loader = get_loader()
-        season_state = SeasonState(SEASON, SEASON_STATE_FILE)
-
-        played_names: set[str] = set()
-        acc = exporter.accumulator
-        for player in all_players_flat:
-            s = acc.stats.get(player.name)
-            if not s:
-                continue
-            stamina_state = sub_controller.stamina.get(player.name)
-            ending_stamina = stamina_state.current_stamina if stamina_state else 100.0
-            season_state.record_post_match(
-                name=player.name,
-                rating=s.get("rating", 6.0),
-                goals=s.get("goals", 0),
-                minutes_played=s.get("minutes_played", 0),
-                ending_stamina=ending_stamina,
-                yellow=s.get("yellow_cards", 0) > 0,
-                red=s.get("red_cards", 0) > 0,
-                injured=stamina_state.is_injured if stamina_state else False,
-                injury_type=stamina_state.injury_type if stamina_state else "none",
-                matches_out=stamina_state.matches_out() if stamina_state else 0,
-                match_date=MATCH_DATE,
-            )
-            played_names.add(player.name)
-
-        # Tick down bans/injuries for non-players in both clubs
-        all_club_names: list[str] = []
-        for club in [HOME_TEAM, AWAY_TEAM]:
-            for rec in loader.get_club_players(club):
-                all_club_names.append(rec.name)
-
-        season_state.advance_matchday(all_club_names, played_names, MATCH_DATE)
-        season_state.save()
-        print(f"\n  💾 Season state saved → {SEASON_STATE_FILE}")
-    except Exception as e:
-        print(f"\n  ⚠️  Season state save failed: {e}")
+    # Deliberately NOT done here: run_match.py is the TESTING/DEMO runner.
+    # It runs a match, prints the summary, and writes the match export — and
+    # stops. Nothing feeds season_state.json or the manager season records;
+    # those belong to the official season runner (auto_run_match.py).
 
     print(f"\n  ✅ Done. Output → {output_path}/\n")
 

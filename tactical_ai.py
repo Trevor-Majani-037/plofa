@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from match_engine import TeamProfile, MatchState, TeamStyle
+from tactical_shapes import FormationStance, formation_stance_for
 
 
 @dataclass
@@ -50,6 +51,11 @@ class EffectiveTactics:
     # Diagnostic tag so exports/commentary can say WHY (e.g. "chasing_2_late")
     posture: str = "baseline"
 
+    # Feature #1 — the live FORMATION stance that goes with those dials
+    # (all-out chase shape, seeing it out, etc.). Read directly by the
+    # PositionEngine / exports for this minute.
+    stance: FormationStance = FormationStance.BASELINE
+
 
 class TacticalAI:
     """
@@ -61,7 +67,8 @@ class TacticalAI:
 
     @staticmethod
     def adjust(profile: TeamProfile, state: MatchState, team_name: str,
-               home_team: str, red_cards_against: int = 0, avg_stamina: float = 100.0) -> EffectiveTactics:
+               home_team: str, red_cards_against: int = 0, avg_stamina: float = 100.0,
+               manager=None) -> EffectiveTactics:
         gd = state.goal_difference if team_name == home_team else -state.goal_difference
         minute = state.minute
 
@@ -75,20 +82,41 @@ class TacticalAI:
         poss_target = profile.possession_target
         posture = "baseline"
 
+        # ── MANAGER BIAS LAYER ────────────────────────────────────
+        # A manager is not a new decision-maker — it shifts the THRESHOLDS
+        # at which the existing TacticalAI postures fire. An aggressive
+        # manager chases earlier and protects later; a cautious one does
+        # the opposite. `manager` duck-types the small surface this needs:
+        #   .chase_shift()   -> minutes earlier an attacker chases
+        #   .protect_shift() -> minutes earlier/later a leader parks up
+        #   .risk_tolerance  -> 0 cautious, 1 aggressive
+        chase_min = 60
+        push_min = 70
+        protect_min = 70
+        lead_min = 80
+        risq = 0.0
+        if manager is not None:
+            chase_min = max(45, 60 - manager.chase_shift())
+            push_min = max(50, 70 - manager.chase_shift() * 0.7)
+            protect_min = max(50, 70 - manager.protect_shift())
+            lead_min = max(60, 80 - manager.protect_shift())
+            # An attacking manager also pushes possession harder while chasing.
+            risq = max(0.0, min(1.0, manager.risk_tolerance))
+
         # ── CHASING THE GAME ────────────────────────────────────
-        if gd <= -2 and minute >= 60:
-            urgency = min(1.0, (minute - 60) / 25.0)   # ramps up 60'->85'
+        if gd <= -2 and minute >= chase_min:
+            urgency = min(1.0, (minute - chase_min) / 25.0)   # ramps up after chase_min
             press    = min(1.0, press * (1 + 0.35 * urgency))
             tempo    = min(1.0, tempo * (1 + 0.30 * urgency))
             direct   = min(1.0, direct * (1 + 0.40 * urgency))
             def_line = min(1.0, def_line * (1 + 0.25 * urgency))
             shots    = shots * (1 + 0.45 * urgency)
             big_ch   = big_ch * (1 - 0.10 * urgency)    # more shots, lower avg quality
-            poss_target = min(75, poss_target * (1 + 0.15 * urgency))
+            poss_target = min(75, poss_target * (1 + 0.15 * urgency + 0.10 * risq))
             posture = "all_out_chase"
 
-        elif gd == -1 and minute >= 70:
-            urgency = min(1.0, (minute - 70) / 20.0)
+        elif gd == -1 and minute >= push_min:
+            urgency = min(1.0, (minute - push_min) / 20.0)
             press  = min(1.0, press * (1 + 0.18 * urgency))
             tempo  = min(1.0, tempo * (1 + 0.15 * urgency))
             direct = min(1.0, direct * (1 + 0.20 * urgency))
@@ -96,8 +124,8 @@ class TacticalAI:
             posture = "pushing"
 
         # ── PROTECTING A LEAD ────────────────────────────────────
-        elif gd >= 2 and minute >= 70:
-            caution = min(1.0, (minute - 70) / 20.0)
+        elif gd >= 2 and minute >= protect_min:
+            caution = min(1.0, (minute - protect_min) / 20.0)
             press    = press * (1 - 0.35 * caution)
             tempo    = tempo * (1 - 0.30 * caution)
             direct   = direct * (1 - 0.15 * caution)     # keep the ball, don't rush
@@ -106,8 +134,8 @@ class TacticalAI:
             poss_target = poss_target * (1 - 0.05 * caution)
             posture = "see_it_out"
 
-        elif gd == 1 and minute >= 80:
-            caution = min(1.0, (minute - 80) / 10.0)
+        elif gd == 1 and minute >= lead_min:
+            caution = min(1.0, (minute - lead_min) / 10.0)
             press    = press * (1 - 0.20 * caution)
             def_line = def_line * (1 - 0.18 * caution)
             shots    = shots * (1 - 0.20 * caution)
@@ -142,6 +170,13 @@ class TacticalAI:
             def_line = def_line * (1.0 - 0.30 * fatigue_factor)
             posture += "+fatigued"
 
+        # Feature #1 — the shape that goes with this posture. Same scoreline /
+        # clock / manager lenses, so an all-out-chase set of dials ALWAYS
+        # arrives with the all-out-chase formation.
+        stance = formation_stance_for(
+            profile, state, team_name, home_team, manager=manager
+        )
+
         return EffectiveTactics(
             style=profile.style if hasattr(profile, 'style') else None,
             press_intensity=round(min(1.0, max(0.05, press)), 4),
@@ -153,6 +188,7 @@ class TacticalAI:
             press_success_rate=round(min(0.55, max(0.05, press_succ)), 4),
             possession_target=round(min(80, max(20, poss_target)), 2),
             posture=posture,
+            stance=stance,
         )
 
 

@@ -29,6 +29,11 @@ from datetime import date
 from position_engine import PositionEngine
 from threat_engine import ThreatEngine
 from block_awareness import BlockShape, BlockDetector
+from virtual_gps import VirtualGPS
+from weather_physics import WeatherCondition, WeatherPhysics
+from tactical_shapes import FormationStance
+from attack_patterns import AttackPattern
+from set_piece_routines import SetPieceRoutine
 
 # The match narrative prints emoji/unicode; on legacy consoles (cp1252 etc.)
 # that raises UnicodeEncodeError mid-simulation. Reconfigure the streams to
@@ -216,7 +221,7 @@ class MatchEvent:
     body_part: str = "right_foot"       # foot/head/other
     phase: MatchPhase = MatchPhase.OPENING
     game_state: GameState = GameState.LEVEL
-    metadata: dict[str, Any] = field(default_factory=dict)  # Extra context
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Extra context
 
     def __post_init__(self):
         # The event chains stamp the foot/head used for passes, through balls
@@ -225,7 +230,7 @@ class MatchEvent:
         # threat engine, header detection) sees the REAL body part instead of
         # the "right_foot" dataclass default. Shots already pass body_part as
         # a top-level kwarg, so this is a no-op for them (same value).
-        md_body = self.metadata.get("body_part")
+        md_body = (self.metadata or {}).get("body_part")
         if md_body:
             self.body_part = md_body
 
@@ -254,6 +259,66 @@ class MatchEvent:
         return ((self.location_x - 105) ** 2 + (self.location_y - 34) ** 2) ** 0.5
 
 
+# CHRONOGRAPHY ─────────────────────────────────────────
+# The engine runs on one continuous global clock (state.match_clock_s). This
+# additive layer records the exact clock span each possession chain occupied,
+# then stamps the timeline events with their TRUE match-second (the "minute" is
+# only a bucket; most chain events carry a placeholder random second). Reading
+# only — it changes no outcome and mutates nothing.
+
+@dataclass
+class ChainClockMark:
+    """Clock span a single absorbed possession chain occupied on the global clock."""
+    minute: int
+    start_clock: float
+    end_clock: float
+    motion_folded: bool   # False = goal chain early-returned before _absorb_motion
+    events: "list[MatchEvent]"
+
+
+@dataclass
+class TimedEvent:
+    """A timeline event stamped with its real match-second from the global clock."""
+    minute: int
+    second: float                   # 0–59.9 within the minute bucket
+    match_clock_s: float            # seconds from kickoff (true global clock)
+    duration: float                 # measured spacing to the next chain event (0 for last)
+    event_type: str
+    team: str
+    player: str
+    secondary_player: Optional[str] = None
+    location_x: float = 0.0
+    location_y: float = 0.0
+    end_x: Optional[float] = None
+    end_y: Optional[float] = None
+    goal: bool = False
+    source_event_index: int = -1    # index into MatchResult.timeline
+
+    @property
+    def stamp(self) -> str:
+        return f"{self.minute}:{self.second:04.1f}"
+
+    @property
+    def is_goal(self) -> bool:
+        return self.event_type in ("GOAL", "OWN_GOAL", "PENALTY_SCORED")
+
+
+@dataclass
+class MatchChronology:
+    events: "list[TimedEvent]"
+    match_duration_s: float
+    measured_play_s: float     # sum of folded chain spans (real ball-in-play time)
+    dead_time_s: float         # restarts, dead minutes, goal celebrations, etc.
+    n_chains: int
+    n_unmarked_events: int     # timeline events outside any chain mark (kickoffs, stoppage)
+
+    @property
+    def play_share(self) -> float:
+        if self.match_duration_s <= 0.0:
+            return 0.0
+        return round(100.0 * self.measured_play_s / self.match_duration_s, 1)
+
+
 @dataclass
 class TeamProfile:
     """
@@ -273,6 +338,7 @@ class TeamProfile:
     width: float = 0.5                  # 0=narrow, 1=wide
     tempo: float = 0.5                  # 0=slow, 1=fast
     directness: float = 0.5             # 0=patient, 1=direct
+    compactness: float = 0.5            # 0=spread, 1=narrow/packed block
 
     # Derived probabilities (set during __post_init__)
     possession_target: float = 50.0     # Natural possession tendency
@@ -289,78 +355,91 @@ class TeamProfile:
             TeamStyle.ULTRA_ATTACKING: {
                 'press_intensity': 0.8, 'defensive_line': 0.8,
                 'width': 0.7, 'tempo': 0.9, 'directness': 0.7,
+                'compactness': 0.35,
                 'possession_target': 55.0, 'shots_per_sequence': 0.15,
                 'big_chance_ratio': 0.40, 'press_success_rate': 0.30,
             },
             TeamStyle.ATTACKING: {
                 'press_intensity': 0.65, 'defensive_line': 0.65,
                 'width': 0.6, 'tempo': 0.7, 'directness': 0.6,
+                'compactness': 0.40,
                 'possession_target': 52.0, 'shots_per_sequence': 0.13,
                 'big_chance_ratio': 0.37, 'press_success_rate': 0.27,
             },
             TeamStyle.GEGENPRESSING: {
                 'press_intensity': 0.95, 'defensive_line': 0.75,
                 'width': 0.6, 'tempo': 0.95, 'directness': 0.65,
+                'compactness': 0.45,
                 'possession_target': 50.0, 'shots_per_sequence': 0.14,
                 'big_chance_ratio': 0.38, 'press_success_rate': 0.40,
             },
             TeamStyle.TIKI_TAKA: {
                 'press_intensity': 0.72, 'defensive_line': 0.70,
                 'width': 0.5, 'tempo': 0.55, 'directness': 0.25,
+                'compactness': 0.55,
                 'possession_target': 70.0, 'shots_per_sequence': 0.07,
                 'big_chance_ratio': 0.30, 'press_success_rate': 0.38,
             },
             TeamStyle.BALANCED: {
                 'press_intensity': 0.50, 'defensive_line': 0.50,
                 'width': 0.5, 'tempo': 0.55, 'directness': 0.50,
+                'compactness': 0.50,
                 'possession_target': 50.0, 'shots_per_sequence': 0.11,
                 'big_chance_ratio': 0.33, 'press_success_rate': 0.25,
             },
             TeamStyle.DEFENSIVE: {
                 'press_intensity': 0.30, 'defensive_line': 0.30,
                 'width': 0.4, 'tempo': 0.40, 'directness': 0.55,
+                'compactness': 0.65,
                 'possession_target': 42.0, 'shots_per_sequence': 0.07,
                 'big_chance_ratio': 0.28, 'press_success_rate': 0.18,
             },
             TeamStyle.ULTRA_DEFENSIVE: {
                 'press_intensity': 0.15, 'defensive_line': 0.15,
                 'width': 0.35, 'tempo': 0.30, 'directness': 0.60,
+                'compactness': 0.75,
                 'possession_target': 35.0, 'shots_per_sequence': 0.07,
                 'big_chance_ratio': 0.25, 'press_success_rate': 0.12,
             },
             TeamStyle.PARK_THE_BUS: {
                 'press_intensity': 0.10, 'defensive_line': 0.10,
                 'width': 0.30, 'tempo': 0.25, 'directness': 0.65,
+                'compactness': 0.90,
                 'possession_target': 32.0, 'shots_per_sequence': 0.04,
                 'big_chance_ratio': 0.22, 'press_success_rate': 0.10,
             },
             TeamStyle.WING_PLAY: {
                 'press_intensity': 0.55, 'defensive_line': 0.55,
                 'width': 0.90, 'tempo': 0.65, 'directness': 0.60,
+                'compactness': 0.35,
                 'possession_target': 48.0, 'shots_per_sequence': 0.12,
                 'big_chance_ratio': 0.35, 'press_success_rate': 0.22,
             },
             TeamStyle.ROUTE_ONE: {
                 'press_intensity': 0.40, 'defensive_line': 0.40,
                 'width': 0.55, 'tempo': 0.80, 'directness': 0.90,
+                'compactness': 0.70,
                 'possession_target': 38.0, 'shots_per_sequence': 0.09,
                 'big_chance_ratio': 0.30, 'press_success_rate': 0.20,
             },
             TeamStyle.VERTICAL_TIKI_TAKA: {
                 'press_intensity': 0.65, 'defensive_line': 0.65,
                 'width': 0.55, 'tempo': 0.70, 'directness': 0.55,
+                'compactness': 0.50,
                 'possession_target': 60.0, 'shots_per_sequence': 0.12,
                 'big_chance_ratio': 0.36, 'press_success_rate': 0.30,
             },
             TeamStyle.STRUCTURED_POSSESSION: {
                 'press_intensity': 0.55, 'defensive_line': 0.55,
                 'width': 0.5, 'tempo': 0.50, 'directness': 0.35,
+                'compactness': 0.50,
                 'possession_target': 62.0, 'shots_per_sequence': 0.09,
                 'big_chance_ratio': 0.31, 'press_success_rate': 0.30,
             },
             TeamStyle.FLUID_COUNTER: {
                 'press_intensity': 0.45, 'defensive_line': 0.40,
                 'width': 0.65, 'tempo': 0.75, 'directness': 0.72,
+                'compactness': 0.45,
                 'possession_target': 43.0, 'shots_per_sequence': 0.12,
                 'big_chance_ratio': 0.38, 'press_success_rate': 0.22,
             },
@@ -397,7 +476,9 @@ class MatchConfig:
     referee_strictness: float = 0.5    # 0=lenient, 1=strict
     is_derby: bool = False
     home_advantage: float = 0.08       # % boost to home team probabilities
-    weather: str = "clear"             # clear, rain, wind, fog
+    weather: Union[WeatherCondition, str] = "clear"  # clear, rain, wind, fog or WeatherCondition
+    start_time: Optional[str] = None   # Kickoff time (e.g. "12:30", "15:00", "20:00")
+    weather_enabled: bool = False      # Toggle physics effects (default False for zero regression)
 
 
 # ─────────────────────────────────────────────
@@ -423,6 +504,13 @@ class MatchState:
     # Who has the ball right now
     possession_team: str = ""
 
+    # Feature #1/#2 — the live per-team formation stance (chasing shape, see-
+    # it-out block ...) and attack pattern (overload side, box midfield ...)
+    # for THIS minute. Set once per minute by _run_minute()/_simulate_minute(),
+    # consumed by the possession/off-ball layers and read in exports/analytics.
+    team_stances: Dict[str, FormationStance] = field(default_factory=dict)
+    team_patterns: Dict[str, AttackPattern] = field(default_factory=dict)
+
     # Phase
     phase: MatchPhase = MatchPhase.OPENING
 
@@ -437,6 +525,32 @@ class MatchState:
     # Consecutive actions by same team (builds/breaks momentum)
     consecutive_home_possessions: int = 0
     consecutive_away_possessions: int = 0
+
+    # Weather physics state
+    weather: Optional[WeatherCondition] = None
+    weather_enabled: bool = False
+
+    # Possession-time tracking (Checkpoint — measured seconds held, vs the
+    # probabilistic possession split used to award sequences). Drives real
+    # possession % and per-player possession minutes.
+    home_possession_s: float = 0.0
+    away_possession_s: float = 0.0
+    possession_time_by_player: Dict[str, float] = field(default_factory=dict)
+
+    # Causal possession rights (Checkpoint — possession is not a memoryless
+    # coin flip). When a team WINS the ball in open play it is OWED the next
+    # open-play sequence; only a restart (kickoff / corner / penalty / goal
+    # kick / throw-in / offside free kick) redirects the ball away from them.
+    # Single-shot: consumed-and-cleared at the sequence team decision, so the
+    # carry never stacks across turnovers.
+    possession_winner: str = ""
+
+    # Global continuous match timeline (Checkpoint — the macro loop is still
+    # event/sequence-driven, but every chain's per-tick ball_path is offset
+    # onto ONE monotonic 90' clock here, so the whole match reads as one
+    # continuous, time-ordered ball trajectory instead of disconnected episodes.
+    match_clock_s: float = 0.0
+    match_ball_path: List[Dict[str, Any]] = field(default_factory=list)
 
     # Added time (decided at ~88th minute)
     added_time: int = 0
@@ -520,6 +634,36 @@ class MatchState:
     # keeper putting the delivery behind. Guards so one uncontested cross
     # can only ever concede at most one corner — no double-counting.
     cross_corner_done: bool = False
+
+    # ── Counterpress burst (P2) ────────────────────────────────────────
+    # When a team loses possession, it briefly presses the recovery zone
+    # (where the ball was lost) at elevated intensity for
+    # COUNTERPRESS_WINDOW_S seconds of match clock, overriding the normal
+    # static engagement line within COUNTERPRESS_RANGE_M of that zone.
+    # Models the real-football pattern where the team that lost the ball
+    # immediately hunts to win it back before the opponent can settle.
+    COUNTERPRESS_WINDOW_S: float = 8.0
+    COUNTERPRESS_RANGE_M: float = 18.0
+    COUNTERPRESS_INTENSITY_MULT: float = 2.5
+    counterpress_team: str = ""
+    counterpress_until_s: float = -1.0
+    counterpress_x: float = 0.0
+    counterpress_y: float = 0.0
+
+    def counterpress_active(self, team: str) -> bool:
+        """True if *team* should be counterpressing right now."""
+        return (
+            self.counterpress_team == team
+            and self.match_clock_s <= self.counterpress_until_s
+            and self.counterpress_team != ""
+        )
+
+    def set_counterpress(self, team: str, x: float, y: float) -> None:
+        """Arm the counterpress burst for *team* anchored at (x, y)."""
+        self.counterpress_team = team
+        self.counterpress_until_s = self.match_clock_s + self.COUNTERPRESS_WINDOW_S
+        self.counterpress_x = x
+        self.counterpress_y = y
 
     home_block: Optional[BlockShape] = None
     away_block: Optional[BlockShape] = None
@@ -644,12 +788,30 @@ class MomentumEngine:
 
     @staticmethod
     def after_goal(state: MatchState, scoring_team: str, home_team: str) -> float:
-        """Goal dramatically shifts momentum."""
+        """Goal dramatically shifts momentum — with diminishing returns when already dominant.
+
+        The 1st goal in a level match causes a full swing. But a 4th consecutive goal
+        when momentum is already pinned near ±80 adds little extra — the dominance is
+        already fully priced in. This prevents the momentum snowball from permanently
+        locking out the losing team's attacking numbers.
+        """
         shift = random.uniform(18, 30)   # Big momentum swing
         if scoring_team == home_team:
-            return min(100, state.momentum + shift)
+            current = state.momentum
+            # Diminishing returns when already dominating
+            if current >= 60:
+                shift *= 0.50
+            elif current >= 40:
+                shift *= 0.75
+            return min(100, current + shift)
         else:
-            return max(-100, state.momentum - shift)
+            current = state.momentum
+            # Diminishing returns when already dominating (away)
+            if current <= -60:
+                shift *= 0.50
+            elif current <= -40:
+                shift *= 0.75
+            return max(-100, current - shift)
 
     @staticmethod
     def after_red_card(state: MatchState, carded_team: str, home_team: str) -> float:
@@ -672,14 +834,18 @@ class MomentumEngine:
     @staticmethod
     def natural_decay(state: MatchState, home_team: str, home_profile: TeamProfile) -> float:
         """
-        Momentum naturally decays toward 0 (equilibrium),
-        but home advantage creates a slight positive pull.
-        """
-        home_bias = home_profile.possession_target - 50.0  # +ve = possession team
-        home_advantage_pull = 3.0  # Points pulled toward home advantage per phase
+        Momentum naturally decays toward 0 (equilibrium).
 
+        NOTE: the decay baseline is kept at 0 so the two teams are treated
+        symmetrically. A previous version hard-seeded the baseline at +3.0
+        (a permanent home pull), which — combined with the goal-driven
+        momentum snowball — made home teams win almost every match and left
+        away teams (and draws) statistically unable to happen. Any genuine
+        home advantage should come from `config.home_advantage`, not from a
+        one-sided momentum seed.
+        """
         decay_rate = 0.08  # 8% decay per event toward baseline
-        baseline = home_advantage_pull
+        baseline = 0.0
 
         new_momentum = state.momentum * (1 - decay_rate) + baseline * decay_rate
         return round(new_momentum, 2)
@@ -699,10 +865,22 @@ class MomentumEngine:
         return 1.0 + (raw * 0.25)
 
     @staticmethod
-    def get_game_state_modifier(state: MatchState, team: str, home_team: str) -> float:
+    def get_game_state_modifier(state: MatchState, team: str, home_team: str,
+                                composure: float = 1.0) -> float:
         """
         Teams react differently based on scoreline.
         Losing teams push forward (↑ attack chance), winning teams hold (↓ attack chance).
+
+        Collapse penalty: a team losing 3+ goals doesn't get an ever-growing desperate
+        boost — in real football their shape breaks down, morale collapses, and they
+        create FEWER chances despite opening up. Each extra goal beyond -2 chips away
+        at the desperation boost.
+
+        `composure` (default 1.0): a manager's man-management fingerprint. A
+        strong man-manager (>1.0) lifts a side that's behind so they don't
+        collapse as fast; a weak one (<1.0) lets heads drop sooner. Applied
+        only when the team is losing — a manager's steadiness matters most
+        exactly when a team is on the ropes.
         """
         gd = state.goal_difference if team == home_team else -state.goal_difference
         minute = state.minute
@@ -721,9 +899,20 @@ class MomentumEngine:
         elif gd == -1:
             # Chasing — push forward
             base = 1.12 if late_game else 1.05
+            base *= composure   # man-management steadies a chasing side
         else:
-            # Desperate — all out attack
-            base = 1.35 if late_game else 1.15
+            # Desperate — but cap the boost based on how badly they're losing.
+            # A team down 3+ has a broken shape and collapsing morale; they are
+            # NOT generating 35% more creative chances — they're scrambling.
+            deficit = abs(gd)
+            boost = 1.35 if late_game else 1.15
+            # Each extra goal beyond -2 reduces the desperate boost
+            # -2: full boost (1.35), -3: ×0.88, -4: ×0.76, -5: ×0.64, -6: ×0.65 floor
+            collapse_penalty = max(0.65, 1.0 - (deficit - 2) * 0.12)
+            base = boost * collapse_penalty
+            # A great man-manager holds the structure together and softens the
+            # collapse penalty even at 3+ down (never lets it floor below ~0.72).
+            base *= composure
 
         return base
 
@@ -1026,6 +1215,14 @@ class MatchEngine:
         result.export_to_excel("matchday_1.xlsx")
     """
 
+    # Causal possession carry (Checkpoint): how often a team that just WON
+    # the ball gets the next open-play sequence. Probabilistic (not absolute)
+    # so the engine still exercises its possession-target weighting and the
+    # calibrated split (test_calibration 20-80%) stays enforceable — the carry
+    # hands the ball back to the recovering side in real life, but a loose
+    # challenge / second ball can still flip it straight back.
+    POSSESSION_CARRY_PROB: float = 0.90
+
     def __init__(
         self,
         config: MatchConfig,
@@ -1040,7 +1237,31 @@ class MatchEngine:
             possession_team=config.home_team  # Home team kicks off
         )
 
+        # Resolve weather condition & toggle
+        if isinstance(config.weather, str):
+            self.weather_condition = WeatherCondition.from_string(config.weather)
+        elif isinstance(config.weather, WeatherCondition):
+            self.weather_condition = config.weather
+        else:
+            self.weather_condition = WeatherCondition.clear()
+
+        self.state.weather = self.weather_condition
+        self.state.weather_enabled = getattr(config, "weather_enabled", False)
+
+        # Set active weather in WeatherPhysics engine
+        WeatherPhysics.set_active_weather(
+            self.weather_condition,
+            enabled=self.state.weather_enabled,
+        )
+
         self.timeline: List[MatchEvent] = []   # The complete match history
+        # Chronography substrate: the exact global-clock span of every absorbed
+        # possession chain. Read by MatchEngine.chronograph() after the whistle.
+        self._chain_clock_marks: List[ChainClockMark] = []
+        # Feature #1/#2 — match-clock instant each team's shape (stance or
+        # pattern) last changed, so the off-ball integrator can animate the
+        # actual RESHAPE instead of teleporting bodies at a minute boundary.
+        self._shape_apply_clock: Dict[str, float] = {}
         self.squads: Dict[str, List] = {}      # {team_name: [Player objects]}
         self.active_players: Dict[str, List] = {}  # Currently on pitch
 
@@ -1052,6 +1273,10 @@ class MatchEngine:
 
         # Squad manager — wired in via set_stamina_controller()
         self.sub_controller = None   # SubstitutionController or None
+
+        # Managers (optional bias layer) — wired in via set_managers().
+        self.home_manager = None
+        self.away_manager = None
 
         # Set to True to silence per-match narrative prints (goal / card /
         # sub lines). Keeps seeded multi-sim verification logs parseable.
@@ -1073,6 +1298,37 @@ class MatchEngine:
         self.position_log: List[Dict] = []
         self.momentum_log: List[Dict] = []
 
+        # Unified-timeline carry state: the last ball position folded onto the
+        # global ball path, so each successive action's synthesized segment
+        # starts exactly where the previous one ended (continuity across
+        # actions). Seeded at the centre circle (kickoff / post-goal reset).
+        self._last_path_x: float = 52.5
+        self._last_path_y: float = 34.0
+        self._last_path_t: float = 0.0
+
+        # Single-clock continuity support: every off-ball player is integrated
+        # at 10 Hz for the whole match (not once per minute), and real
+        # path-distance + sprint segments are accumulated into PositionEngine.
+        self._on_ball_this_minute: set = set()
+        self._sprint_state: Dict[str, Dict[str, bool]] = {}
+        self._patrol: Dict[str, float] = {}
+        self._chase_state: Dict[str, Dict[str, float]] = {}
+        self._minute_start_snapshot: Dict[str, Tuple[float, float]] = {}
+        self._top_speed_cache: Dict[str, float] = {}
+        self._minute_start_clock: float = 0.0
+
+        # Virtual GPS recorder — a 10 Hz per-tick position log that the
+        # off-ball integrator feeds for verification/visualisation. Disabled
+        # by default (zero overhead); turn on via enable_virtual_gps().
+        self.gps: Optional[VirtualGPS] = None
+
+    def enable_virtual_gps(self, tick_s: float = 0.1) -> VirtualGPS:
+        """Enable the per-tick GPS recorder and return it. If already enabled
+        returns the existing recorder. Must be called before simulate()."""
+        if self.gps is None:
+            self.gps = VirtualGPS(tick_s=tick_s)
+        return self.gps
+
     def _update_block_shapes(self, minute: int):
         """
         Checkpoint 29 — refresh both teams' defensive BlockShapes from their
@@ -1093,6 +1349,70 @@ class MatchEngine:
                 positions, pos_map, attacks_right=attacks_right, minute=minute
             )
             setattr(self.state, attr, shape)
+
+    def _avg_stamina(self, team_name: str) -> float:
+        """Mean current stamina of a team's active XI (100.0 when no sub
+        controller is wired). Drives the fatigue factor in the tactical
+        shape layer, identical to the per-sequence closure used in
+        _simulate_minute()."""
+        if not self.sub_controller:
+            return 100.0
+        players = self.active_players.get(team_name, [])
+        staminas = [
+            self.sub_controller.stamina[p.name].current_stamina
+            for p in players
+            if getattr(p, "name", "") in self.sub_controller.stamina
+        ]
+        return sum(staminas) / len(staminas) if staminas else 100.0
+
+    def _sp_routine(self, team_name: str, situation: SituationType,
+                    minute: int, players: list, fk_context=None):
+        """Feature #3 — the committing-side's set-piece routine for a dead
+        ball. Emergent from manager identity + squad aerial profile + score.
+        Corner/crossed dead balls pick a corner routine; direct-range free
+        kicks pick a free-kick scheme. Penalties and out-of-range kicks are
+        None (engine default behaviour)."""
+        from set_piece_routines import (
+            aerial_presence, corner_routine_for, freekick_routine_for,
+        )
+        if situation == SituationType.PENALTY or not players:
+            return None
+        profile = self.home_profile if team_name == self.config.home_team \
+            else self.away_profile
+        style = getattr(profile, "style", None)
+        style_name = style.value if style is not None else ""
+        state = self.state
+        gd = state.goal_difference if team_name == self.config.home_team \
+            else -state.goal_difference
+        chasing = gd <= -2 and state.minute >= 60
+        protecting = gd >= 1 and state.minute >= 70
+        if situation in (SituationType.CORNER, SituationType.CROSSED_FREEKICK):
+            aerial = aerial_presence(players)
+            return corner_routine_for(
+                style_name, state, team_name, self.config.home_team, minute,
+                aerial_score=aerial, chasing=chasing, protecting=protecting,
+            )
+        if situation == SituationType.DIRECT_FREEKICK:
+            if fk_context is not None and fk_context[0] is not None:
+                fk_x = max(2.0, min(103.0, fk_context[0]))
+            else:
+                fk_x = max(2.0, min(103.0, state.last_ball_x))
+            attacks_right = (team_name == self.config.home_team)
+            direct_range = fk_x > 78 if attacks_right else fk_x < 27
+            taker_quality = 0.5
+            from event_chain import SetPieceChain
+            taker = SetPieceChain._pick_sp_taker(
+                players, situation="freekick",
+                freekick_type=("direct" if direct_range else "crossed"))
+            if taker is not None:
+                taker_quality = getattr(
+                    getattr(taker.dna, "technical", None), "free_kick", 50.0) / 100.0
+            return freekick_routine_for(
+                style_name, state, team_name, self.config.home_team, minute,
+                direct_range=direct_range, taker_free_kick=taker_quality,
+                chasing=chasing, protecting=protecting,
+            )
+        return None
 
     def set_squad(self, team_name: str, starters: list, substitutes: list = None):
         """Register a squad for the match."""
@@ -1120,6 +1440,8 @@ class MatchEngine:
         All starters are registered with their starting stamina.
         """
         self.sub_controller = controller
+        if hasattr(controller, "set_weather") and getattr(self.state, "weather_enabled", False):
+            controller.set_weather(self.weather_condition)
         # Register all starters
         for team, players in self.active_players.items():
             for p in players:
@@ -1127,6 +1449,723 @@ class MatchEngine:
                 if hasattr(p, 'dna') and hasattr(p.dna, '_starting_stamina'):
                     starting = p.dna._starting_stamina
                 controller.register_player(p, starting_stamina=starting)
+
+    def set_managers(self, home_manager=None, away_manager=None):
+        """Wire in ManagerProfile objects (optional bias layer). These duck-type
+        the small surface TacticalAI/SubstitutionController need: stubbornness(),
+        risk_tolerance, chase_shift(), protect_shift(), man_management."""
+        self.home_manager = home_manager
+        self.away_manager = away_manager
+
+    def _credit_possession(
+        self,
+        team: str,
+        seconds: float,
+        player_map: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """Accumulate measured possession time (seconds) for a team/players.
+
+        Called after each possession sequence resolves. `seconds` is the
+        episode's continuous 0.1 s clock elapsed during that team's spell on
+        the ball — a real measure, not the probabilistic split used to decide
+        who gets the next sequence.
+        """
+        if not seconds or seconds <= 0:
+            return
+        if team == self.config.home_team:
+            self.state.home_possession_s += seconds
+        else:
+            self.state.away_possession_s += seconds
+        if player_map:
+            by_player = self.state.possession_time_by_player
+            for name, secs in player_map.items():
+                by_player[name] = by_player.get(name, 0.0) + secs
+
+    def _arm_possession_winner(self, winner: str, result) -> None:
+        """Causal possession carry (Checkpoint).
+
+        A clean open-play turnover hands the ball to the recovering team for
+        the NEXT sequence. Restart-bound losses don't arm a carry — the ball
+        is dead, and the restart obligation consumed at the top of the next
+        sequence (corner / penalty / goal kick / throw-in / offside free
+        kick) redirects possession instead.
+        """
+        if getattr(result, "corner_won", False):
+            return
+        if getattr(result, "restart_required", False):
+            return
+        if getattr(result, "offside_detected", False):
+            return
+        self.state.possession_winner = winner
+
+    def _resolve_sequence_attacker(
+        self, home_poss: float, home_team: str, away_team: str,
+    ) -> Tuple[str, str]:
+        """Decide who attacks the next open-play sequence.
+
+        Causal possession carry first: a team that just WON the ball in open
+        play is OWED the sequence (~POSSESSION_CARRY_PROB), and the carry is
+        single-shot — consumed and cleared here. Otherwise fall back to the
+        possession-target weighted flip (home_poss is the home share, 0-1).
+
+        Returns (attacking_team, defending_team).
+        """
+        winner_carried = False
+        if self.state.possession_winner:
+            if random.random() < self.POSSESSION_CARRY_PROB:
+                attacker = self.state.possession_winner
+                winner_carried = True
+            self.state.possession_winner = ""  # single-shot rights
+        if not winner_carried:
+            attacker = home_team if random.random() < home_poss else away_team
+        defender = away_team if attacker == home_team else home_team
+        return attacker, defender
+
+    def _synthesize_ball_path(self, events, start_x: float, start_y: float):
+        """Build a continuous, time-ordered ball path for a chain that did NOT
+        emit its own ``ball_path`` (every chain except PossessionChain today).
+
+        Driven purely off the chain's REAL event coordinates (each event
+        already carries the true ball location / end position from the
+        simulation), interpolated at the shared 0.1 s clock used by
+        PossessionEpisode. This is what makes the unified timeline continuous
+        WITHIN every action and ACROSS actions: ball-moving events (passes,
+        carries, shots, clearances, crosses) trace a smooth segment from the
+        carried ball position to their destination, while contests (press /
+        tackle / foul) anchor a marker at the live ball position instead of
+        teleporting it to a default coordinate.
+
+        Returns ``(points, duration_s)`` where ``points`` is a list of
+        ``{"t","x","y","kind"}`` dicts with ``t`` local to this action (0-based).
+        """
+        if not events:
+            return [], 0.0
+
+        # Event families that actually move the ball.
+        _MOVE = {
+            "PASS", "PROGRESSIVE_PASS", "SWITCH_OF_PLAY", "THROUGH_BALL",
+            "CROSS_ATTEMPT", "CROSS_SUCCESS", "FREEKICK_CROSS", "CORNER_TAKEN",
+            "CARRY", "DRIBBLE_ATTEMPT", "DRIBBLE_SUCCESS", "DRIBBLE_FAIL",
+            "CLEARANCE", "BLOCK",
+            "SHOT_ON_TARGET", "SHOT_OFF_TARGET", "SHOT_BLOCKED", "GOAL",
+            "OWN_GOAL", "PENALTY_SCORED", "PENALTY_MISSED", "HIT_WOODWORK",
+            "BALL_RECEIPT",
+        }
+        # Restarts re-spot the ball (no connecting segment from the previous
+        # action — the ball is physically placed at the restart coordinate).
+        _RESTART = {
+            "KICKOFF", "GOAL_KICK", "THROW_IN", "CORNER_TAKEN",
+            "CORNER_WON", "FREEKICK_WON",
+        }
+        _SHOT = {
+            "SHOT_ON_TARGET", "SHOT_OFF_TARGET", "SHOT_BLOCKED", "GOAL",
+            "OWN_GOAL", "PENALTY_SCORED", "PENALTY_MISSED", "HIT_WOODWORK",
+        }
+
+        _PASS_SPEED = 14.0
+        _CROSS_SPEED = 16.0
+        _CARRY_SPEED = 5.5
+        _CLEAR_SPEED = 18.0
+        _SHOT_SPEED = 24.0
+        _TICK = 0.1
+
+        def _speed(name: str) -> float:
+            if name in _SHOT:
+                return _SHOT_SPEED
+            if "CROSS" in name or name == "CORNER_TAKEN":
+                return _CROSS_SPEED
+            if "CARRY" in name or "DRIBBLE" in name:
+                return _CARRY_SPEED
+            if name in ("CLEARANCE", "BLOCK"):
+                return _CLEAR_SPEED
+            return _PASS_SPEED
+
+        points: List[Dict[str, Any]] = []
+        t = 0.0
+        cx, cy = float(start_x), float(start_y)
+        first = True
+
+        for ev in events:
+            name = getattr(getattr(ev, "event_type", None), "name", "")
+            ex = getattr(ev, "end_x", None)
+            ey = getattr(ev, "end_y", None)
+            lx = getattr(ev, "location_x", None)
+            ly = getattr(ev, "location_y", None)
+
+            if name in _MOVE:
+                # Real event geometry: a ball-moving event travels FROM its
+                # own location (passer/carrier/shooter) TO its end coords
+                # (receiver/box). We draw origin->destination, NOT
+                # carried->destination — otherwise a pass whose origin is far
+                # from the previous chain's end would draw a spurious
+                # cross-pitch segment. Falls back to the carried position when
+                # the event carries no usable coordinates.
+                slx, sly = (float(lx), float(ly)) if (lx is not None and ly is not None) else (None, None)
+                sex, sey = (float(ex), float(ey)) if (ex is not None and ey is not None) else (None, None)
+
+                if slx is not None:
+                    start = (slx, sly)
+                else:
+                    start = (cx, cy)
+                if sex is not None:
+                    target = (sex, sey)
+                elif slx is not None:
+                    target = (slx, sly)
+                else:
+                    target = (cx, cy)
+
+                # Shots travel to the goal plane from the shooter's feet.
+                if name in _SHOT:
+                    goal_x = 105.0 if getattr(ev, "team", None) == self.config.home_team else 0.0
+                    target = (float(goal_x), (sly if sly is not None else 34.0))
+
+                # A restart (e.g. kickoff) re-spots the ball: begin here with
+                # no connecting segment from the previous action.
+                if first and name in _RESTART:
+                    cx, cy = start
+                    points.append({"t": round(t, 3), "x": round(cx, 2),
+                                   "y": round(cy, 2), "kind": "restart"})
+                    first = False
+                    continue
+
+                # Ball continuity within a chain: per-event coordinates come
+                # from player positions that can drift a few metres from the
+                # live ball — bridge the drift with a short carry so the ball
+                # travels to its next passer rather than jumping on the log.
+                carry_gap = math.hypot(start[0] - cx, start[1] - cy)
+                if carry_gap > 1.5:
+                    csteps = max(1, int(math.ceil(carry_gap / (_CARRY_SPEED * _TICK))))
+                    for i in range(1, csteps + 1):
+                        f = i / csteps
+                        t += _TICK
+                        points.append({"t": round(t, 3),
+                                       "x": round(cx + (start[0] - cx) * f, 2),
+                                       "y": round(cy + (start[1] - cy) * f, 2),
+                                       "kind": "carry"})
+                    cx, cy = start
+
+                dist = math.hypot(target[0] - start[0], target[1] - start[1])
+                spd = _speed(name)
+                if dist <= 1e-6:
+                    points.append({"t": round(t, 3), "x": round(start[0], 2),
+                                   "y": round(start[1], 2), "kind": "static"})
+                else:
+                    steps = max(1, int(math.ceil(dist / (spd * _TICK))))
+                    for i in range(1, steps + 1):
+                        t += _TICK
+                        f = i / steps
+                        bx = start[0] + (target[0] - start[0]) * f
+                        by = start[1] + (target[1] - start[1]) * f
+                        points.append({"t": round(t, 3), "x": round(bx, 2),
+                                       "y": round(by, 2), "kind": "move"})
+                    cx, cy = target
+            else:
+                # Non-ball-moving event (press / tackle / foul / card / sub):
+                # anchor a marker at the live ball position; it does not move
+                # the ball, so no spurious jump to a default coordinate.
+                if first and name in _RESTART:
+                    if lx is not None and ly is not None:
+                        cx, cy = float(lx), float(ly)
+                    points.append({"t": round(t, 3), "x": round(cx, 2),
+                                   "y": round(cy, 2), "kind": "restart"})
+                    first = False
+                    continue
+                points.append({"t": round(t, 3), "x": round(cx, 2),
+                               "y": round(cy, 2), "kind": "event"})
+                t += _TICK
+
+            first = False
+
+        return points, round(t, 3)
+
+    def _absorb_motion(self, chain_result) -> None:
+        """Fold a chain's per-tick ``ball_path`` onto the SINGLE global match
+        clock (Checkpoint — #1). Every possession/attack/defensive/set-piece
+        chain emits its own continuously-timed ball_path; here we offset it by
+        the running match clock and append to ``state.match_ball_path``, then
+        advance the clock by the chain's measured (or synthesized) duration.
+        The result is one monotonic, time-ordered ball trajectory for the whole
+        match — the "broadcast replay" spine — even though the macro loop is
+        still event/sequence-driven between chains.
+
+        Chains that don't yet export a ``ball_path`` (shots, defensive actions,
+        transitions, set pieces, fouls) are synthesized from their real event
+        coordinates so the unified timeline stays continuous across ALL actions,
+        not just possession spells.
+        """
+        bp = getattr(chain_result, "ball_path", None)
+        dur = getattr(chain_result, "sequence_duration_s", 0.0) or 0.0
+
+        # Fill the gap for chains that don't measure their own motion yet.
+        if not bp:
+            synth, synth_dur = self._synthesize_ball_path(
+                getattr(chain_result, "events", []),
+                self._last_path_x, self._last_path_y,
+            )
+            if synth:
+                bp = synth
+                dur = synth_dur
+
+        team = None
+        for ev in getattr(chain_result, "events", []):
+            if getattr(ev, "team", None):
+                team = ev.team
+                break
+        if team is None:
+            team = self.state.possession_team
+
+        prepend = 0.0
+        if bp:
+            base = self.state.match_clock_s
+            # Continuity bridge — applied to EVERY consecutive gap in this
+            # chain's ball path (the seam from the last chain's end AND any
+            # internal jumps where a discrete action re-spots the ball): if
+            # the ball would teleport farther than the fetch trigger, log it
+            # physically travelling at ball-roll pace as a 'fetch' transition
+            # so the unified timeline is a fluid replay, never a list of
+            # disjoint possessions. Clock stays monotonic (float rounding is
+            # clamped against the running cursor), and the persistent ball
+            # state is synced to where the path actually ends.
+            cursor = max(base, self._last_path_t)
+            cvx, cvy = self._last_path_x, self._last_path_y
+            for p in bp:
+                x = float(p.get("x", 0.0))
+                y = float(p.get("y", 0.0))
+                tt = base + float(p.get("t", 0.0))
+                gap = math.hypot(x - cvx, y - cvy)
+                if gap > self._FETCH_TRIGGER:
+                    seg_dt = gap / self._FETCH_SPEED
+                    steps = max(1, int(math.ceil(gap / (self._FETCH_SPEED * self._FETCH_TICK))))
+                    end_t = max(cursor + seg_dt, tt)
+                    for i in range(1, steps + 1):
+                        f = i / steps
+                        b_t = cursor + (end_t - cursor) * f
+                        self.state.match_ball_path.append({
+                            "t": round(b_t, 3),
+                            "x": round(cvx + (x - cvx) * f, 2),
+                            "y": round(cvy + (y - cvy) * f, 2),
+                            "kind": "fetch",
+                            "team": team,
+                        })
+                    cursor = end_t
+                cvx, cvy = x, y
+                if tt > cursor:
+                    cursor = tt
+                self.state.match_ball_path.append({
+                    "t": round(cursor, 3),
+                    "x": x,
+                    "y": y,
+                    "kind": p.get("kind", "move"),
+                    "team": team,
+                })
+            # Carry the true last ball position forward for the next action so
+            # its segment starts exactly where this one ended (cross-action
+            # continuity), and keep the persistent ball state in agreement.
+            _last = bp[-1]
+            self._last_path_x = float(_last.get("x", self._last_path_x))
+            self._last_path_y = float(_last.get("y", self._last_path_y))
+            self._last_path_t = cursor
+            self.state.last_ball_x = self._last_path_x
+            self.state.last_ball_y = self._last_path_y
+            # The global clock must absorb the bridging time actually consumed
+            # (fetch segments push the tail beyond the chain's own duration).
+            prepend = max(0.0, cursor - (base + float(bp[-1].get("t", 0.0))))
+
+        if dur <= 0:
+            # Final fallback: chains whose events carry no usable coordinates
+            # still advance the clock monotonically by event volume.
+            dur = max(0.0, len(getattr(chain_result, "events", [])) * 1.1)
+        self.state.match_clock_s += dur + prepend
+        # Keep off-ball players jogging through this episode's live window so
+        # their distance/sprints are physically measured during play too (not
+        # just dead time). The global clock was already advanced by `dur`.
+        self._offball_run(dur, self.state.possession_team == self.config.home_team)
+
+    # ── CONTINUOUS OFF-BALL INTEGRATOR (single 10 Hz clock) ──────────
+    # Chasing (defending, ball within _CHASE_TRIGGER): instead of a constant
+    # 80%-of-top-speed run that lasts forever, the player ACCELERATES into a
+    # genuine burst (real top-end effort) that must let off after a few
+    # seconds. This restores realistic top speeds (30+ km/h for athletes),
+    # produces real sprint segments (>=7 m/s sustained) so CBs/CMs register
+    # sprints, and stops endless high-speed running inflating distance for
+    # wide/pressing roles.
+    _CHASE_TRIGGER = 12.5    # ball within this distance (m) while defending
+    _CHASE_RAMP = 0.55       # burst build factor per second of chase
+    _CHASE_LETOFF = 6.0      # burst decay factor per second once spent
+    _CHASE_BURST_T = 2.7     # max seconds a burst is fully sustained
+    _CHASE_RESUSTAIN = 6.0    # ball this close -> re-trigger a fresh burst
+    _CHASE_EFFORT = 0.95      # burst peak as fraction of player top speed
+
+    # Ball-path fluidity: a chain whose ball starts farther than this from
+    # where the last one ended (a restart re-spot, a set-piece placement) is
+    # bridged by a 'fetch' segment — the ball physically travels back into
+    # play at a ball-boy/roll-up pace instead of teleporting on the match log.
+    _FETCH_TRIGGER = 8.0
+    _FETCH_SPEED = 4.0
+    _FETCH_TICK = 0.1
+
+    # Probability a NEW press actually converts into a flat-out burst. Real
+    # pressing is selective: central defenders/mids recover hard at high rate,
+    # but wide forwards contain and pick their moments (~half), so they don't
+    # fly in at every trigger and rack up real-world-unrealistic HSR volume.
+    _PRESS_PROB = {
+        "CB": 0.80, "DC": 0.80, "LCB": 0.80, "RCB": 0.80, "DMC": 0.75,
+        "CDM": 0.75, "FB": 0.75, "LB": 0.75, "RB": 0.75, "CM": 0.75,
+        "CAM": 0.60, "LM": 0.55, "RM": 0.55, "LW": 0.45, "RW": 0.45,
+        "WF": 0.45, "ST": 0.50, "CF": 0.50, "SS": 0.55,
+    }
+
+    # Base sustained jog speed (m/s) by outfield role, used so off-ball
+    # players cover realistic ground instead of idling at their shape target.
+    _JOG_SPEED = {
+        "CB": 1.5, "DC": 1.5, "LCB": 1.5, "RCB": 1.5, "DMC": 1.5,
+        "FB": 1.9, "LB": 1.9, "RB": 1.9,
+        "CM": 2.0, "CDM": 2.0, "CAM": 2.0, "LM": 2.0, "RM": 2.0,
+        "LW": 1.75, "RW": 1.75, "WF": 1.75,
+        "ST": 2.0, "CF": 2.0, "SS": 2.0,
+    }
+
+    # Events that put a player ON the ball (so the off-ball integrator skips
+    # them). Derived from events, not episode distance stats (which trace all
+    # registered players).
+    _ON_BALL_EVENTS = {
+        "PASS", "PROGRESSIVE_PASS", "SWITCH_OF_PLAY", "THROUGH_BALL",
+        "CARRY", "DRIBBLE_ATTEMPT", "DRIBBLE_SUCCESS", "DRIBBLE_FAIL",
+        "SHOT_ON_TARGET", "SHOT_OFF_TARGET", "SHOT_BLOCKED", "GOAL",
+        "OWN_GOAL", "PENALTY_SCORED", "PENALTY_MISSED", "HIT_WOODWORK",
+        "CLEARANCE", "BLOCK", "CROSS_ATTEMPT", "CROSS_SUCCESS",
+        "FREEKICK_CROSS", "CORNER_TAKEN", "BALL_RECEIPT", "INTERCEPTION",
+        "TACKLE_WON", "TACKLE_LOST",
+    }
+
+    def _record_offball_distance(self, name: str, moved: float,
+                                 speed: float, top: float) -> None:
+        """Accumulate REAL per-tick off-ball movement into PositionEngine's
+        physics store, counting sprint SEGMENTS with minimum duration and
+        cooldown so micro-oscillations around the threshold don't inflate
+        the count."""
+        if moved <= 0:
+            return
+        st = self._sprint_state.setdefault(name, {
+            "in_sprint": False, "in_hi": False,
+            "sprint_run": 0, "hi_run": 0,
+            "sprint_cooldown": 0, "hi_cooldown": 0,
+        })
+        sprint_inc = 0
+        hi_inc = 0
+        in_sprint = speed >= 7.0
+        in_hi = speed >= 8.5
+        # Sprint (>=7 m/s): count only after ≥3 consecutive ticks (0.3 s)
+        # and only if cooldown has expired (≥5 ticks below threshold).
+        if in_sprint:
+            st["sprint_cooldown"] = 0
+            st["sprint_run"] += 1
+            if st["sprint_run"] == 3 and not st["in_sprint"]:
+                sprint_inc = 1
+                st["in_sprint"] = True
+        else:
+            if st["sprint_run"] >= 3:
+                sprint_inc = 1  # segment just ended
+            st["sprint_run"] = 0
+            st["in_sprint"] = False
+            st["sprint_cooldown"] = 5
+        # High-speed sprint (>=8.5 m/s): same logic, shorter window.
+        if in_hi:
+            st["hi_cooldown"] = 0
+            st["hi_run"] += 1
+            if st["hi_run"] == 2 and not st["in_hi"]:
+                hi_inc = 1
+                st["in_hi"] = True
+        else:
+            if st["hi_run"] >= 2:
+                hi_inc = 1
+            st["hi_run"] = 0
+            st["in_hi"] = False
+            st["hi_cooldown"] = 4
+        self.position_engine.record_physics_distance(
+            name, distance_m=moved, sprint_count=sprint_inc,
+            high_speed_sprint_count=hi_inc,
+            top_speed_mps=speed if speed > 0 else 0.0,
+        )
+
+    def _offball_move_player(self, pname: str, team: str, ball_x: float,
+                              ball_y: float, has_ball: bool, danger_t: float,
+                              cross_team: str, DT: float) -> None:
+        """One 10 Hz integration step for a single off-ball player.
+
+        The player is pulled toward a live, ball-compacted shape target (home
+        anchor + ball-side compression, plus defensive-block squeeze and
+        attacking box-crash nudges). A sustained jog (with press-sprints when
+        the ball is live and near while defending, and a small orbit once the
+        shape is reached) means REAL ground is covered every tick — genuine
+        physics integration, not a once-per-minute net delta. On-ball players
+        are skipped by the caller.
+        """
+        st = self.position_engine.states.get(pname)
+        if st is None or getattr(st, "position", "") == "GK":
+            return
+        if pname in self._on_ball_this_minute:
+            return
+        ax, ay = self._minute_start_snapshot.get(pname, (st.current_x, st.current_y))
+        pos = getattr(st, "position", "")
+        # Feature #1/#2 — RESHAPE WINDOW: when a formation stance or attack
+        # pattern was just applied to this team, the off-ball anchor migrates
+        # onto the player's NEW home post over ~90 s of match clock instead of
+        # the team teleporting at a minute boundary. Weight decays to zero, so
+        # ordinary ball-compacted shape takes over once the reshape is done.
+        _applied = self._shape_apply_clock.get(team)
+        if _applied is not None:
+            _elapsed = self.state.match_clock_s - _applied
+            if 0.0 <= _elapsed < 90.0:
+                _rw = 1.0 - _elapsed / 90.0
+                ax += (st.home_x - ax) * _rw * 0.20
+                ay += (st.home_y - ay) * _rw * 0.20
+        # Live shape target: home anchor compacted toward the ball.
+        tx = ax + (ball_x - ax) * 0.14
+        ty = ay + (ball_y - ay) * 0.07
+        # Defensive block: out of possession + danger -> squeeze.
+        if (not has_ball) and danger_t >= 25:
+            pull = min(1.0, (danger_t - 25) / 65.0)
+            tx += (ball_y - ty) * 0.25 * pull
+            own_gx = 105.0 if team == self.config.away_team else 0.0
+            tx += (own_gx - tx) * 0.10 * pull
+        # Attacking box crash: cross in flight for this team.
+        if cross_team == team:
+            tx += (self.state.cross_x - tx) * 0.20
+            ty += (self.state.cross_y - ty) * 0.20
+        # Checkpoint 35 — PITCH-STRETCH RULE: wide roles (LW/RW/LB/RB) are the
+        # team's width providers. When the live ball sits on the central spine
+        # (packed middle), steer the off-ball shape target toward the player's
+        # touchline channel so width is actively re-asserted every tick
+        # instead of letting central ball-compaction collapse the flanks. The
+        # blend is spine-scaled and the ACTUAL movement stays pace-capped (the
+        # jog integrator below travels toward the steered target); it is zero
+        # when the ball is already wide. Final y is hard-clamped on the pitch.
+        stretch_w = self.position_engine.wide_stretch_blend(pname, ball_y)
+        if stretch_w > 0.0:
+            ty += (getattr(st, "home_y", ty) - ty) * stretch_w
+        # Checkpoint 36 — TRIANGLE SUPPORT RULE: while the team holds the ball,
+        # midfielders steer their shape target into a passing-triangle socket —
+        # a half-space support off the wide cluster on flank play (near-side CM
+        # joins winger + full-back), or split around the ball with the CDM
+        # pivot behind on central play. TARGET steer only: the jog integrator
+        # below stays pace-capped, and the y-socket is always inside the pitch.
+        tri = self.position_engine.midfielder_triangle_support(
+            team, ball_x, ball_y, has_ball,
+            self.position_engine.team_attacks_right.get(team, True))
+        if pname in tri:
+            p_tri, trix, triy = tri[pname]
+            if p_tri > 0.0:
+                tx += (trix - tx) * p_tri
+                ty += (triy - ty) * p_tri
+        tx = max(0.0, min(105.0, tx))
+        ty = max(0.0, min(68.0, ty))
+        cx, cy = st.current_x, st.current_y
+        dx, dy = tx - cx, ty - cy
+        dist = math.hypot(dx, dy)
+        tgt = self._top_speed_cache.get(pname, 7.0)
+        jog = self._JOG_SPEED.get(pos, 1.8)
+        ball_dist = math.hypot(ball_x - cx, ball_y - cy)
+        # Involvement gate: when the play is on the FAR side of the pitch a
+        # player holds his shape at a light trot rather than tracking the
+        # ball across it (real wingers/full-backs don't chase diagonally);
+        # full jog / chase bursts only engage when the ball swings into his
+        # zone. This is what keeps wide roles' totals around the real
+        # ~11.5-12.5 km/90 instead of 16+.
+        involved = abs(ball_x - self._minute_start_snapshot.get(pname, (cx, cy))[0]) < 30.0
+        if not involved:
+            jog = jog * 0.30
+        chasing = (not has_ball) and ball_dist < self._CHASE_TRIGGER
+        cst = self._chase_state.setdefault(pname, {"p": 0.0, "t": 0.0, "allow": 0.0})
+        if chasing:
+            if cst["p"] <= 0.0 and cst["allow"] == 0.0:
+                prob = self._PRESS_PROB.get(pos, 0.60)
+                cst["allow"] = 1.0 if random.random() < prob else -1.0
+            cst["t"] += DT
+            if cst["allow"] > 0:
+                if cst["t"] < self._CHASE_BURST_T or ball_dist < self._CHASE_RESUSTAIN:
+                    cst["p"] = min(1.0, cst["p"] + self._CHASE_RAMP * DT)
+                else:
+                    cst["p"] = max(0.0, cst["p"] - self._CHASE_LETOFF * DT)
+                speed = jog + (tgt * self._CHASE_EFFORT - jog) * cst["p"]
+            else:
+                cst["p"] = 0.0
+                speed = jog
+        else:
+            cst["p"] = max(0.0, cst["p"] - self._CHASE_LETOFF * DT)
+            cst["allow"] = 0.0
+            speed = jog
+        arrive = 2.0
+        if dist > arrive:
+            step = min(speed * DT, dist)
+            nx = cx + dx / dist * step
+            ny = cy + dy / dist * step
+            moved = step
+        else:
+            # Arrived at shape: patrol a small orbit so the player keeps jogging
+            # (covering distance) instead of idling at his spot.
+            ang = self._patrol.get(pname, random.random() * 6.283)
+            ang += 0.6 * DT
+            self._patrol[pname] = ang
+            px = ax + 4.0 * math.cos(ang)
+            py = ay + 4.0 * math.sin(ang)
+            pdx, pdy = px - cx, py - cy
+            pd = math.hypot(pdx, pdy)
+            step = (jog * 0.8 * DT) if pd <= 0 else min(jog * 0.8 * DT, pd)
+            nx = cx + (pdx / pd * step if pd > 0 else 0.0)
+            ny = cy + (pdy / pd * step if pd > 0 else 0.0)
+            moved = step
+        spd = (moved / DT) if DT > 0 else 0.0
+        st.current_x, st.current_y = nx, ny
+        # Real distance into both the physics store and the legacy drift
+        # field (so distance_total stays the comprehensive real total).
+        self._record_offball_distance(pname, moved, spd, tgt)
+        st.minute_drift_distance += moved
+
+    def _offball_run(self, duration_s: float, home_has_ball: bool) -> None:
+        """Jog every off-ball player for ``duration_s`` of LIVE play (during an
+        episode), without advancing the global clock — the episode already did.
+        This is what makes off-ball distance real during possession/duels, not
+        just during dead time."""
+        if duration_s <= 0:
+            return
+        DT = 0.1
+        ticks = max(1, int(round(duration_s / DT)))
+        home, away = self.config.home_team, self.config.away_team
+        ball_x, ball_y = self.state.last_ball_x, self.state.last_ball_y
+        danger = {
+            home: self.threat.danger_at(home),
+            away: self.threat.danger_at(away),
+        }
+        cross_team = self.state.cross_team if self.state.cross_active else ""
+        # GPS: use a local, continuously-advancing timebase through the live
+        # window so the raw log stays monotonic at 10 Hz and aligned with the
+        # global clock (the global clock was already advanced by `duration_s`,
+        # and only advances once per chain, not per tick, so it would repeat).
+        # The live window spans [clock - duration_s, clock].
+        t0 = self.state.match_clock_s - duration_s
+        if self.gps is not None:
+            self.gps.begin_minute(self.state.minute, t0)
+        # On-ball players move via possession-episode traces that are ingested
+        # separately; their end-of-chain position syncs are position jumps we
+        # must not re-derive as distance/sprints from the position gap.
+        skip = set(self._on_ball_this_minute) if self.gps is not None else None
+        for i in range(ticks):
+            for team in (home, away):
+                has_ball = (team == home) == home_has_ball
+                for pname in self.position_engine.team_rosters.get(team, []):
+                    self._offball_move_player(
+                        pname, team, ball_x, ball_y, has_ball,
+                        danger.get(team, 0.0), cross_team, DT)
+            if self.gps is not None:
+                self.gps.record_tick(
+                    self.state.minute, t0 + (i + 1) * DT, self.position_engine,
+                    home, away, ball_x, ball_y,
+                    skip_accumulate=skip)
+
+    def _continuous_offball_phase(self, minute: int, home_has_ball: bool,
+                                  gd_home_now: float,
+                                  danger: Dict[str, float]) -> None:
+        """Integrate every off-ball player at 10 Hz for the remainder of the
+        minute so the whole match lives on one continuous clock.
+
+        This phase covers the DEAD time between episodes; the live-play window
+        is covered by ``_offball_run`` (called from ``_absorb_motion``). The
+        clock advances by dt every tick and the ball is logged as 'rest', which
+        fills the dead time so ``match_ball_path`` spans the full 90' with no
+        gaps.
+        """
+        DT = 0.1
+        elapsed = self.state.match_clock_s - self._minute_start_clock
+        remaining = max(0.0, 60.0 - elapsed)
+        ticks = max(1, int(round(remaining / DT)))
+
+        home = self.config.home_team
+        away = self.config.away_team
+        cross_team = self.state.cross_team if self.state.cross_active else ""
+        # On-ball players are moved by episode traces (ingested separately);
+        # skip their end-of-chain position syncs here too (dead time has no
+        # such snaps, but the sync lands on the FIRST dead tick).
+        skip = set(self._on_ball_this_minute) if self.gps is not None else None
+
+        for ti in range(ticks):
+            ball_x = self.state.last_ball_x
+            ball_y = self.state.last_ball_y
+            for team in (home, away):
+                has_ball = (team == home) == home_has_ball
+                for pname in self.position_engine.team_rosters.get(team, []):
+                    self._offball_move_player(
+                        pname, team, ball_x, ball_y, has_ball,
+                        danger.get(team, 0.0), cross_team, DT)
+            self.state.match_clock_s += DT
+            if ti % 10 == 0:
+                self.state.match_ball_path.append({
+                    "t": round(self.state.match_clock_s, 3),
+                    "x": round(ball_x, 2), "y": round(ball_y, 2),
+                    "kind": "rest", "team": self.state.possession_team or "",
+                })
+            if self.gps is not None:
+                self.gps.record_tick(
+                    minute, self.state.match_clock_s, self.position_engine,
+                    home, away, ball_x, ball_y,
+                    skip_accumulate=skip)
+
+    def _maybe_loose_ball(
+        self, minute, shot_result, attacking_team, defending_team,
+        att_players, def_players, attacks_right,
+    ) -> None:
+        """#4 — after a saved/blocked shot the ball is a LIVE loose entity that
+        nearby players race for on the continuous clock (resolve_loose_ball).
+        We resolve who wins it and fold the scramble onto the global timeline
+        + possession clock, so second balls are no longer teleported away.
+        """
+        from possession_physics import PossessionEpisode
+        from event_chain import ChainDispatcher, BaseChain, EventType as ET
+        saved = any(
+            getattr(e.event_type, "name", "")
+            in ("SHOT_SAVED", "SHOT_BLOCKED")
+            for e in shot_result.events
+        )
+        if not saved or self.position_engine is None:
+            return
+        sx = sy = None
+        for e in shot_result.events:
+            if getattr(e.event_type, "name", "") in ("SHOT_SAVED", "SHOT_BLOCKED"):
+                sx = e.end_x if e.end_x is not None else e.location_x
+                sy = e.end_y if e.end_y is not None else e.location_y
+        if sx is None:
+            sx, sy = self.state.last_ball_x, self.state.last_ball_y
+        att_m = [BaseChain._moving_player(p, self.position_engine)
+                 for p in att_players if getattr(p, "position", "") != "GK"]
+        defe_m = [BaseChain._moving_player(p, self.position_engine)
+                  for p in def_players if getattr(p, "position", "") != "GK"]
+        ep = PossessionEpisode()
+        winner = ep.resolve_loose_ball(sx, sy, att_m, defe_m)
+        team = attacking_team if winner == "attack" else defending_team
+
+        # Fold the scramble onto the single global match timeline (#1/#4).
+        base = self.state.match_clock_s
+        for p in ep.ball_path:
+            self.state.match_ball_path.append({
+                "t": round(base + float(p.get("t", 0.0)), 3),
+                "x": float(p.get("x", sx)), "y": float(p.get("y", sy)),
+                "kind": "loose", "team": team,
+            })
+        self.state.match_clock_s += ep.elapsed
+        if ep.ball_path:
+            _lp = ep.ball_path[-1]
+            self._last_path_x = float(_lp.get("x", self._last_path_x))
+            self._last_path_y = float(_lp.get("y", self._last_path_y))
+        self._credit_possession(team, ep.elapsed, None)
+
+        ball_ev = getattr(ET, "BALL_RECOVERY", None)
+        if ball_ev is not None:
+            self.timeline.append(MatchEvent(
+                minute=minute, second=int(self.state.match_clock_s % 60),
+                event_type=ball_ev, team=team, player="",
+                location_x=sx, location_y=sy,
+                phase=self.state.phase, game_state=self.state.game_state,
+            ))
 
     def simulate(self) -> "MatchResult":
         """
@@ -1200,7 +2239,11 @@ class MatchEngine:
                                 # high-intensity teams. Now intensity_mult is
                                 # folded directly into the single drain call
                                 # for THIS minute's marginal cost only.
-                                state.drain_baseline(team_style, intensity_mult=intensity_mult)
+                                weather_mult = (
+                                    WeatherPhysics.stamina_drain_mult(self.weather_condition)
+                                    if getattr(self.state, "weather_enabled", False) else 1.0
+                                )
+                                state.drain_baseline(team_style, intensity_mult=intensity_mult, weather_mult=weather_mult)
                                 state.update_performance_mult()
 
             # ── CHECKPOINT 29: OPPONENT BLOCK SHAPES ────────────────
@@ -1215,121 +2258,135 @@ class MatchEngine:
                 self.state.home_block, self.state.away_block
             )
 
+            # ── FEATURE #1/#2: IN-MATCH SHAPE (once per minute per team) ──
+            # The manager reacts to the scoreline/clock by (1) adopting a
+            # FORMATION STANCE (chasing shape, see-it-out block, man-down
+            # compactness) and (2) committing the likely ball-carrier to an
+            # ATTACK PATTERN (overload side, box midfield ...) for the next
+            # ~5-minute chunk. Both are applied to the PositionEngine's home
+            # anchors BEFORE the minute's sequences so the pass network /
+            # width steering / restart snaps immediately reflect the new XI.
+            from tactical_shapes import formation_stance_for
+            from attack_patterns import pattern_for
+            _poss_h, _poss_a = PossessionEngine.calculate_possession_split(
+                self.home_profile, self.away_profile, self.state,
+                self.config.home_team,
+            )
+            _gd_h = self.state.home_goals - self.state.away_goals
+            for _team, _prof, _reds, _mgr, _is_home in (
+                (self.config.home_team, self.home_profile,
+                 self.state.home_red_cards, self.home_manager, True),
+                (self.config.away_team, self.away_profile,
+                 self.state.away_red_cards, self.away_manager, False),
+            ):
+                _stance = formation_stance_for(
+                    _prof, self.state, _team, self.config.home_team,
+                    manager=_mgr,
+                )
+                if self.position_engine.apply_formation_stance(
+                    _team, _stance,
+                    own_red_cards=_reds,
+                    avg_stamina=self._avg_stamina(_team),
+                ):
+                    self._shape_apply_clock[_team] = self.state.match_clock_s
+                self.state.team_stances[_team] = _stance
+
+                # Posession-based pattern: the likely carrier of this minute
+                # leans on its identity overload; the defending side holds a
+                # pure defensive stance (no possession pattern).
+                _likely_carrier = (self.config.home_team if _poss_h >= _poss_a
+                                   else self.config.away_team)
+                _chasing = (
+                    (_gd_h <= -1 if _is_home else _gd_h >= 1)
+                    and minute >= 60
+                )
+                _protecting = (
+                    (_gd_h >= 1 if _is_home else _gd_h <= -1)
+                    and minute >= 70
+                )
+                _pattern = pattern_for(
+                    getattr(getattr(_prof, "style", None), "value", "balanced"),
+                    self.state, _team, self.config.home_team, minute,
+                    chasing=_chasing, protecting=_protecting,
+                )
+                if _team != _likely_carrier:
+                    _pattern = AttackPattern.NONE
+                if self.position_engine.apply_attack_pattern(_team, _pattern):
+                    self._shape_apply_clock[_team] = self.state.match_clock_s
+                self.state.team_patterns[_team] = _pattern
+
             # ── SIMULATE MINUTE ────────────────────────────────────
+            # Single-clock bookkeeping: anchor the minute's start so the
+            # off-ball integrator can measure the rest of the minute and keep
+            # the global clock spanning the full 90'.
+            self._minute_start_clock = self.state.match_clock_s
+            self._on_ball_this_minute = set()
+            self._sprint_state = {}
+            self._patrol = {}
+            self._chase_state = {}
+            self._minute_start_snapshot = {}
+            for _t in (self.config.home_team, self.config.away_team):
+                self._minute_start_snapshot.update(
+                    self.position_engine.snapshot_positions(_t))
+            if not self._top_speed_cache:
+                for _tm, _pls in self.active_players.items():
+                    for _p in _pls:
+                        _pace = float(getattr(getattr(getattr(_p, "dna", None),
+                                                     "physical", None), "pace", 60.0))
+                        self._top_speed_cache[_p.name] = 5.0 + _pace * 0.042
             self._simulate_minute(minute, TeamStyle)
 
-            # ── POSITION ENGINE: CAUSAL DRIFT (Checkpoint 5/6.1) ────
-            # Every player not touched THIS minute drifts back toward
-            # their formation-anchored home position. Prevents "sticky"
-            # displacement (e.g. a striker staying camped in his own
-            # third indefinitely after one deep involvement).
-            #
-            # Checkpoint 6.1 fix: this now runs AFTER _simulate_minute,
-            # using the ACTUAL sequence tally from the minute just played
-            # (self._minute_home_seq / _minute_away_seq) rather than a
-            # snapshot of state.possession_team taken BEFORE this minute's
-            # sequences ran. Previously a team's attacking/defensive shape
-            # was decided from whoever happened to hold the ball at the
-            # very end of the PREVIOUS minute — up to a full minute stale,
-            # despite possession flipping 2-4 times inside _simulate_minute
-            # itself. This is what let a fullback's shape target stay
-            # "advanced" for a minute or more after his team had actually
-            # lost the ball. Ties (or a minute with zero sequences, e.g.
-            # a single consumed corner) fall back to the current
-            # possession_team snapshot rather than guessing.
+            # ── CONTINUOUS OFF-BALL PHYSICS (single 10 Hz clock) ─────
+            # Replace the old once-per-minute net drift with a per-tick
+            # integrator: every off-ball player is moved toward a live
+            # ball-compacted target each 0.1 s for the remainder of the
+            # minute, and REAL path-distance + sprint SEGMENTS are recorded.
+            # This makes off-ball distance/sprints physically measured (not a
+            # snapshot delta) and keeps the whole match on one continuous
+            # clock spanning the full 90'.
             total_seq = self._minute_home_seq + self._minute_away_seq
             if total_seq > 0:
                 home_has_ball = self._minute_home_seq >= self._minute_away_seq
             else:
                 home_has_ball = self.state.possession_team == self.config.home_team
-
             gd_home_now = self.state.home_goals - self.state.away_goals
-            home_opponents = self.active_players.get(self.config.away_team, [])
-            away_opponents = self.active_players.get(self.config.home_team, [])
-
-            # ── REAL MOVEMENT CAPTURE: snapshot before the off-ball phase ──
-            # drift_minute + defensive_block + attacking_crash together are
-            # this minute's entire off-ball movement step for each team.
-            # Snapshotting before and diffing after (below) captures the
-            # true net distance every player moved this minute from all
-            # three sources combined, without instrumenting each one
-            # individually.
-            _home_pos_before = self.position_engine.snapshot_positions(self.config.home_team)
-            _away_pos_before = self.position_engine.snapshot_positions(self.config.away_team)
-
-            # Danger per team is needed by drift_minute (ball-side squeeze)
-            # and defensive_block — compute once, reuse below.
             _danger = {
                 self.config.home_team: self.threat.danger_at(self.config.home_team),
                 self.config.away_team: self.threat.danger_at(self.config.away_team),
             }
+            self._continuous_offball_phase(minute, home_has_ball, gd_home_now, _danger)
 
-            self.position_engine.drift_minute(
-                self.config.home_team, self.home_profile,
-                self.state.phase, game_state_gd=gd_home_now, minute=minute,
-                in_possession=home_has_ball,
-                ball_x=self.state.last_ball_x, ball_y=self.state.last_ball_y,
-                opponent_players=home_opponents,
-                danger_level=_danger[self.config.home_team],
+            # ── DEFENSIVE BLOCK COORDINATION (Checkpoint defensive-awareness) ──
+            # The out-of-possession team with a live threat (danger ≥ 25, ball in
+            # its own half) pulls its GK/CB/LB/RB/CDM line into a compact
+            # goal-side block — ball-side CBs shift hardest, so the right/left
+            # centre-back naturally covers the channel the ball is being played
+            # into. No-op at low danger → baseline drift is untouched.
+            blocking_team = (
+                self.config.away_team if home_has_ball else self.config.home_team
             )
-            self.position_engine.drift_minute(
-                self.config.away_team, self.away_profile,
-                self.state.phase, game_state_gd=-gd_home_now, minute=minute,
-                in_possession=not home_has_ball,
-                ball_x=self.state.last_ball_x, ball_y=self.state.last_ball_y,
-                opponent_players=away_opponents,
-                danger_level=_danger[self.config.away_team],
+            attacking_team = (
+                self.config.home_team if home_has_ball else self.config.away_team
             )
-
-            # ── CHECKPOINT 9: COORDINATED DEFENSIVE BLOCK ────────────
-            # When a team is OUT of possession AND the ball is alive near
-            # their own goalpost (danger ≥ 25), their back four + keeper
-            # coordinate into a tight goal-side block: CBs narrow toward
-            # the ball's y, fullbacks tuck in, and the keeper guards the
-            # goal line. This is pure spatial intent on top of the shape
-            # drift, so it only bites when the match state genuinely needs
-            # it — otherwise the baseline formation stands untouched.
-            for team, has_ball in (
-                (self.config.home_team, home_has_ball),
-                (self.config.away_team, not home_has_ball),
-            ):
-                danger = _danger[team]
-                if danger < 25 or has_ball:
-                    continue
-                bx, by = self.state.last_ball_x, self.state.last_ball_y
-                own_goal_x = self.threat.own_goal_x(team)
-                pull = min(1.0, (danger - 25) / 65.0)   # deeper block as danger grows
+            def_att_right = self.position_engine.team_attacks_right.get(blocking_team, True)
+            own_goal_x = 0.0 if def_att_right else 105.0
+            block_danger = _danger.get(blocking_team, 0.0)
+            if block_danger >= 25.0:
+                block_profile = (
+                    self.away_profile if blocking_team == self.config.away_team
+                    else self.home_profile
+                )
                 self.position_engine.defensive_block(
-                    team, bx, by, own_goal_x, danger,
-                    minute=minute, pull_strength=pull,
-                )
-
-            # ── CHECKPOINT 11: ATTACKING BOX CRASH ────────────────
-            # When a cross was detected this minute, the attacking team's
-            # off-ball forwards crash the box (near-side to the penalty spot,
-            # far-side to the back post) instead of short-support drifting.
-            # Runs AFTER the defensive block so both units converge on the
-            # delivery — exactly the six-on-six box scramble a real whipped
-            # cross produces.
-            if self.state.cross_active and self.state.cross_team:
-                self.position_engine.attacking_crash(
-                    self.state.cross_team,
-                    self.state.cross_x, self.state.cross_y,
-                    self.state.cross_attacks_right,
+                    blocking_team,
+                    self.state.last_ball_x,
+                    self.state.last_ball_y,
+                    own_goal_x=own_goal_x,
+                    danger_level=block_danger,
                     minute=minute,
-                    intensity=0.6,
-                    carrier_name=self.state.cross_player,
+                    defensive_line=getattr(block_profile, "defensive_line", 0.5),
+                    compactness=getattr(block_profile, "compactness", 0.0),
+                    attacking_team=attacking_team,
                 )
-
-            # Close the off-ball movement snapshot: real net distance for
-            # everything drift_minute/defensive_block/attacking_crash just
-            # did this minute, folded into minute_drift_distance per player.
-            self.position_engine.accumulate_drift_from_snapshot(
-                self.config.home_team, _home_pos_before
-            )
-            self.position_engine.accumulate_drift_from_snapshot(
-                self.config.away_team, _away_pos_before
-            )
 
             # Checkpoint 26 — refresh the velocity-aware pitch-control
             # cache from the just-updated drift velocities. Consumers
@@ -1356,6 +2413,22 @@ class MatchEngine:
                 "away_goals": self.state.away_goals,
                 "possession_team": self.state.possession_team,
                 "phase": self.state.phase.value,
+                "home_stance": getattr(
+                    self.state.team_stances.get(self.config.home_team),
+                    "value", "baseline",
+                ),
+                "away_stance": getattr(
+                    self.state.team_stances.get(self.config.away_team),
+                    "value", "baseline",
+                ),
+                "home_pattern": getattr(
+                    self.state.team_patterns.get(self.config.home_team),
+                    "value", "none",
+                ),
+                "away_pattern": getattr(
+                    self.state.team_patterns.get(self.config.away_team),
+                    "value", "none",
+                ),
             }
             for team in (self.config.home_team, self.config.away_team):
                 side = "home" if team == self.config.home_team else "away"
@@ -1446,6 +2519,74 @@ class MatchEngine:
             threat=self.threat,
             position_log=self.position_log,
             momentum_log=self.momentum_log,
+            gps=self.gps,
+            chronology=self.chronograph(),
+        )
+
+    def chronograph(self) -> MatchChronology:
+        """Stamp every chain event with its TRUE match-second on the single
+        global clock.
+
+        The engine keeps one continuous clock (``state.match_clock_s``) that the
+        possession episodes advance via ``_absorb_motion``. The timeline's
+        ``MatchEvent.second`` is only a bucket (mostly a placeholder random
+        value); this recreates the real chronology afterwards using the exact
+        window each chain actually occupied (recorded as ``_chain_clock_marks``).
+
+        Purely additive: reads marks + timeline, mutates nothing, changes no
+        outcome — a goal chain collapses to its chain-start clock because its
+        motion was never folded (``motion_folded=False``).
+        """
+        idx_by_id = {id(e): i for i, e in enumerate(self.timeline)}
+        events: List[TimedEvent] = []
+        for mark in self._chain_clock_marks:
+            n = len(mark.events)
+            if n == 0:
+                continue
+            span = mark.end_clock - mark.start_clock
+            for i, ev in enumerate(mark.events):
+                if n == 1:
+                    at = mark.start_clock + span * 0.5
+                else:
+                    at = mark.start_clock + span * i / (n - 1)
+                if span > 0.0 and i < n - 1:
+                    nxt = mark.start_clock + span * (i + 1) / (n - 1)
+                    dur = nxt - at
+                else:
+                    dur = 0.0
+                ev_type = getattr(ev.event_type, "name", str(ev.event_type))
+                events.append(TimedEvent(
+                    minute=mark.minute,
+                    second=round(min(at % 60.0, 59.9), 1),
+                    match_clock_s=round(at, 2),
+                    duration=round(dur, 2),
+                    event_type=ev_type,
+                    team=ev.team,
+                    player=ev.player,
+                    secondary_player=ev.secondary_player,
+                    location_x=ev.location_x,
+                    location_y=ev.location_y,
+                    end_x=ev.end_x,
+                    end_y=ev.end_y,
+                    goal=ev_type in ("GOAL", "OWN_GOAL", "PENALTY_SCORED"),
+                    source_event_index=idx_by_id.get(id(ev), -1),
+                ))
+        events.sort(key=lambda te: (te.match_clock_s, te.minute))
+
+        measured_play_s = sum(
+            m.end_clock - m.start_clock
+            for m in self._chain_clock_marks if m.motion_folded
+        )
+        match_duration_s = self.state.match_clock_s
+        covered = {id(e) for m in self._chain_clock_marks for e in m.events}
+        unmarked = sum(1 for e in self.timeline if id(e) not in covered)
+        return MatchChronology(
+            events=events,
+            match_duration_s=round(match_duration_s, 2),
+            measured_play_s=round(measured_play_s, 2),
+            dead_time_s=round(max(0.0, match_duration_s - measured_play_s), 2),
+            n_chains=len(self._chain_clock_marks),
+            n_unmarked_events=unmarked,
         )
 
     def _execute_substitution(self, sub: dict, minute: int):
@@ -1531,6 +2672,7 @@ class MatchEngine:
 
     def _initialize_simulation(self):
         """Set up initial state before the whistle."""
+        self._chain_clock_marks.clear()
         if random.random() < 0.5:
             self.state.possession_team = self.config.home_team
             self.state.first_half_kickoff_team = self.config.home_team
@@ -1627,7 +2769,7 @@ class MatchEngine:
         base = random.randint(2, 6)
         goal_bonus = len(self.goals) * 0.5
         card_bonus = len(self.cards) * 0.3
-        sub_bonus = (self.state.home_subs_made + self.state.away_subs_made) * 0.4
+        sub_bonus = (self.state.home_subs_made + self.state.away_subs_made) * 0.15
         added = int(base + goal_bonus + card_bonus + sub_bonus)
         self.state.added_time = min(added, 12)  # Cap at 12
         return self.state.added_time
@@ -1707,10 +2849,12 @@ class MatchEngine:
         # ── SIMULATE EACH SEQUENCE ────────────────────────────────────
         for seq_idx in range(n_sequences):
             # ── KICKOFF (Start of half / After Goal) ──────────────────
+            kickoff_this_seq = False
             if self.state.pending_kickoff_for:
                 kickoff_team = self.state.pending_kickoff_for
                 self.state.pending_kickoff_for = ""
                 self.state.possession_team = kickoff_team
+                self.state.possession_winner = ""  # restart owns possession
                 self.state.last_ball_x = 52.5
                 self.state.last_ball_y = 34.0
 
@@ -1734,9 +2878,17 @@ class MatchEngine:
                     phase=self.state.phase, game_state=self.state.game_state
                 ))
                 
-                # After kickoff, the sequence proceeds with kickoff_team in possession
+                # After kickoff, the sequence proceeds with kickoff_team in
+                # possession. The kickoff team is NOT re-rolled by the normal
+                # possession split below (that would randomise a restart away
+                # ~50% of the time); it keeps the ball for this sequence.
                 attacking_team = kickoff_team
                 defending_team = home_team if kickoff_team == away_team else away_team
+                kickoff_this_seq = True
+                if kickoff_team == home_team:
+                    self._minute_home_seq += 1
+                else:
+                    self._minute_away_seq += 1
             else:
                 pass
                 
@@ -1759,6 +2911,7 @@ class MatchEngine:
                     self.state.pending_corners_away -= 1
                 corner_opponent = away_team if corner_team == home_team else home_team
                 self.state.possession_team = corner_team
+                self.state.possession_winner = ""  # restart owns possession
                 if corner_team == home_team:
                     self._minute_home_seq += 1
                 else:
@@ -1774,6 +2927,9 @@ class MatchEngine:
                     self.active_players.get(corner_opponent, []),
                     self.state, SituationType.CORNER,
                     position_engine=self.position_engine,
+                    routine=self._sp_routine(
+                        corner_team, SituationType.CORNER, minute,
+                        self.active_players.get(corner_team, [])),
                 )
                 if self._absorb_chain(sp_result, minute): break
                 continue
@@ -1794,6 +2950,7 @@ class MatchEngine:
                     self.state.pending_penalty_away -= 1
                 pen_opponent = away_team if pen_team == home_team else home_team
                 self.state.possession_team = pen_team
+                self.state.possession_winner = ""  # restart owns possession
                 if pen_team == home_team:
                     self._minute_home_seq += 1
                 else:
@@ -1821,6 +2978,7 @@ class MatchEngine:
                 self.state.pending_goal_kick_for = ""
                 gk_opponent = home_team if gk_team == away_team else away_team
                 self.state.possession_team = gk_team
+                self.state.possession_winner = ""  # restart owns possession
                 if gk_team == home_team:
                     self._minute_home_seq += 1
                 else:
@@ -1841,6 +2999,7 @@ class MatchEngine:
                 self.state.pending_throw_in_for = ""
                 throw_opponent = home_team if throw_team == away_team else away_team
                 self.state.possession_team = throw_team
+                self.state.possession_winner = ""  # restart owns possession
                 if throw_team == home_team:
                     self._minute_home_seq += 1
                 else:
@@ -1866,6 +3025,7 @@ class MatchEngine:
                 self.state.pending_offside_fk_for = ""
                 fk_opponent = home_team if fk_team == away_team else away_team
                 self.state.possession_team = fk_team
+                self.state.possession_winner = ""  # restart owns possession
                 if fk_team == home_team:
                     self._minute_home_seq += 1
                 else:
@@ -1879,6 +3039,11 @@ class MatchEngine:
                     context_x=self.state.pending_offside_fk_x,
                     context_y=self.state.pending_offside_fk_y,
                     position_engine=self.position_engine,
+                    routine=self._sp_routine(
+                        fk_team, SituationType.DIRECT_FREEKICK, minute,
+                        self.active_players.get(fk_team, []),
+                        fk_context=(self.state.pending_offside_fk_x,
+                                    self.state.pending_offside_fk_y)),
                 )
                 # Stamp the actual offside location onto the FREEKICK_WON event
                 # so the exporter records it at the correct coordinates.
@@ -1891,19 +3056,22 @@ class MatchEngine:
                 continue
 
             # Decide which team has possession this sequence
-            # weighted by possession split
-            if random.random() < home_poss:
-                attacking_team = home_team
-                defending_team = away_team
-            else:
-                attacking_team = away_team
-                defending_team = home_team
-
-            self.state.possession_team = attacking_team
-            if attacking_team == home_team:
-                self._minute_home_seq += 1
-            else:
-                self._minute_away_seq += 1
+            # weighted by possession split. The kickoff sequence keeps the ball
+            # with the kicking team (set above) and is NOT re-rolled here.
+            if not kickoff_this_seq:
+                # Causal possession carry (Checkpoint): a team that just WON
+                # the ball in open play is OWED this sequence — real possession
+                # chains are causal, not a memoryless coin flip. Applied
+                # ~POSSESSION_CARRY_PROB of the time so the possession-target
+                # weighting and calibrated split stay enforceable.
+                attacking_team, defending_team = self._resolve_sequence_attacker(
+                    home_poss, home_team, away_team
+                )
+                self.state.possession_team = attacking_team
+                if attacking_team == home_team:
+                    self._minute_home_seq += 1
+                else:
+                    self._minute_away_seq += 1
 
             from tactical_ai import TacticalAI
             att_raw_profile = self.home_profile if attacking_team == home_team else self.away_profile
@@ -1923,13 +3091,17 @@ class MatchEngine:
                 att_raw_profile, self.state, attacking_team, home_team,
                 red_cards_against=self.state.home_red_cards if attacking_team != home_team
                                 else self.state.away_red_cards,
-                avg_stamina=att_avg_stamina
+                avg_stamina=att_avg_stamina,
+                manager=(self.home_manager if attacking_team == home_team
+                         else self.away_manager),
             )
             def_profile = TacticalAI.adjust(
                 def_raw_profile, self.state, defending_team, home_team,
                 red_cards_against=self.state.home_red_cards if defending_team != home_team
                                 else self.state.away_red_cards,
-                avg_stamina=def_avg_stamina
+                avg_stamina=def_avg_stamina,
+                manager=(self.home_manager if defending_team == home_team
+                         else self.away_manager),
             )
 
             att_players = self.active_players.get(attacking_team, [])
@@ -1939,10 +3111,14 @@ class MatchEngine:
                 continue
 
             # ── MOMENTUM & GAME STATE ────────────────────────────────
+            att_manager = (self.home_manager if attacking_team == home_team
+                           else self.away_manager)
+            att_composure = getattr(att_manager, "composure_scale", lambda: 1.0)() \
+                if att_manager is not None else 1.0
             momentum_mod    = MomentumEngine.get_attacking_probability_modifier(
                 self.state, attacking_team, home_team)
             game_state_mod  = MomentumEngine.get_game_state_modifier(
-                self.state, attacking_team, home_team)
+                self.state, attacking_team, home_team, composure=att_composure)
             phase_goal_mult = PhaseEngine.goal_mult(phase)
 
             attacks_right = (attacking_team == home_team)
@@ -1956,15 +3132,32 @@ class MatchEngine:
                 * 0.25
             )
             if random.random() < press_prob:
+                trans_cp = None
+                if self.state.counterpress_active(defending_team):
+                    trans_cp = {"active": True,
+                                "x": self.state.counterpress_x,
+                                "y": self.state.counterpress_y}
                 trans_result = ChainDispatcher.transition(
                     minute, defending_team, attacking_team,
                     def_players, att_players, def_profile, self.state,
                     position_engine=self.position_engine,
                     attacks_right=attacks_right,
+                    counterpress=trans_cp,
                 )
                 if self._absorb_chain(trans_result, minute): break
                 if trans_result.possession_lost:
-                    # Ball changes hands — next sequence is for other team
+                    # Ball changes hands — the team that just lost it arms a
+                    # counterpress burst at the recovery zone for the next few
+                    # seconds of match clock. The recovering team is OWED the
+                    # next sequence (real possession is causal), barring a
+                    # restart redirect.
+                    self._arm_possession_winner(defending_team, trans_result)
+                    self.state.set_counterpress(
+                        attacking_team,
+                        self.state.last_ball_x,
+                        self.state.last_ball_y,
+                    )
+                    # Next sequence starts with the recovering team
                     continue
 
             # ── POSSESSION SEQUENCE ──────────────────────────────────
@@ -1977,8 +3170,15 @@ class MatchEngine:
             # press intensity and pressing style are passed through so the
             # possession chain resolves the correct pressing profile for the
             # cover-shadow geometry and per-profile press probabilities
-            # (previously def_press_intensity was never forwarded and the
-            # chain fell back to the ATTACKING team's press_intensity — a bug).
+            def_press = def_profile.press_intensity
+            if getattr(self.state, "weather_enabled", False):
+                def_press *= WeatherPhysics.pressing_intensity_mult(self.weather_condition)
+
+            poss_cp = None
+            if self.state.counterpress_active(defending_team):
+                poss_cp = {"active": True,
+                           "x": self.state.counterpress_x,
+                           "y": self.state.counterpress_y}
             poss_result = ChainDispatcher.possession(
                 minute, attacking_team, att_players,
                 att_profile, self.state, seq_length,
@@ -1987,19 +3187,36 @@ class MatchEngine:
                 context_x=self.state.last_ball_x,
                 context_y=self.state.last_ball_y,
                 attacks_right=attacks_right,
-                def_press_intensity=def_profile.press_intensity,
+                def_press_intensity=def_press,
                 def_style_key=def_raw_profile.style.value,
                 att_style_key=att_raw_profile.style.value,
+                counterpress=poss_cp,
+            )
+            self._credit_possession(
+                attacking_team, poss_result.sequence_duration_s,
+                poss_result.player_possession_s,
             )
             if self._absorb_chain(poss_result, minute): break
 
             if poss_result.possession_lost:
+                # Turnover: the attacking team just lost the ball. The
+                # recovering (defending) team is OWED the next open-play
+                # sequence — real possession chains are causal. Arm their
+                # counterpress burst anchored at the recovery zone (where the
+                # ball ended) so the NEXT sequence's defending pressures spike
+                # around that zone instead of reverting to the static line.
+                self._arm_possession_winner(defending_team, poss_result)
+                self.state.set_counterpress(
+                    attacking_team,
+                    self.state.last_ball_x,
+                    self.state.last_ball_y,
+                )
                 if self._defensive_recovery(
                     minute, poss_result, attacking_team, defending_team,
                     att_players, def_players, attacks_right, def_avg_stamina,
                 ):
                     break
-                continue  # Next sequence starts with other team
+                continue  # Next sequence starts with the recovering team (carried above)
 
             # ── ATTACKING MATRIX SHOT HAND-OFF (Checkpoint 10) ──────────
             # The possession chain's per-touch matrix resolved SHOOT: the ball
@@ -2022,6 +3239,10 @@ class MatchEngine:
                     attacks_right=attacks_right,
                 )
                 if self._absorb_chain(att_result, minute): break
+                self._maybe_loose_ball(
+                    minute, att_result, attacking_team, defending_team,
+                    att_players, def_players, attacks_right,
+                )
                 continue
 
             # ── DEFENSIVE CONTEST (Checkpoint 6 + Checkpoint 9) ─────────
@@ -2083,7 +3304,8 @@ class MatchEngine:
                     )
                     if self._absorb_chain(def_result, minute): break
                     if def_result.possession_lost:
-                        continue  # Defense won the ball — no shot phase this sequence
+                        self._arm_possession_winner(defending_team, def_result)
+                        continue  # Defense won the ball — next sequence is theirs
 
             # ── DIRECT CLEARANCE (even without press) ─────────────
             if not poss_result.possession_lost:
@@ -2113,6 +3335,7 @@ class MatchEngine:
                     )
                     if self._absorb_chain(def_result, minute): break
                     if def_result.possession_lost:
+                        self._arm_possession_winner(defending_team, def_result)
                         continue
 
             # ── GAME STATE: shot volume and quality modifiers ────────
@@ -2142,11 +3365,20 @@ class MatchEngine:
             elif att_gd == -1 and minute >= 70:
                 shot_prob *= 1.15
                 _xg_quality_mult = 0.90
+            elif att_gd >= 4:
+                # Parking the bus — winning comfortably, barely attacking
+                shot_prob *= 0.45
+                _xg_quality_mult = 1.20
+            elif att_gd == 3:
+                # Well ahead — sitting deep, occasional break
+                shot_prob *= 0.55
+                _xg_quality_mult = 1.18
             elif att_gd >= 2:
-                shot_prob *= 0.75
+                # Comfortable — conservative but not passive
+                shot_prob *= 0.65
                 _xg_quality_mult = 1.15
             elif att_gd == 1 and minute >= 75:
-                shot_prob *= 0.85
+                shot_prob *= 0.82
                 _xg_quality_mult = 1.05
             else:
                 _xg_quality_mult = 1.0
@@ -2189,7 +3421,15 @@ class MatchEngine:
                         minute, attacking_team, defending_team,
                         att_players, def_players, self.state, situation,
                         attacks_right=attacks_right,
+                        context_x=(self.state.last_ball_x
+                                   if situation in (SituationType.DIRECT_FREEKICK,
+                                                    SituationType.CROSSED_FREEKICK) else None),
+                        context_y=(self.state.last_ball_y
+                                   if situation in (SituationType.DIRECT_FREEKICK,
+                                                    SituationType.CROSSED_FREEKICK) else None),
                         position_engine=self.position_engine,
+                        routine=self._sp_routine(
+                            attacking_team, situation, minute, att_players),
                     )
                     if self._absorb_chain(sp_result, minute): break
                 else:
@@ -2465,6 +3705,22 @@ class MatchEngine:
         Also drains stamina from every player involved in each event.
         """
         from squad_manager import get_stamina_action
+        # Chronography: the global clock at the moment this chain starts being
+        # absorbed. _absorb_motion (folded at the tail) will advance it by the
+        # chain's physics duration; goal chains that early-return keep start==end.
+        _chain_start_clock = self.state.match_clock_s
+        # Track which players were actually ON THE BALL this chain so the
+        # continuous off-ball integrator skips them (they're already moved by
+        # the episode). NOTE: we use the chain's ball-action EVENTS, NOT the
+        # episode's distance-stats dict — the episode traces every registered
+        # player (both teams), so the stats dict would flag ~all 22 and freeze
+        # the off-ball integrator for everyone.
+        for ev in chain_result.events:
+            if getattr(ev.event_type, "name", "") in self._ON_BALL_EVENTS:
+                if getattr(ev, "player", None):
+                    self._on_ball_this_minute.add(ev.player)
+                if getattr(ev, "secondary_player", None):
+                    self._on_ball_this_minute.add(ev.secondary_player)
         # Add all events to the timeline + drain stamina
         for event in chain_result.events:
             self.timeline.append(event)
@@ -2734,6 +3990,11 @@ class MatchEngine:
                 # Checkpoint 9 — the threat was realised: the conceding team's
                 # danger PEAKS (a goal came from it), then resets at kickoff.
                 self.threat.on_goal(conceding_team, minute)
+                self._chain_clock_marks.append(ChainClockMark(
+                    minute=minute, start_clock=_chain_start_clock,
+                    end_clock=self.state.match_clock_s, motion_folded=False,
+                    events=list(chain_result.events),
+                ))
                 return True # Break sequence loop
 
         # Penalty scored (separate event type)
@@ -2834,6 +4095,25 @@ class MatchEngine:
                         self.state, card_team, self.config.home_team
                     )
 
+        # Checkpoint — fold this chain's continuous ball_path onto the single
+        # global match clock so the whole 90' reads as one timeline (#1).
+        self._absorb_motion(chain_result)
+
+        # Feed the on-ball possession-episode movement into the virtual GPS so
+        # its physical totals stay complete (the off-ball sampler only covers
+        # the continuous integrator, not the episode's own physics trace).
+        if self.gps is not None:
+            pds = getattr(chain_result, "player_distance_stats", None) or {}
+            if pds:
+                self.gps.ingest_episode_stats(pds, minute)
+
+        # Chronography: the chain's real span on the global clock (its motion is
+        # folded above, so end_clock is strictly after start_clock).
+        self._chain_clock_marks.append(ChainClockMark(
+            minute=minute, start_clock=_chain_start_clock,
+            end_clock=self.state.match_clock_s, motion_folded=True,
+            events=list(chain_result.events),
+        ))
         return False
 
     def _simulate_shot_sequence(
@@ -2889,7 +4169,7 @@ class MatchEngine:
 
         # Emit chance created event
         chance_type = EventType.BIG_CHANCE_CREATED if is_big_chance else EventType.CHANCE_CREATED
-        loc = self._shot_location(zone)
+        loc = self._shot_location(zone, attacks_right)
         self._emit_event(
             minute=minute,
             event_type=chance_type,
@@ -2985,6 +4265,7 @@ class MatchEngine:
         else:
             self.state.away_goals += 1
 
+        attacks_right = (team == self.config.home_team)
         goal_event = MatchEvent(
             minute=minute,
             second=random.randint(0, 59),
@@ -2993,8 +4274,8 @@ class MatchEngine:
             player=scorer,
             secondary_player=creator,
             situation=situation,
-            location_x=self._shot_location(zone)[0],
-            location_y=self._shot_location(zone)[1],
+            location_x=self._shot_location(zone, attacks_right)[0],
+            location_y=self._shot_location(zone, attacks_right)[1],
             xg=xg,
             body_part=body_part,
             phase=self.state.phase,
@@ -3189,7 +4470,7 @@ class MatchEngine:
 
         return zone, body_part
 
-    def _shot_location(self, zone: str) -> Tuple[float, float]:
+    def _shot_location(self, zone: str, attacks_right: bool = True) -> Tuple[float, float]:
         """
         Convert zone name to pitch coordinates.
 
@@ -3205,6 +4486,10 @@ class MatchEngine:
         (0.7m) is still essentially on the line — no player shoots from there
         in real football. Also narrowed y ranges to avoid physically impossible
         acute angles where the goal is barely visible.
+
+        The x-coordinate is mirrored when attacks_right=False so the away
+        team's shots land in their own attacking half (near x=0), matching
+        the convention used throughout the geometry engine.
         """
         locations = {
             "six_yard_box":   (random.uniform(99, 103.0), random.uniform(29, 39)),
@@ -3214,12 +4499,27 @@ class MatchEngine:
             "outside_box":    (random.uniform(70, 83), random.uniform(20, 48)),
             "long_range":     (random.uniform(55, 70), random.uniform(15, 53)),
         }
-        return locations.get(zone, (85.0, 34.0))
+        x, y = locations.get(zone, (85.0, 34.0))
+        if not attacks_right:
+            x = 105.0 - x
+        return round(x, 1), round(y, 1)
 
 
 # ─────────────────────────────────────────────
 # MATCH RESULT — What simulation returns
 # ─────────────────────────────────────────────
+
+def _terrs(d: Dict[str, float]) -> str:
+    if not d:
+        return "n/a"
+    return (f"{d.get('att_third', 0):.0f}/"
+            f"{d.get('mid_third', 0):.0f}/"
+            f"{d.get('def_third', 0):.0f}")
+
+
+def _pcts(v: Optional[float]) -> str:
+    return f"{v:.0f}%" if v is not None else "n/a"
+
 
 @dataclass
 class MatchResult:
@@ -3238,6 +4538,8 @@ class MatchResult:
     threat: ThreatEngine
     position_log: List[Dict] = field(default_factory=list)
     momentum_log: List[Dict] = field(default_factory=list)
+    gps: Optional[VirtualGPS] = None
+    chronology: Optional["MatchChronology"] = None
 
     @property
     def home_goals(self) -> int:
@@ -3262,18 +4564,171 @@ class MatchResult:
     def away_xg(self) -> float:
         return round(self.state.away_xg, 2)
 
+    @property
+    def home_possession_pct(self) -> float:
+        tot = self.state.home_possession_s + self.state.away_possession_s
+        return round(100.0 * self.state.home_possession_s / tot, 1) if tot > 0 else 50.0
+
+    @property
+    def away_possession_pct(self) -> float:
+        return round(100.0 - self.home_possession_pct, 1)
+
+    # ── GLOBAL CONTINUOUS TIMELINE (#1) ──────────────────────────
+    @property
+    def match_clock_s(self) -> float:
+        return round(self.state.match_clock_s, 1)
+
+    @property
+    def full_match_ball_path(self) -> List[Dict[str, Any]]:
+        """The whole 90' as one monotonic, time-ordered ball trajectory."""
+        return self.state.match_ball_path
+
+    # ── REAL PHYSICS DISTANCE / SPRINT TOTALS ──────────────────────
+    def physics_totals(self) -> Dict[str, Dict[str, float]]:
+        """Aggregate the per-minute physics store across the whole match.
+
+        Distance/sprints here are derived from ACTUAL 10 Hz movement
+        integration (on-ball via PossessionEpisode traces, off-ball via the
+        continuous off-ball integrator) — not snapshot baselines. Returns a
+        mapping player_name -> {distance_m, sprint_count,
+        high_speed_sprint_count, top_speed_mps}.
+        """
+        out: Dict[str, Dict[str, float]] = {}
+        for frame in self.position_log:
+            for side in ("home", "away"):
+                for row in frame.get(side, []):
+                    name = row["player"]
+                    agg = out.setdefault(name, {
+                        "distance_m": 0.0, "sprint_count": 0.0,
+                        "high_speed_sprint_count": 0.0, "top_speed_mps": 0.0,
+                    })
+                    agg["distance_m"] += float(row.get("physics_distance_m", 0.0))
+                    agg["sprint_count"] += float(row.get("physics_sprint_count", 0.0))
+                    agg["high_speed_sprint_count"] += float(
+                        row.get("physics_high_speed_sprint_count", 0.0))
+                    agg["top_speed_mps"] = max(
+                        agg["top_speed_mps"],
+                        float(row.get("physics_top_speed_mps", 0.0)))
+        for agg in out.values():
+            agg["distance_m"] = round(agg["distance_m"], 1)
+            agg["sprint_count"] = round(agg["sprint_count"], 1)
+            agg["high_speed_sprint_count"] = round(agg["high_speed_sprint_count"], 1)
+            agg["top_speed_mps"] = round(agg["top_speed_mps"], 2)
+        return out
+
+    # ── POSSESSION ANALYTICS (#5) ────────────────────────────────
+    def territorial_possession(self) -> Dict[str, Dict[str, float]]:
+        """Share of ball-time spent in each third, per team (from the global
+        continuous timeline). Answers 'territorial dominance' — not just who
+        had the ball, but WHERE on the pitch they had it."""
+        from collections import defaultdict
+        counts: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        total: Dict[str, float] = defaultdict(float)
+        for pt in self.state.match_ball_path:
+            x = pt.get("x", 52.5)
+            team = pt.get("team", "")
+            third = "def_third" if x < 35.0 else ("mid_third" if x < 70.0 else "att_third")
+            counts[team][third] += 1.0
+            total[team] += 1.0
+        out: Dict[str, Dict[str, float]] = {}
+        for team, d in counts.items():
+            t = total[team] or 1.0
+            out[team] = {k: round(100.0 * v / t, 1) for k, v in d.items()}
+        return out
+
+    def press_responsiveness(self) -> Dict[str, Optional[float]]:
+        """Pressing intensity that actually converts: share of a team's press
+        actions that are followed by a ball win (interception/tackle/recovery).
+        Evaluated from the live timeline, not a roll."""
+        from collections import defaultdict
+        press = defaultdict(int)
+        wins = defaultdict(int)
+        for e in self.timeline:
+            name = getattr(e.event_type, "name", "")
+            if name == "PRESS":
+                press[e.team] += 1
+            elif name in ("INTERCEPTION", "TACKLE_WON", "BALL_RECOVERY"):
+                wins[e.team] += 1
+        out: Dict[str, Optional[float]] = {}
+        teams = set(list(press.keys()) + list(wins.keys()))
+        for team in teams:
+            p = press.get(team, 0)
+            w = wins.get(team, 0)
+            out[team] = round(100.0 * w / p, 1) if p else None
+        return out
+
+    # ── SHOT SPEED (Opta-style) ─────────────────────────────────
+    def shot_speed_stats(self) -> Dict[str, Any]:
+        """Per-team average/max shot velocity across the match, Opta-style.
+
+        Reads the launch velocity stamped on each shot-attempt event
+        (``metadata["shot_speed_kmh"]`` — set by every shot-producing chain).
+        GOAL events are excluded so a goal's paired SHOT_ON_TARGET isn't
+        counted twice; headers count but contribute their (slower, ~5-12 m/s)
+        velocities naturally.
+        """
+        attempt_types = frozenset({
+            EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
+            EventType.SHOT_BLOCKED, EventType.HIT_WOODWORK,
+            EventType.PENALTY_SCORED, EventType.PENALTY_MISSED,
+        })
+        from collections import defaultdict
+        by_team: Dict[str, list] = defaultdict(list)
+        shots_total = 0
+        shots_with_speed = 0
+        for e in self.timeline:
+            if e.event_type not in attempt_types:
+                continue
+            shots_total += 1
+            md = e.metadata or {}
+            speed = md.get("shot_speed_kmh")
+            if speed is None:
+                speed = (md.get("physics") or {}).get("shot_speed_kmh")
+            if speed:
+                shots_with_speed += 1
+                by_team[e.team].append(float(speed))
+        out: Dict[str, Any] = {}
+        all_speeds: List[float] = []
+        for team, vals in by_team.items():
+            out[f"{team}"] = {
+                "avg_kmh": round(sum(vals) / len(vals), 1),
+                "max_kmh": round(max(vals), 1),
+                "shots": len(vals),
+            }
+            all_speeds.extend(vals)
+        out["match_avg_kmh"] = (
+            round(sum(all_speeds) / len(all_speeds), 1) if all_speeds else None
+        )
+        out["shots_with_speed"] = shots_with_speed
+        out["shots_total"] = shots_total
+        out["coverage_pct"] = (
+            round(100.0 * shots_with_speed / shots_total, 1) if shots_total else 0.0
+        )
+        return out
+
     def summary(self) -> str:
         lines = [
             f"\n{'='*50}",
             f"  {self.score_str}",
             f"  xG: {self.config.home_team} {self.home_xg} — {self.away_xg} {self.config.away_team}",
+            f"  Possession: {self.config.home_team} {self.home_possession_pct}% — "
+            f"{self.away_possession_pct}% {self.config.away_team}",
+            f"  Territorial (att%/mid%/def%): "
+            f"{self.config.home_team} "
+            f"{_terrs(self.territorial_possession().get(self.config.home_team, {}))} | "
+            f"{self.config.away_team} "
+            f"{_terrs(self.territorial_possession().get(self.config.away_team, {}))}",
+            f"  Press responsiveness: "
+            f"{_pcts(self.press_responsiveness().get(self.config.home_team))} / "
+            f"{_pcts(self.press_responsiveness().get(self.config.away_team))}",
             f"  Goals: {len(self.goals)} | Cards: {len(self.cards)}",
             f"  Timeline events: {len(self.timeline)}",
             f"  Added time: {self.state.added_time}'",
             f"{'='*50}",
         ]
         for g in self.goals:
-            assist = f" (assist: {g.secondary_player})" if g.secondary_player else ""
+            assist = (f" (assist: {g.secondary_player})"
+                      if g.secondary_player and g.event_type != EventType.OWN_GOAL else "")
             lines.append(f"  ⚽ {g.minute}' {g.player}{assist} — {g.team}")
         for c in self.cards:
             icon = "🟥" if c.event_type == EventType.RED_CARD else "🟨"

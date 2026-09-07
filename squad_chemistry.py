@@ -26,6 +26,31 @@ from typing import Dict, List, Optional, Tuple
 
 
 # ─────────────────────────────────────────────
+# LIVE (IN-MATCH) REGISTRY
+# ChainDispatcher → _pass_success is a chain of @classmethod helpers that
+# don't share instance state, so threading a chemistry object through every
+# signature would be invasive. Instead, the season layer registers each team's
+# SquadChemistry here once per match (keyed by team name); _pass_success /
+# composure rolls look the active team's chemistry up from this registry by the
+# passer's team_name. Nested/live during a match; the season layer clears it
+# after persistence. Default lookups are neutral (no effect) when unregistered,
+# so every non-season caller (tests, run_match scratch) is unaffected.
+_ACTIVE: Dict[str, "SquadChemistry"] = {}
+
+
+def register_active(team_name: str, chemistry: "SquadChemistry"):
+    _ACTIVE[team_name] = chemistry
+
+
+def active_for(team_name: str) -> Optional["SquadChemistry"]:
+    return _ACTIVE.get(team_name)
+
+
+def clear_active():
+    _ACTIVE.clear()
+
+
+# ─────────────────────────────────────────────
 # SQUAD CHEMISTRY
 # ─────────────────────────────────────────────
 
@@ -49,6 +74,13 @@ class SquadChemistry:
 
     # Games started together, tracked so chemistry can grow organically
     _appearances_together: Dict[Tuple[str, str], int] = field(default_factory=dict)
+
+    # ── Manager bias (optional): the manager's fingerprints on this squad.
+    # A great man-manager scales the leadership aura and adds a flat
+    # composure boost — "gets more out of a group than the numbers say".
+    # Set once via set_manager(). Defaults are neutral (no effect).
+    manager_aura_scale: float = 1.0
+    manager_composure_scale: float = 1.0
 
     # ── QUERIES ─────────────────────────────────────────────
 
@@ -80,25 +112,29 @@ class SquadChemistry:
         """
         Composure boost for anyone playing alongside the captain / senior
         players. Strongest for the captain themself (steadies the ship),
-        smaller ripple for the rest of the XI.
+        smaller ripple for the rest of the XI. Multiplied by the manager's
+        man-management scale (a great man-manager amplifies the ripple).
         """
+        base = 1.0
         if player_name == self.captain:
-            return 1.10
-        if player_name == self.vice_captain:
-            return 1.06
-        if player_name in self.senior_players:
-            return 1.03
-        return 1.0
+            base = 1.10
+        elif player_name == self.vice_captain:
+            base = 1.06
+        elif player_name in self.senior_players:
+            base = 1.03
+        return round(base * self.manager_aura_scale, 4)
 
     def team_leadership_aura(self, captain_on_pitch: bool, is_derby: bool = False) -> float:
         """
         Applied to the WHOLE team's composure_mult when the captain is on
         the pitch — bigger effect in big/derby games, gone entirely if the
-        captain has been subbed off or sent off.
+        captain has been subbed off or sent off. Scaled by the manager's
+        man-management (manager_aura_scale).
         """
         if not captain_on_pitch:
             return 0.94   # visible dip without on-pitch leadership
-        return 1.06 if is_derby else 1.03
+        base = 1.06 if is_derby else 1.03
+        return round(base * self.manager_aura_scale, 4)
 
     # ── UPDATES (called by season_manager.py after each match) ──
 
@@ -129,6 +165,66 @@ class SquadChemistry:
         self.captain = captain
         self.vice_captain = vice_captain
         self.senior_players = senior_players or []
+
+    def set_manager(self, manager=None):
+        """
+        Apply a ManagerProfile's man-management fingerprint to this squad.
+        `manager` duck-types the surface needed: .leadership_aura_scale()
+        and .composure_scale(). Accepts None to reset to neutral.
+        """
+        if manager is None:
+            self.manager_aura_scale = 1.0
+            self.manager_composure_scale = 1.0
+            return
+        self.manager_aura_scale = getattr(manager, "leadership_aura_scale", lambda: 1.0)()
+        self.manager_composure_scale = getattr(manager, "composure_scale", lambda: 1.0)()
+
+    def squad_composure_mult(self) -> float:
+        """Flat whole-squad composure from a stable, respected manager."""
+        return self.manager_composure_scale
+
+    # ── SERIALIZATION (season_manager.py season_state.chemistry) ──
+
+    def to_dict(self) -> dict:
+        """JSON-safe representation. Tuple keys in `_appearances_together`
+        are reconstructed via the "A|B" joined-key convention."""
+        return {
+            "team_name": self.team_name,
+            "pair_chemistry": self.pair_chemistry,
+            "captain": self.captain,
+            "vice_captain": self.vice_captain,
+            "senior_players": self.senior_players,
+            "cliques": self.cliques,
+            # tuple (p1, p2) -> "p1|p2"
+            "appearances_together": {
+                "|".join(k): v for k, v in self._appearances_together.items()
+            },
+            "manager_aura_scale": self.manager_aura_scale,
+            "manager_composure_scale": self.manager_composure_scale,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SquadChemistry":
+        c = cls(team_name=data.get("team_name", ""))
+        c.pair_chemistry = data.get("pair_chemistry", {}) or {}
+        c.captain = data.get("captain")
+        c.vice_captain = data.get("vice_captain")
+        c.senior_players = data.get("senior_players", []) or []
+        c.cliques = data.get("cliques", []) or []
+        app = data.get("appearances_together", {}) or {}
+        c._appearances_together = {
+            tuple(k.split("|")): int(v) for k, v in app.items()
+        }
+        c.manager_aura_scale = data.get("manager_aura_scale", 1.0)
+        c.manager_composure_scale = data.get("manager_composure_scale", 1.0)
+        c._validate_scales()
+        return c
+
+    def _validate_scales(self):
+        if self.manager_aura_scale is None:
+            self.manager_aura_scale = 1.0
+        if self.manager_composure_scale is None:
+            self.manager_composure_scale = 1.0
 
 
 # ─────────────────────────────────────────────

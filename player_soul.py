@@ -950,10 +950,14 @@ class SoulScenarioCalculator:
             freedom = 1.0 if nd is None or nd >= 3.0 else max(0.15, (nd - 1.0) / 2.0)
 
             # Progress toward goal
+            # VERTICALITY RE-BALANCE — mirrors attacking_matrix.straregic_value:
+            # softened /30 ramp + freedom-dominant weights, so the prophet's
+            # scenario ranking uses the same (less direct) value scale the
+            # matrix uses for every other carrier.
             gx = 105.0 if attacks_right else 0.0
             d_ag = math.hypot(x - gx, y - 34.0)
             d_tg = math.hypot(tx - gx, ty - 34.0)
-            progress = max(0.0, min(1.0, 0.5 + (d_ag - d_tg) / 20.0))
+            progress = max(0.0, min(1.0, 0.5 + (d_ag - d_tg) / 30.0))
 
             # Depth into attacking third
             depth = max(0.0, min(1.0, (tx - 35.0) / 70.0)) if attacks_right else max(0.0, min(1.0, (35.0 - tx) / 70.0))
@@ -966,7 +970,7 @@ class SoulScenarioCalculator:
                 width_factor = max(0.0, (abs(ty - 34.0) - 8.0) / 18.0)
                 half_space_bonus += width_factor * 0.04
 
-            score = lane * (0.45 * progress + 0.35 * freedom + 0.20 * depth + half_space_bonus)
+            score = lane * (0.30 * progress + 0.45 * freedom + 0.20 * depth + half_space_bonus)
 
             options.append({
                 "target": tm,
