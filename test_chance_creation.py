@@ -256,3 +256,41 @@ def test_key_pass_plot_endpoint_falls_back_to_shot_receiver_point():
 
     endpoint = resolve_key_pass_plot_endpoints(event, ledger_record, index=0)
     assert endpoint == (72.0, 38.0)
+
+
+def test_uncovered_chance_that_results_in_goal_is_goal_assist():
+    """A CHANCE_CREATED event with no detectable setup pass but the shooter
+    scores should still be credited as a goal assist, not a shot assist."""
+    tl = [
+        evt(EventType.CARRY, "Home", "D"),
+        evt(EventType.CHANCE_CREATED, "Home", "D", secondary_player="S"),
+        evt(EventType.SHOT_ON_TARGET, "Home", "S", xg=0.25),
+        evt(EventType.GOAL, "Home", "S", xg=0.25),
+    ]
+    ledger = run(tl)
+    r = ledger.records[0]
+    assert r.outcome == "goal"
+    assert r.shooter == "S"
+    p = ledger.per_player["D"]
+    assert p["goal_assists"] == 1 and p["assists"] == 1
+    assert p["chances_created"] == 1 and p["shot_assists"] == 0
+    assert p["xa"] == pytest.approx(0.25)
+    assert p["xa_open_play"] == pytest.approx(0.25)
+
+
+def test_uncovered_chance_that_does_not_result_in_goal_is_shot_assist():
+    """A CHANCE_CREATED event with no detectable setup pass and the shooter
+    misses should be credited as a shot assist."""
+    tl = [
+        evt(EventType.CARRY, "Home", "D"),
+        evt(EventType.CHANCE_CREATED, "Home", "D", secondary_player="S"),
+        evt(EventType.SHOT_OFF_TARGET, "Home", "S", xg=0.2),
+    ]
+    ledger = run(tl)
+    r = ledger.records[0]
+    assert r.outcome == "miss"
+    assert r.shooter == "S"
+    p = ledger.per_player["D"]
+    assert p["shot_assists"] == 1 and p["goal_assists"] == 0
+    assert p["chances_created"] == 1
+    assert p["xa"] == pytest.approx(0.0)

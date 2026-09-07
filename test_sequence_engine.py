@@ -135,7 +135,7 @@ def test_exporter_integration(tmp="__seq_export_check__"):
         assert {"Passes", "Sequence Time (s)", "Progress (m)",
                 "Direct Speed (m/s)", "Width (m)"}.issubset(shots.columns)
 
-    with open(f"{tmp}/Hartwell_City_vs_Away_MD1.json", encoding="utf-8") as f:
+    with open(f"{tmp}/Hartwell_City_vs_Away_MD1.json", encoding="utf-8-sig") as f:
         payload = json.load(f)
     assert "sequences" in payload
     assert payload["sequences"]["attacking_styles"]

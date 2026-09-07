@@ -330,6 +330,57 @@ def test_defensive_block_noop_below_danger_25():
 
 
 # ============================================================================
+# 7b. STYLE-AWARE OFFSIDE LINE — deep blocks sink, high lines hold
+# ============================================================================
+
+def _block_line_y(pe, team, ball_x, ball_y, own_goal_x, danger_level,
+                  defensive_line):
+    """Run the block and return the mean current_x of the CBs (the line depth)."""
+    pe.defensive_block(team, ball_x, ball_y, own_goal_x=own_goal_x,
+                       danger_level=danger_level, pull_strength=1.0,
+                       defensive_line=defensive_line)
+    cbs = [p for p in pe.states.values()
+           if p.team == team and p.position == "CB"]
+    return sum(s.current_x for s in cbs) / len(cbs)
+
+
+def test_deep_block_sinks_closer_to_goal_than_high_line_at_same_danger():
+    """At equal danger, a deep (low defensive_line) team's line must sit
+    closer to the defended goal than a high-line team's line."""
+    pe_deep, squad = _make_block_engine()
+    pe_high, squad = _make_block_engine()
+    ball_x, ball_y = 80.0, 34.0      # ball in defensive half (Away defends 105)
+    own_goal_x = 105.0
+    danger = 60.0
+
+    deep_x = _block_line_y(pe_deep, "Away FC", ball_x, ball_y, own_goal_x,
+                           danger, defensive_line=0.1)
+    high_x = _block_line_y(pe_high, "Away FC", ball_x, ball_y, own_goal_x,
+                           danger, defensive_line=0.9)
+
+    # Deep line sits closer to the goal line (higher x toward 105).
+    assert deep_x > high_x, (
+        f"deep block ({deep_x:.1f}) should sit closer to goal than high line ({high_x:.1f})")
+
+
+def test_high_line_holds_off_goal_until_critical_danger():
+    """A high-line team resists the pull at moderate danger, but still caves
+    toward the goal at CRITICAL danger (bodies on the line)."""
+    pe_mod, squad = _make_block_engine()
+    pe_crit, squad = _make_block_engine()
+    ball_x, ball_y = 84.0, 34.0
+    own_goal_x = 105.0
+
+    mod_x = _block_line_y(pe_mod, "Away FC", ball_x, ball_y, own_goal_x,
+                          55.0, defensive_line=0.9)
+    crit_x = _block_line_y(pe_crit, "Away FC", ball_x, ball_y, own_goal_x,
+                          92.0, defensive_line=0.9)
+
+    assert crit_x > mod_x, (
+        f"critical danger should sink the high line further ({mod_x:.1f} -> {crit_x:.1f})")
+
+
+# ============================================================================
 # 8. PRESERVATION — a full match still runs and carries the ThreatEngine
 # ============================================================================
 
@@ -598,3 +649,99 @@ def test_absorb_chain_counts_own_goal_on_scoreboard():
     assert engine.goals[0].event_type == EventType.OWN_GOAL
     # The threat was realised for the conceding side.
     assert engine.threat.goals_conceded["Away FC"] == 1
+
+
+# ============================================================================
+# 9. TACKLE CRAFT — attacker voice, danger panic, commitment
+# ============================================================================
+# The standalone roll-based tackle now mirrors the physics-race path
+# (_dribble_confirmation_gate) in three ways:
+#   1. Attacker voice  — a skilled carrier (dribbling/agility/strength) erodes
+#      the defender's tackle rate, same differential language as the gate.
+#   2. Danger panic    — a last-ditch challenge under high danger is rushed and
+#      mistimed: fewer clean wins, more fouls (mirrors clearance panic).
+#   3. Commitment      — aggressive/brave tacklers dive in: less reliable, but
+#      when the committed challenge actually lands they win it clean more
+#      often (the clean_commitment conversion roll).
+
+def _craft_player(name, position="ST", dribbling=50, agility=50, strength=50,
+                  tackling=50, anticipation=50, bravery=60,
+                  aggression=0.40, commits_fouls=0.40):
+    dna = SimpleNamespace(
+        live_performance_mult=1.0,
+        technical=SimpleNamespace(dribbling=dribbling),
+        physical=SimpleNamespace(agility=agility, strength=strength),
+        mental=SimpleNamespace(anticipation=anticipation, bravery=bravery),
+        defending=SimpleNamespace(tackling=tackling),
+        tendencies=SimpleNamespace(
+            tackles_aggressively=aggression, commits_fouls=commits_fouls),
+    )
+    return SimpleNamespace(name=name, position=position, dna=dna)
+
+
+def _tackle_trial(defender, attacker, danger=0.0, trials=1):
+    state = _defense_state()
+    won = fouls = committed = 0
+    for _ in range(trials):
+        r = DefensiveChain.generate(
+            70, "Away FC", "Home FC", [defender], [attacker], state, "tackle",
+            context_x=60.0, context_y=34.0, danger_level=danger,
+        )
+        for e in r.events:
+            if e.event_type == EventType.TACKLE_WON:
+                won += 1
+                if e.metadata.get("clean_commitment"):
+                    committed += 1
+            if e.event_type == EventType.FOUL_COMMITTED:
+                fouls += 1
+    return won, fouls, committed
+
+
+def test_tackle_attacker_resistance_rises_with_dribbler():
+    defender = _craft_player("CB", position="CB", tackling=60, anticipation=60)
+    poor = _craft_player("Poor ST", position="ST", dribbling=15, agility=15, strength=15)
+    good = _craft_player("Good ST", position="ST", dribbling=95, agility=90, strength=85)
+    assert DefensiveChain._tackle_attacker_resistance(good, defender) > \
+        DefensiveChain._tackle_attacker_resistance(poor, defender)
+
+
+def test_elite_dribbler_erodes_tackle_success():
+    """Same defender + identical seed; only the attacker's skill package
+    differs, so a 95-dribbling carrier must produce fewer clean wins than a
+    15-dribbling one."""
+    defender = _craft_player("CB", position="CB", tackling=60, anticipation=60)
+    poor = _craft_player("Poor ST", position="ST", dribbling=15, agility=15, strength=15)
+    good = _craft_player("Good ST", position="ST", dribbling=95, agility=90, strength=85)
+    random.seed(7)
+    wins_poor = _tackle_trial(defender, poor, trials=800)[0]
+    random.seed(7)
+    wins_good = _tackle_trial(defender, good, trials=800)[0]
+    assert wins_poor > wins_good, (wins_poor, wins_good)
+
+
+def test_danger_panic_raises_fouls_and_lowers_clean_wins():
+    """Same personnel, only the danger signal changes: a last-ditch challenge
+    is mistimed more often (fewer clean wins) and fouls more."""
+    defender = _craft_player("CB", position="CB", tackling=60, anticipation=60,
+                             aggression=0.4, commits_fouls=0.3)
+    attacker = _craft_player("ST", position="ST", dribbling=50, agility=50, strength=50)
+    calm = _tackle_trial(defender, attacker, danger=0.0, trials=800)
+    panic = _tackle_trial(defender, attacker, danger=90.0, trials=800)
+    assert panic[0] < calm[0], (panic[0], calm[0])
+    assert panic[1] > calm[1], (panic[1], calm[1])
+
+
+def test_aggressive_brave_tackler_wins_clean_more_often():
+    """Commitment conversion: an aggressive/brave tackler wins the ball clean
+    (via the clean_commitment roll) markedly more than a neutral one at the
+    same tackling attribute and identical seed."""
+    neutral = _craft_player("Clean", position="CB", tackling=70, anticipation=70,
+                            bravery=60, aggression=0.40, commits_fouls=0.4)
+    mad = _craft_player("Mad", position="CB", tackling=70, anticipation=70,
+                        bravery=95, aggression=0.95, commits_fouls=0.4)
+    attacker = _craft_player("ST", position="ST", dribbling=50, agility=50, strength=50)
+    random.seed(11)
+    neutral_committed = _tackle_trial(neutral, attacker, trials=1000)[2]
+    random.seed(11)
+    mad_committed = _tackle_trial(mad, attacker, trials=1000)[2]
+    assert mad_committed > neutral_committed, (mad_committed, neutral_committed)

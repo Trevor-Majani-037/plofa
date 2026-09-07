@@ -464,10 +464,11 @@ def test_position_engine_updates_on_touch(touch_x, touch_y, position):
     assert abs(new_x - touch_x) < 0.1, \
         f"Position should update to touch x={touch_x:.1f}, got {new_x:.1f}"
     _, home_y = pe.get_home_position(player.name)
-    if position in WIDE and abs(home_y - touch_y) > 6.0:
-        # Checkpoint 21d: a wide player whose touch has dragged him >6m OFF
-        # his flank channel is pulled back TOWARD home_y (never away). The
-        # engine must place him strictly between the touch and his flank.
+    if position in WIDE and abs(home_y - touch_y) > 3.0:
+        # Checkpoint 21d (Checkpoint 34: trigger narrowed 6.0 -> 3.0): a wide
+        # player whose touch has dragged him >3m OFF his flank channel is
+        # pulled back TOWARD home_y (never away). The engine must place him
+        # strictly between the touch and his flank.
         assert min(touch_y, home_y) <= new_y <= max(touch_y, home_y), \
             f"Wide flank-hold must stay between touch y={touch_y:.1f} and " \
             f"home y={home_y:.1f}, got {new_y:.1f}"

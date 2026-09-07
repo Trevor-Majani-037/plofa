@@ -307,8 +307,11 @@ def test_counter_prefers_far_key_pass_build_up_recycles():
 
     lane = lane_clearance(40, 34, 56, 34, [cb], pe)
     assert lane == pytest.approx(0.60, abs=0.03)
+    # VERTICALITY RE-BALANCE: option weights 0.45/0.35/0.20 →
+    # 0.30/0.45/0.20 lower the strategic value of a deep target; the
+    # guarded number tracks the new scale (still a strong open-lane option).
     val = strategic_value(40, 34, 56, 34, [cb], pe)
-    assert val == pytest.approx(0.516, abs=0.03)
+    assert val == pytest.approx(0.486, abs=0.03)
 
     teammates = _outfield_teammates(att, carrier)
 

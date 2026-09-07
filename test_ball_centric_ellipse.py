@@ -100,7 +100,14 @@ def test_ellipse_anisotropy_ahead_behind_side():
 
     assert ahead > behind > side
     assert ahead > 0.5            # a 25m forward runner is a live option
-    assert side < 0.1             # 25m lateral is not
+    # PITCH WIDTH FIX (Checkpoint 34): ELLIPSE_SIGMA_ACROSS was widened
+    # 9.0 -> 13.0 specifically so a wide receiver is a live (though still
+    # clearly-disfavoured) option from a central ball — without it, the
+    # lateral taper starved touchline targets before selection. The guard
+    # therefore no longer demands < 0.1; it now only enforces that a 25m
+    # lateral runner stays a much weaker option than a 25m forward runner
+    # (anisotropy is what preserves width discipline, not an absolute cap).
+    assert side < 0.35            # 25m lateral: weak but legal option (~0.15)
 
 
 # ── P2: FORWARD BIAS ─────────────────────────────────────────────
@@ -249,9 +256,15 @@ def test_matrix_build_options_penalise_lateral_receiver():
     central = by_name[cbs[0].name]
     lateral = by_name[cbs[1].name]
 
-    # progress/freedom/depth/lane are identical (same tx, no defenders) —
-    # only the ball-centric ellipse differs, so central must rank higher.
-    assert central.progress == pytest.approx(lateral.progress, abs=1e-9)
+    # Same forward x-depth, no defenders — only the ball-centric ellipse and
+    # the (goal-distance) progress ramp differ, so central must rank above
+    # lateral. VERTICALITY RE-BALANCE: the softened /30 progress ramp means a
+    # wide target's progress is no longer hard-clamped to equal a central
+    # one's (it is genuinely slightly less progressive), so the strict 1e-9
+    # progress-equality guard is relaxed to a small tolerance — the property
+    # the test protects (lateral is NOT a better option than central at equal
+    # forward depth) is unchanged.
+    assert central.progress - lateral.progress <= 0.02
     assert central.lane == lateral.lane == 1.0
     assert central.freedom == lateral.freedom == 1.0
     assert central.value > lateral.value

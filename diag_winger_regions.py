@@ -5,7 +5,7 @@ from statistics import mean
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from tests import HOME_STARTERS, build_match
+from .tests import HOME_STARTERS, build_match
 from match_engine import TeamStyle
 
 def main():

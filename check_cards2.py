@@ -1,5 +1,5 @@
 import json
-with open(r'plofa_output\Red_Wolves_vs_Pearls_MD11\Red_Wolves_vs_Pearls_MD11.json') as f:
+with open(r'plofa_output\Red_Wolves_vs_Pearls_MD11\Red_Wolves_vs_Pearls_MD11.json', encoding='utf-8-sig') as f:
     d = json.load(f)
 print("Keys:", list(d.keys()))
 ps = d.get('player_stats', {})

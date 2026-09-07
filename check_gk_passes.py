@@ -1,6 +1,6 @@
 """Check actual GK pass events in Tryox vs Oxton match."""
 import json
-with open('plofa_output/Tryox_City_vs_Oxton_MD34/Tryox_City_vs_Oxton_MD34.json') as f:
+with open('plofa_output/Tryox_City_vs_Oxton_MD34/Tryox_City_vs_Oxton_MD34.json', encoding='utf-8-sig') as f:
     data = json.load(f)
 
 # Look for timeline or events list

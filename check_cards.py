@@ -9,7 +9,7 @@ print(f'Checking: plofa_output/{latest}')
 
 for fname in os.listdir(f'plofa_output/{latest}'):
     if fname.endswith('.json'):
-        with open(f'plofa_output/{latest}/{fname}') as f:
+        with open(f'plofa_output/{latest}/{fname}', encoding='utf-8-sig') as f:
             d = json.load(f)
         players = []
         for n, s in d.get('player_stats', {}).items():

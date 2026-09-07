@@ -19,7 +19,7 @@ import math
 import sys
 from collections import defaultdict
 
-from diag_midfielder_passmap import run_one_match
+from .diag_midfielder_passmap import run_one_match
 from match_engine import EventType
 
 PASS_TYPES = (EventType.PASS, EventType.PROGRESSIVE_PASS,
