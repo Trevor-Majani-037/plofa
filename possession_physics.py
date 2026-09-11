@@ -1374,6 +1374,9 @@ class PossessionEpisode:
                     "high_speed_sprint_distance_m": 0.0,
                     "sprint_count": 0.0,
                     "high_speed_sprint_count": 0.0,
+                    "walk_time_s": 0.0,
+                    "jog_time_s": 0.0,
+                    "sprint_time_s": 0.0,
                     "top_speed_mps": 0.0,
                 }
                 continue
@@ -1389,6 +1392,9 @@ class PossessionEpisode:
             in_high_sprint = False
             sprint_seg_dist = 0.0
             high_sprint_seg_dist = 0.0
+            walk_time_s = 0.0
+            jog_time_s = 0.0
+            sprint_time_s = 0.0
 
             for i in range(1, len(trace)):
                 x0, y0, s0, t0 = trace[i - 1]
@@ -1413,6 +1419,12 @@ class PossessionEpisode:
                 # sync).
                 if 0.05 <= dt <= 0.15:
                     speed = s1
+                    if speed < 2.0:
+                        walk_time_s += dt
+                    elif speed < SPRINT_THRESHOLD:
+                        jog_time_s += dt
+                    else:
+                        sprint_time_s += dt
                 else:
                     speed = 0.0
                 top_speed = max(top_speed, speed)
@@ -1452,6 +1464,9 @@ class PossessionEpisode:
                 "hsr_distance_m": round(hsr_dist, 2),
                 "sprint_count": float(sprint_count),
                 "high_speed_sprint_count": float(high_sprint_count),
+                "walk_time_s": round(walk_time_s, 3),
+                "jog_time_s": round(jog_time_s, 3),
+                "sprint_time_s": round(sprint_time_s, 3),
                 "top_speed_mps": round(top_speed, 2),
             }
 

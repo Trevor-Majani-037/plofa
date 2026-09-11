@@ -67,10 +67,6 @@ CHANNEL_WIDTH: float = PITCH_Y / 3.0     # ~22.67
 #:   long    >= LONG_PASS_THRESHOLD_M
 SHORT_PASS_MAX_M: float = 15.0 * 0.9144  # ≈ 13.72 m
 
-#: Through-ball "split run" gate: forward displacement required to be a
-#: plausible line-splitting pass for a runner.
-THROUGH_FORWARD_MIN: float = 12.0
-
 #: Pull-back byline proximity: the pass's origin must be this close to the
 #: byline of the box to be a cut-back.
 BYLINE_PROX: float = 8.0
@@ -200,21 +196,16 @@ def _classify_type(
     if is_headed:
         return PassTypeResult("headed pass", "header finding a teammate")
 
-    # ── LAUNCH ─────────────────────────────────────────
-    # A long high ball into space or an area for players to chase or challenge.
-    if distance_m >= LONG_PASS_THRESHOLD_M:
-        return PassTypeResult("launch", "long ball into space / area")
-
     # ── CHIPPED PASS ───────────────────────────────────
-    # A lofted ball with an intended recipient; over shoulder height, using
-    # loft to avoid opposition.
+    # A measured airborne delivery with an intended forward recipient. This
+    # is trajectory-based; distance alone never creates a chip.
     if is_airborne and signed_dx > 0.0:
         return PassTypeResult("chipped pass", "lofted ball over the shoulder")
 
-    # ── THROUGH BALL ───────────────────────────────────
-    # A pass splitting the defence for a teammate to run on to.
-    if signed_dx >= THROUGH_FORWARD_MIN:
-        return PassTypeResult("through ball", "splitting-forward pass for a runner")
+    # ── LAUNCH ─────────────────────────────────────────
+    # A long non-airborne ball into space or an area for players to chase.
+    if distance_m >= LONG_PASS_THRESHOLD_M:
+        return PassTypeResult("launch", "long ball into space / area")
 
     # ── BASE ───────────────────────────────────────────
     return PassTypeResult("ground pass", "basic pass")

@@ -1,0 +1,614 @@
+{
+  "managers": {
+    "Claw": {
+      "name": "Roger Cyzzo",
+      "club": "Claw",
+      "risk_tolerance": 0.78,
+      "substitution_patience": 0.378,
+      "style_bias": 0.628,
+      "rotation_tendency": 0.55,
+      "man_management": 0.4,
+      "prefer_possession": 0.45,
+      "nationality": "French",
+      "tactical_philosophy": "Gegenpress",
+      "face_pressure": 0.57,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          3,
+          1.54
+        ],
+        [
+          2,
+          3,
+          3.856
+        ],
+        [
+          3,
+          3,
+          0.73
+        ]
+      ]
+    },
+    "Club Chovers": {
+      "name": "Chilan Strain",
+      "club": "Club Chovers",
+      "risk_tolerance": 0.58,
+      "substitution_patience": 0.511,
+      "style_bias": 0.641,
+      "rotation_tendency": 0.48,
+      "man_management": 0.52,
+      "prefer_possession": 0.32,
+      "nationality": "Danish",
+      "tactical_philosophy": "Counter",
+      "face_pressure": 0.61,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          0,
+          2.9739999999999998
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          0,
+          0.10000000000000009
+        ]
+      ]
+    },
+    "Justice": {
+      "name": "Patrick Quintin",
+      "club": "Justice",
+      "risk_tolerance": 0.3,
+      "substitution_patience": 0.582,
+      "style_bias": 0.616,
+      "rotation_tendency": 0.25,
+      "man_management": 0.6,
+      "prefer_possession": 0.4,
+      "nationality": "Danish",
+      "tactical_philosophy": "Defensive",
+      "face_pressure": 0.675,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          1.462
+        ],
+        [
+          2,
+          3,
+          2.596
+        ],
+        [
+          3,
+          0,
+          0.274
+        ]
+      ]
+    },
+    "Lige-8": {
+      "name": "Don Goyle",
+      "club": "Lige-8",
+      "risk_tolerance": 0.45,
+      "substitution_patience": 0.461,
+      "style_bias": 0.736,
+      "rotation_tendency": 0.45,
+      "man_management": 0.55,
+      "prefer_possession": 0.8,
+      "nationality": "Italian",
+      "tactical_philosophy": "Possession",
+      "face_pressure": 0.54,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          3,
+          1.1199999999999999
+        ],
+        [
+          2,
+          1,
+          0.748
+        ],
+        [
+          3,
+          3,
+          1.9
+        ]
+      ]
+    },
+    "Oxton": {
+      "name": "Jack Patro",
+      "club": "Oxton",
+      "risk_tolerance": 0.42,
+      "substitution_patience": 0.436,
+      "style_bias": 0.762,
+      "rotation_tendency": 0.35,
+      "man_management": 0.62,
+      "prefer_possession": 0.72,
+      "nationality": "Portuguese",
+      "tactical_philosophy": "Patient",
+      "face_pressure": 0.61,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          0.538
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          0,
+          1.6540000000000001
+        ]
+      ]
+    },
+    "Pearls": {
+      "name": "Nurem Sopan",
+      "club": "Pearls",
+      "risk_tolerance": 0.85,
+      "substitution_patience": 0.435,
+      "style_bias": 0.82,
+      "rotation_tendency": 0.52,
+      "man_management": 0.48,
+      "prefer_possession": 0.55,
+      "nationality": "Italian",
+      "tactical_philosophy": "Attacking",
+      "face_pressure": 0.51,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          1.432
+        ],
+        [
+          2,
+          3,
+          3.1119999999999997
+        ],
+        [
+          3,
+          3,
+          2.38
+        ]
+      ]
+    },
+    "Seafcea": {
+      "name": "Picaster Levi",
+      "club": "Seafcea",
+      "risk_tolerance": 0.5,
+      "substitution_patience": 0.285,
+      "style_bias": 0.68,
+      "rotation_tendency": 0.4,
+      "man_management": 0.5,
+      "prefer_possession": 0.5,
+      "nationality": "Dutch",
+      "tactical_philosophy": "Balanced",
+      "face_pressure": 0.575,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          0.748
+        ],
+        [
+          2,
+          3,
+          3.2800000000000002
+        ],
+        [
+          3,
+          3,
+          1.312
+        ]
+      ]
+    },
+    "Telbey": {
+      "name": "Meso Jones",
+      "club": "Telbey",
+      "risk_tolerance": 0.3,
+      "substitution_patience": 0.458,
+      "style_bias": 0.81,
+      "rotation_tendency": 0.25,
+      "man_management": 0.6,
+      "prefer_possession": 0.4,
+      "nationality": "German",
+      "tactical_philosophy": "Defensive",
+      "face_pressure": 0.675,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          0,
+          0.4600000000000001
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          3,
+          1.162
+        ]
+      ]
+    },
+    "Trendboys": {
+      "name": "Lucas Roe",
+      "club": "Trendboys",
+      "risk_tolerance": 0.55,
+      "substitution_patience": 0.561,
+      "style_bias": 0.825,
+      "rotation_tendency": 0.4,
+      "man_management": 0.45,
+      "prefer_possession": 0.28,
+      "nationality": "Portuguese",
+      "tactical_philosophy": "Direct",
+      "face_pressure": 0.625,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          1.252
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          0,
+          0.0
+        ]
+      ]
+    },
+    "Tryox City": {
+      "name": "Wehl McKinn",
+      "club": "Tryox City",
+      "risk_tolerance": 0.58,
+      "substitution_patience": 0.396,
+      "style_bias": 0.797,
+      "rotation_tendency": 0.48,
+      "man_management": 0.52,
+      "prefer_possession": 0.32,
+      "nationality": "Spanish",
+      "tactical_philosophy": "Counter",
+      "face_pressure": 0.61,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          0.4840000000000001
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          1,
+          1.006
+        ]
+      ]
+    },
+    "Uditon": {
+      "name": "Jovey Leinard",
+      "club": "Uditon",
+      "risk_tolerance": 0.45,
+      "substitution_patience": 0.482,
+      "style_bias": 0.65,
+      "rotation_tendency": 0.45,
+      "man_management": 0.55,
+      "prefer_possession": 0.8,
+      "nationality": "English",
+      "tactical_philosophy": "Possession",
+      "face_pressure": 0.54,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          1.012
+        ],
+        [
+          2,
+          1,
+          1.252
+        ],
+        [
+          3,
+          3,
+          1.726
+        ]
+      ]
+    },
+    "Rock FC": {
+      "name": "Tomas Okafor",
+      "club": "Rock FC",
+      "risk_tolerance": 0.769,
+      "substitution_patience": 0.131,
+      "style_bias": 0.867,
+      "rotation_tendency": 0.464,
+      "man_management": 0.742,
+      "prefer_possession": 0.55,
+      "nationality": "Dutch",
+      "tactical_philosophy": "Attacking",
+      "face_pressure": 0.51,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          3,
+          1.8399999999999999
+        ],
+        [
+          2,
+          3,
+          0.772
+        ]
+      ]
+    },
+    "Iron FC": {
+      "name": "Petr Novak",
+      "club": "Iron FC",
+      "risk_tolerance": 0.661,
+      "substitution_patience": 0.324,
+      "style_bias": 0.532,
+      "rotation_tendency": 0.444,
+      "man_management": 0.579,
+      "prefer_possession": 0.32,
+      "nationality": "Italian",
+      "tactical_philosophy": "Counter",
+      "face_pressure": 0.61,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          0,
+          0.16000000000000003
+        ],
+        [
+          2,
+          0,
+          1.228
+        ]
+      ]
+    },
+    "Natrican": {
+      "name": "Tomas Okafor",
+      "club": "Natrican",
+      "risk_tolerance": 0.794,
+      "substitution_patience": 0.303,
+      "style_bias": 0.668,
+      "rotation_tendency": 0.456,
+      "man_management": 0.397,
+      "prefer_possession": 0.55,
+      "nationality": "Spanish",
+      "tactical_philosophy": "Attacking",
+      "face_pressure": 0.51,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          1.702
+        ],
+        [
+          2,
+          3,
+          1.63
+        ],
+        [
+          3,
+          1,
+          0.994
+        ]
+      ]
+    },
+    "Triumpher": {
+      "name": "Petr Novak",
+      "club": "Triumpher",
+      "risk_tolerance": 0.651,
+      "substitution_patience": 0.464,
+      "style_bias": 0.748,
+      "rotation_tendency": 0.583,
+      "man_management": 0.309,
+      "prefer_possession": 0.55,
+      "nationality": "German",
+      "tactical_philosophy": "Attacking",
+      "face_pressure": 0.51,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          1.516
+        ],
+        [
+          2,
+          3,
+          5.818
+        ],
+        [
+          3,
+          3,
+          0.34599999999999986
+        ]
+      ]
+    },
+    "Play City": {
+      "name": "Emil Sato",
+      "club": "Play City",
+      "risk_tolerance": 0.316,
+      "substitution_patience": 0.249,
+      "style_bias": 0.807,
+      "rotation_tendency": 0.273,
+      "man_management": 0.334,
+      "prefer_possession": 0.4,
+      "nationality": "Spanish",
+      "tactical_philosophy": "Defensive",
+      "face_pressure": 0.675,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          0.29800000000000004
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          0,
+          0.0
+        ]
+      ]
+    },
+    "Red Wolves": {
+      "name": "Rico Santana",
+      "club": "Red Wolves",
+      "risk_tolerance": 0.842,
+      "substitution_patience": 0.571,
+      "style_bias": 0.683,
+      "rotation_tendency": 0.439,
+      "man_management": 0.405,
+      "prefer_possession": 0.55,
+      "nationality": "French",
+      "tactical_philosophy": "Attacking",
+      "face_pressure": 0.51,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          0,
+          0.88
+        ],
+        [
+          2,
+          3,
+          2.572
+        ],
+        [
+          3,
+          0,
+          0.8380000000000001
+        ]
+      ]
+    },
+    "Avada Zenith": {
+      "name": "Aldous Mbeki",
+      "club": "Avada Zenith",
+      "risk_tolerance": 0.691,
+      "substitution_patience": 0.494,
+      "style_bias": 0.839,
+      "rotation_tendency": 0.484,
+      "man_management": 0.654,
+      "prefer_possession": 0.55,
+      "nationality": "Danish",
+      "tactical_philosophy": "Attacking",
+      "face_pressure": 0.51,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          0.5680000000000001
+        ],
+        [
+          2,
+          0,
+          0.37
+        ],
+        [
+          3,
+          0,
+          1.27
+        ]
+      ]
+    },
+    "Ganester": {
+      "name": "Yanis Ferhat",
+      "club": "Ganester",
+      "risk_tolerance": 0.674,
+      "substitution_patience": 0.523,
+      "style_bias": 0.567,
+      "rotation_tendency": 0.459,
+      "man_management": 0.804,
+      "prefer_possession": 0.28,
+      "nationality": "English",
+      "tactical_philosophy": "Direct",
+      "face_pressure": 0.625,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          1,
+          0.988
+        ],
+        [
+          2,
+          0,
+          0.0
+        ],
+        [
+          3,
+          0,
+          0.688
+        ]
+      ]
+    },
+    "Rodice": {
+      "name": "Kasper Lind",
+      "club": "Rodice",
+      "risk_tolerance": 0.648,
+      "substitution_patience": 0.109,
+      "style_bias": 0.556,
+      "rotation_tendency": 0.562,
+      "man_management": 0.579,
+      "prefer_possession": 0.45,
+      "nationality": "Danish",
+      "tactical_philosophy": "Gegenpress",
+      "face_pressure": 0.57,
+      "matches_under_contract_at": 0,
+      "result_history": [
+        [
+          1,
+          3,
+          0.0
+        ],
+        [
+          2,
+          3,
+          4.054
+        ],
+        [
+          3,
+          3,
+          2.26
+        ]
+      ]
+    }
+  }
+}

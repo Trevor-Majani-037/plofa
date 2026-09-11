@@ -43,7 +43,7 @@ from block_awareness import BlockNavigationEngine
 from geometry_engine import (
     MovingPlayer, Vec2, Vec3, BallSpin, make_flight, make_ballistic_flight,
     resolve_aerial_delivery,
-    resolve_dribble, resolve_ground_pass, resolve_shot,
+    resolve_dribble, resolve_ground_pass, resolve_shot, resolve_tackle,
     body_mass, body_balance,
 )
 from set_piece_routines import (
@@ -101,7 +101,9 @@ from pressing_profiles import (
     is_trap_profile,
     trap_present,
 )
-from active_play_brain import ActivePlayBrain
+from active_play_brain import ActivePlayBrain  # noqa: F401 (legacy import kept for compat)
+from decision_brain import PlayerIntent
+from brain_integration import NeuralDecisionBrain
 from threat_engine import (
     danger_after_clearance,
     calculate_relative_ball_angle,
@@ -462,6 +464,9 @@ class BaseChain:
             position_engine.record_physics_distance(
                 player_name,
                 distance_m=s.get("distance_m", 0.0),
+                walk_time_s=s.get("walk_time_s", 0.0),
+                jog_time_s=s.get("jog_time_s", 0.0),
+                sprint_time_s=s.get("sprint_time_s", 0.0),
                 sprint_count=s.get("sprint_count", 0.0),
                 high_speed_sprint_count=s.get("high_speed_sprint_count", 0.0),
                 top_speed_mps=s.get("top_speed_mps", 0.0),
@@ -1570,14 +1575,32 @@ class PossessionChain(BaseChain):
             # The keeper on the ball is a distribution touch — force the pass.
             gk_distribution = (last_player.position == "GK")
 
-            # Active on-ball intent: the brain chooses whether this touch is
-            # meant to carry or pass. Existing branches still resolve the
-            # physical outcome.
-            active_decision = ActivePlayBrain.decide(
+            # ── ACTIVE DECISION BRAIN (bounded-rationality intent) ────
+            # This is the player's on-ball INTENT, not the outcome.
+            # ── NEURAL DECISION BRAIN (live) ──────────────────
+            # The hand-calibrated DecisionBrain has been retired; this
+            # call site now routes through NeuralDecisionBrain, a
+            # per-player feedforward net evolved by genetic algorithm.
+            # Like its predecessor it only runs for touches not already
+            # resolved by the deterministic layers above, and it never
+            # fires a shot itself (shot authority stays with
+            # AttackingMatrix's take-probability gate so per-match shot
+            # volume stays in its calibrated band).
+            #
+            # The 10 intent candidates (safe/progressive pass, through
+            # ball, switch, carry, dribble, cross, shoot, recycle,
+            # protect possession) are generated from live geometry +
+            # DNA + Soul, distorted by this specific player's
+            # vision/composure/decisions/anticipation/fatigue/pressure,
+            # and sampled probabilistically by network temperature —
+            # never argmax, never 100% accurate, never identical across
+            # players.  Each player's brain auto-loads from
+            # BRAIN_DIR/<POSITION>.json on first touch.
+            active_decision = NeuralDecisionBrain.decide(
                 last_player, x, y,
                 [p for p in players if p.name != last_player.name],
                 def_players, position_engine, team_profile, under_pressure,
-                attacks_right, game_state,
+                attacks_right, game_state, minute=minute,
             )
 
             # ── CHECKPOINT 18: MODERN WINGER CARRY STEERING ──────────
@@ -1690,8 +1713,11 @@ class PossessionChain(BaseChain):
                         "distance": round(carry_dist, 1),
                         "active_brain": {
                             "action": active_decision.action,
+                            "intent": active_decision.intent.value,
                             "confidence": active_decision.confidence,
                             "reason": active_decision.reason,
+                            "decision_quality": active_decision.decision_quality,
+                            "is_error": active_decision.is_error,
                         },
                     }
                 ))
@@ -1759,13 +1785,34 @@ class PossessionChain(BaseChain):
                                 att_style_key=att_style_key,
                             )
                     else:
-                        receiver = cls._pick_receiver(
-                            players, last_player, x, team_profile,
-                            position_engine=position_engine, y=y,
-                            def_players=def_players, attacks_right=attacks_right,
-                            possession_phase=current_phase if phase_decision else None,
-                            match_state=state,  # Checkpoint 29 — feeds block navigation
-                        )
+                        # ── ACTIVE BRAIN TARGET (PROGRESSIVE_PASS / SWITCH) ──
+                        # For the two intents where the brain's candidate
+                        # generation is specifically about WHO to pick out
+                        # (a line-breaking runner, a far-side outlet), use its
+                        # target when it settled on one with real conviction.
+                        # Deliberately narrow: THROUGH_BALL keeps its own
+                        # dedicated receiver search further down (preferred
+                        # attacking positions), and SAFE_PASS/RECYCLE keep the
+                        # existing, more contextually-tuned _pick_receiver
+                        # (block navigation, possession-phase awareness)
+                        # rather than this brain's simpler nearest-safe-option
+                        # geometry.
+                        brain_target = active_decision.target
+                        if (brain_target is not None
+                                and getattr(brain_target, "position", "") != "GK"
+                                and active_decision.intent in (
+                                    PlayerIntent.PROGRESSIVE_PASS, PlayerIntent.SWITCH)
+                                and active_decision.confidence > 0.35
+                                and any(p.name == brain_target.name for p in players)):
+                            receiver = brain_target
+                        else:
+                            receiver = cls._pick_receiver(
+                                players, last_player, x, team_profile,
+                                position_engine=position_engine, y=y,
+                                def_players=def_players, attacks_right=attacks_right,
+                                possession_phase=current_phase if phase_decision else None,
+                                match_state=state,  # Checkpoint 29 — feeds block navigation
+                            )
                 if not receiver:
                     break
 
@@ -1832,7 +1879,30 @@ class PossessionChain(BaseChain):
                     long_intent = cls._should_be_long_pass(last_player, x, team_profile)
                     prog_zone = (35 < x < 80) if attacks_right else (25 < x < 70)
                     is_prog   = cls._should_be_progressive(last_player, x, team_profile, prog_zone)
-                    is_switch = random.random() < last_player.dna.tendencies.switches_play
+                    switch_threshold = last_player.dna.tendencies.switches_play
+                    # ── ACTIVE BRAIN MODULATION (additive, not a replacement) ──
+                    # The brain's read of THIS touch nudges the existing
+                    # calibrated rolls rather than overriding them: a player
+                    # whose bounded-rationality pick this instant was SWITCH
+                    # is somewhat more likely to actually hit the switch-play
+                    # roll than his flat season-long tendency alone predicts;
+                    # a PROGRESSIVE_PASS read nudges the progressive flag;
+                    # a SAFE_PASS/RECYCLE/PROTECT_POSSESSION read damps both,
+                    # framing this specific touch as deliberately non-progressive
+                    # the way a regression/wide-combo touch already is, without
+                    # touching the phase engine's own regression_mode state.
+                    if active_decision.intent is PlayerIntent.SWITCH:
+                        switch_threshold = min(0.78, switch_threshold + 0.30 * active_decision.confidence)
+                    is_switch = random.random() < switch_threshold
+                    if active_decision.intent is PlayerIntent.PROGRESSIVE_PASS:
+                        is_prog = is_prog or random.random() < 0.40 * active_decision.confidence
+                    elif active_decision.intent in (
+                            PlayerIntent.SAFE_PASS, PlayerIntent.RECYCLE,
+                            PlayerIntent.PROTECT_POSSESSION):
+                        if is_prog and random.random() < 0.55 * active_decision.confidence:
+                            is_prog = False
+                        if long_intent and random.random() < 0.4 * active_decision.confidence:
+                            long_intent = False
                     # Checkpoint 24 — wingers get switched TO, they don't
                     # orchestrate. Their far-side hail-mary is a rarity.
                     if last_player.position in ("LW", "RW"):
@@ -1879,12 +1949,15 @@ class PossessionChain(BaseChain):
 
                 # ── Aerodynamic wind deflection (Weather Physics) ────────
                 wind_drift_m = 0.0
+                # Cross detection runs below, after the event type is chosen;
+                # before then only the delivery mode is known.
+                delivery_airborne = bool(is_switch or long_intent)
                 active_weather = getattr(state, "weather", None)
                 if WeatherPhysics.is_active(active_weather):
                     end_px, end_py, wind_drift_m = WeatherPhysics.pass_lateral_deflection(
                         end_px, end_py, x, y,
                         weather=active_weather,
-                        is_airborne=bool(is_switch or long_intent),
+                        is_airborne=delivery_airborne,
                     )
 
                 # ── RACE-TO-BALL (Checkpoint 27) ───────────────────
@@ -2177,6 +2250,7 @@ class PossessionChain(BaseChain):
                 # regardless of the etype the engine chose for it.
                 _cr = detect_cross(x, y, end_px, end_py, attacks_right,
                                    event_type=etype.name)
+                delivery_airborne = delivery_airborne or _cr.airborne
 
                 # ── CHECKPOINT 12: GEOMETRIC LONG PASS DETECTION ──────
                 # Opta does NOT classify a pass as long from the passer's
@@ -2191,7 +2265,7 @@ class PossessionChain(BaseChain):
                     x, y, end_px, end_py,
                     event_type=etype.name,
                     is_cross=_cr.is_cross,
-                    is_airborne=_cr.airborne,
+                    is_airborne=delivery_airborne,
                 )
                 is_long = _lp.is_long_pass
 
@@ -2206,7 +2280,7 @@ class PossessionChain(BaseChain):
                     x, y, end_px, end_py,
                     signed_dx=pass_advance,
                     is_cross=_cr.is_cross,
-                    is_airborne=_cr.airborne,
+                    is_airborne=delivery_airborne,
                     is_headed=(body_part == "head"),
                     under_pressure=under_pressure,
                     attacks_right=attacks_right,
@@ -2217,7 +2291,7 @@ class PossessionChain(BaseChain):
                     acc_mult = WeatherPhysics.pass_accuracy_mult(
                         active_weather,
                         is_long=bool(is_long),
-                        is_airborne=bool(_cr.airborne or is_switch or long_intent),
+                        is_airborne=delivery_airborne,
                     )
                     if acc_mult < 1.0 and random.random() > acc_mult:
                         success = False
@@ -2245,7 +2319,7 @@ class PossessionChain(BaseChain):
                         "pass_advance": pass_advance,
                         "body_part": body_part,
                         "cross": _cr.is_cross,
-                        "is_airborne": _cr.airborne,
+                        "is_airborne": delivery_airborne,
                         "cross_origin": _cr.origin_zone,
                         "cross_dest": _cr.destination_zone,
                         "pass_type": _pc.pass_type,
@@ -2482,129 +2556,153 @@ class PossessionChain(BaseChain):
                     break
 
             # ── 5. THROUGH BALL (final step, vision players) ───────
+            # A through ball is OPPORTUNITY-DRIVEN, not a flat coin-flip:
+            # it only happens when there is a forward RUNNER past an OPEN
+            # lateral channel in the defensive line (CB/RB, CB-CB, LB-CB)
+            # and SPACE behind that line to run into. We first pick the
+            # runner, then score the lane-through-the-line opportunity and
+            # gate on it (modulated by the passer's tendency + vision). The
+            # actual SUCCESS is left to physics — resolve_ground_pass races
+            # the ball against the defenders AND the sweeper keeper, so a
+            # through ball only completes when it genuinely bypasses everyone.
             through_zone = x > 50 if attacks_right else x < 55
-            # Gate on raw DNA tendency, then — for registered midfielders —
-            # on the MidfielderBehaviorEngine's delivery instinct + an open
-            # forward lane, so delivery_instinct finally drives real passes.
-            tb_gate = random.random() < last_player.dna.tendencies.plays_through_ball
-            mid_prof = None
-            if position_engine is not None and hasattr(position_engine, "midfield_registry"):
-                mid_prof = position_engine.midfield_registry.get(last_player.name)
-            if mid_prof is not None:
-                tb_gate = tb_gate and MidfielderBehaviorEngine.should_play_through_ball(
-                    mid_prof, x, y, attacks_right,
-                    defenders=def_players, position_engine=position_engine)
-            if (is_final_step and through_zone and not result.possession_lost
-                    and tb_gate):
+            receiver = None
+            tb_opportunity = 0.0
+            if is_final_step and through_zone and not result.possession_lost:
                 receiver = cls._pick_receiver(
                     players, last_player, x, team_profile,
                     preferred_positions=["ST", "CF", "LW", "RW", "CAM"],
                     position_engine=position_engine, y=y,
                 )
                 if receiver:
-                    if position_engine is not None:
-                        rx, ry = position_engine.get_position(receiver.name)
-                        end_tx = cls.clamp_x(rx, attacks_right)
-                        end_ty = max(5.0, min(63.0, ry))
-                        tb_dist = math.hypot(end_tx - x, end_ty - y)
-                        ball_speed = ground_pass_speed(
-                            float(getattr(last_player.dna.passing, "short_passing", 55.0)),
-                            driven=5.0
-                        )
-                        # ── GROUND PASS / THROUGH BALL ──
-                        # Real race-to-ball: the GK may genuinely
-                        # sweep a through ball off his line. He enters
-                        # the race only when the ball is delivered
-                        # deep inside his own box — the authentic
-                        # sweeper scenario — and his live position
-                        # (position_engine) is where he stands now.
-                        gk = cls._pick_gk_player(def_players)
-                        deep_into_box = (end_tx >= 83.0) if attacks_right else (end_tx <= 22.0)
-                        tb_defenders = [
-                            cls._moving_player(d, position_engine)
-                            for d in def_players
-                            if getattr(d, "position", "") != "GK"
-                        ]
-                        if gk is not None and deep_into_box:
-                            tb_defenders.append(cls._moving_player(gk, position_engine))
-                        tb_resolution = episode.resolve_ground_pass(
-                            Vec2(x, y), Vec2(end_tx, end_ty),
-                            cls._moving_player(receiver, position_engine),
-                            tb_defenders,
-                            ball_speed,
-                            rolling_decel=rolling_decel_for(
-                                getattr(state, "weather", None)
-                            ),
-                        )
-                        tb_success = tb_resolution.outcome == "received"
-                    else:
-                        tb_success, end_tx, end_ty, tb_dist, tb_prob = cls._generate_through_ball(
-                            last_player, receiver, x, y,
-                            minute, phase, game_state, attacks_right, team_profile,
-                        )
+                    tb_opportunity = cls._through_ball_opportunity(
+                        last_player, receiver, x, y, attacks_right,
+                        def_players, position_engine,
+                    )
+                    # Passer's creative voice decides whether he DARES the
+                    # lane he now sees open: season-long tendency + vision,
+                    # lifted when the active brain explicitly chose to try a
+                    # through ball this touch.
+                    tendency = float(getattr(
+                        getattr(last_player.dna, "tendencies", None),
+                        "plays_through_ball", 0.10))
+                    _vis = float(getattr(
+                        getattr(last_player.dna, "mental", None), "vision", 60.0)
+                        or 60.0)
+                    skill = min(1.0, tendency * 1.2 + (_vis - 45.0) / 220.0)
+                    if active_decision.intent is PlayerIntent.THROUGH_BALL:
+                        skill = min(1.0, skill + 0.25 * active_decision.confidence)
+                    # The passer attempts only when he can actually see a
+                    # usable channel in front of him (opportunity within
+                    # reach of his skill ceiling).
+                    attempt = skill * (0.35 + tb_opportunity * 0.65)
+                    if random.random() >= attempt:
+                        receiver = None
+            if receiver:
+                if position_engine is not None:
+                    rx, ry = position_engine.get_position(receiver.name)
+                    end_tx = cls.clamp_x(rx, attacks_right)
+                    end_ty = max(5.0, min(63.0, ry))
+                    tb_dist = math.hypot(end_tx - x, end_ty - y)
+                    ball_speed = ground_pass_speed(
+                        float(getattr(last_player.dna.passing, "short_passing", 55.0)),
+                        driven=5.0
+                    )
+                    # ── GROUND PASS / THROUGH BALL ──
+                    # Real race-to-ball: the GK may genuinely
+                    # sweep a through ball off his line. He enters
+                    # the race only when the ball is delivered
+                    # deep inside his own box — the authentic
+                    # sweeper scenario — and his live position
+                    # (position_engine) is where he stands now.
+                    gk = cls._pick_gk_player(def_players)
+                    deep_into_box = (end_tx >= 83.0) if attacks_right else (end_tx <= 22.0)
+                    tb_defenders = [
+                        cls._moving_player(d, position_engine)
+                        for d in def_players
+                        if getattr(d, "position", "") != "GK"
+                    ]
+                    if gk is not None and deep_into_box:
+                        tb_defenders.append(cls._moving_player(gk, position_engine))
+                    tb_resolution = episode.resolve_ground_pass(
+                        Vec2(x, y), Vec2(end_tx, end_ty),
+                        cls._moving_player(receiver, position_engine),
+                        tb_defenders,
+                        ball_speed,
+                        rolling_decel=rolling_decel_for(
+                            getattr(state, "weather", None)
+                        ),
+                    )
+                    tb_success = tb_resolution.outcome == "received"
+                else:
+                    tb_success, end_tx, end_ty, tb_dist, tb_prob = cls._generate_through_ball(
+                        last_player, receiver, x, y,
+                        minute, phase, game_state, attacks_right, team_profile,
+                    )
+                result.add(cls.make_event(
+                    minute, EventType.THROUGH_BALL, attacking_team, last_player.name,
+                    phase, game_state,
+                    secondary_player=receiver.name,
+                    location_x=x, location_y=y,
+                    end_x=end_tx, end_y=end_ty,
+                    outcome=tb_success,
+                    metadata={"distance": round(tb_dist, 1),
+                              "pass_type": "through ball",
+                              "body_part": cls._foot_for_pass(
+                                  last_player, x, y, end_tx, end_ty, attacks_right)}
+                ))
+                if tb_success:
                     result.add(cls.make_event(
-                        minute, EventType.THROUGH_BALL, attacking_team, last_player.name,
+                        minute, EventType.BALL_RECEIPT, attacking_team, receiver.name,
                         phase, game_state,
-                        secondary_player=receiver.name,
-                        location_x=x, location_y=y,
-                        end_x=end_tx, end_y=end_ty,
-                        outcome=tb_success,
-                        metadata={"distance": round(tb_dist, 1),
-                                  "body_part": cls._foot_for_pass(
-                                      last_player, x, y, end_tx, end_ty, attacks_right)}
+                        location_x=end_tx, location_y=end_ty,
+                        outcome=True,
                     ))
-                    if tb_success:
+                    last_player = receiver
+                    x, y = end_tx, end_ty
+                    if position_engine is not None:
+                        position_engine.record_touch(receiver.name, x, y, minute)
+                else:
+                    if position_engine is not None and tb_resolution.interceptor is not None:
+                        idf = tb_resolution.interceptor.player
                         result.add(cls.make_event(
-                            minute, EventType.BALL_RECEIPT, attacking_team, receiver.name,
+                            minute, EventType.INTERCEPTION,
+                            getattr(idf, "team_name", "") or getattr(idf, "team", ""),
+                            getattr(idf, "name", ""),
                             phase, game_state,
-                            location_x=end_tx, location_y=end_ty,
+                            secondary_player=last_player.name,
+                            location_x=tb_resolution.contact_point.x,
+                            location_y=tb_resolution.contact_point.y,
                             outcome=True,
+                            metadata={"intercepted_pass_from": last_player.name},
                         ))
-                        last_player = receiver
-                        x, y = end_tx, end_ty
-                        if position_engine is not None:
-                            position_engine.record_touch(receiver.name, x, y, minute)
-                    else:
-                        if position_engine is not None and tb_resolution.interceptor is not None:
-                            idf = tb_resolution.interceptor.player
+                        # A genuine sweeper run-out: the goalkeeper
+                        # left his line and beat the attacker to a
+                        # through ball deep in his own box. Recorded
+                        # as a SAVE with type "gk_sweep" so the
+                        # exporter counts it as runs_out and only
+                        # runs_out.
+                        if getattr(idf, "position", "") == "GK":
                             result.add(cls.make_event(
-                                minute, EventType.INTERCEPTION,
-                                getattr(idf, "team_name", "") or getattr(idf, "team", ""),
-                                getattr(idf, "name", ""),
-                                phase, game_state,
-                                secondary_player=last_player.name,
+                                minute, EventType.SAVE,
+                                getattr(idf, "team_name", ""), idf.name,
+                                phase, game_state, outcome=True,
                                 location_x=tb_resolution.contact_point.x,
                                 location_y=tb_resolution.contact_point.y,
-                                outcome=True,
-                                metadata={"intercepted_pass_from": last_player.name},
+                                metadata={
+                                    "type": "gk_sweep",
+                                    "runs_out": True,
+                                    "contact_z": 0.0,
+                                },
                             ))
-                            # A genuine sweeper run-out: the goalkeeper
-                            # left his line and beat the attacker to a
-                            # through ball deep in his own box. Recorded
-                            # as a SAVE with type "gk_sweep" so the
-                            # exporter counts it as runs_out and only
-                            # runs_out.
-                            if getattr(idf, "position", "") == "GK":
-                                result.add(cls.make_event(
-                                    minute, EventType.SAVE,
-                                    getattr(idf, "team_name", ""), idf.name,
-                                    phase, game_state, outcome=True,
-                                    location_x=tb_resolution.contact_point.x,
-                                    location_y=tb_resolution.contact_point.y,
-                                    metadata={
-                                        "type": "gk_sweep",
-                                        "runs_out": True,
-                                        "contact_z": 0.0,
-                                    },
-                                ))
-                        result.add(cls.make_event(
-                            minute, EventType.TURNOVER, attacking_team, last_player.name,
-                            phase, game_state,
-                            location_x=x, location_y=y,
-                            outcome=False,
-                        ))
-                        result.possession_lost = True
-                        break
+                    result.add(cls.make_event(
+                        minute, EventType.TURNOVER, attacking_team, last_player.name,
+                        phase, game_state,
+                        location_x=x, location_y=y,
+                        outcome=False,
+                    ))
+                    result.possession_lost = True
+                    break
 
             # ── 6. DRIBBLE (wide players, attacking third) ─────────
             # STRICT OPTA/STATSBOMB DEFINITION (Checkpoint refinement):
@@ -2826,6 +2924,12 @@ class PossessionChain(BaseChain):
                         cross_prob = 0.25  # winger instinct says deliver now
                     else:
                         cross_prob = 0.04  # winger carries on instead
+            # Active brain modulation — same additive pattern as the
+            # through-ball/switch nudges: this touch's bounded-rationality
+            # read gets a bounded say on top of the WingerBehaviorEngine's
+            # instinct, it never overrides it.
+            if active_decision.intent is PlayerIntent.CROSS:
+                cross_prob = min(0.45, cross_prob + 0.15 * active_decision.confidence)
             if (not result.possession_lost and cross_zone
                     and last_player.position in ("LW", "RW", "LB", "RB")
                     and random.random() < cross_prob):
@@ -4023,6 +4127,114 @@ class PossessionChain(BaseChain):
             return None
         _, d, px, py = best
         return d, px, py
+
+    @classmethod
+    def _through_ball_opportunity(
+        cls,
+        passer: PlayerProfile,
+        receiver: PlayerProfile,
+        x: float, y: float,
+        attacks_right: bool,
+        def_players: List[PlayerProfile],
+        position_engine: Optional[PositionEngine],
+    ) -> float:
+        """Score the OPPORTUNITY for a genuine through ball (0..1).
+
+        A through ball is a pass DELIVERED THROUGH THE DEFENSIVE LINE (a
+        lateral channel between line defenders — CB/RB, CB-CB, LB-CB — or
+        round a windmill of them) into the SPACE BEHIND that line, to a
+        receiver who is running into/onto that space before the defence can
+        turn. It must bypass everyone (the line AND the goalkeeper's sweeper
+        race — the latter is handled by ``resolve_ground_pass``).
+
+        This returns how open that whole picture is RIGHT NOW:
+          * line_gap   — the widest open lateral channel through the back
+                         line (normalised 0..1). A back line with no gap
+                         (a locked block) scores ~0.
+          * behind     — how much room is BEHIND the offside line for the
+                         receiver to run into (0..1, reusing the same
+                         second-last-defender geometry as Law 11).
+          * receiver   — how "toward the open channel" the receiver is
+                         running (his lateral bias into the gap + being
+                         level with/behind the line but onside).
+
+        A zero/no-data case returns 0.5 (neutral) so the downstream
+        tendency/skill weighting stays the arbiter when we can't see space.
+        """
+        if position_engine is None or not def_players or receiver is None:
+            return 0.5
+        sign = 1.0 if attacks_right else -1.0
+        goal_x = 105.0 if attacks_right else 0.0
+
+        # 1) Back line ahead of the ball — outfield defenders between the
+        #    ball and their own goal (CB/LB/RB hold the line; a CDM that has
+        #    dropped in front is not part of the line to break).
+        line = []
+        for d in def_players:
+            if getattr(d, "position", None) in ("GK",):
+                continue
+            dname = getattr(d, "name", None)
+            if dname is None:
+                continue
+            dx, dy = position_engine.get_position(dname)
+            ahead = (dx > x) if attacks_right else (dx < x)
+            # Only defenders goal-side of the ball and roughly in the back
+            # four's band count toward the line; exclude advanced CDMs.
+            pos = getattr(d, "position", "")
+            if ahead and pos in ("CB", "LB", "RB", "CDM"):
+                line.append((dx, dy))
+        if not line:
+            return 0.5
+
+        # 2) Sort the line by distance to the defended goal (deepest first).
+        line.sort(key=lambda pt: abs(goal_x - pt[0]))
+
+        # 3) Lateral gaps between adjacent line bodies (normalised: >7m wide
+        #    is a real channel to thread; <2.5m is shut). Gaps run between
+        #    every neighbouring y in the line — this is what captures the
+        #    CB-RB / CB-CB / LB-CB seams.
+        ys = sorted(p[1] for p in line)
+        widest = 2.5
+        for a, b in zip(ys, ys[1:]):
+            gap = b - a
+            widest = max(widest, gap)
+        line_gap = max(0.0, min(1.0, (widest - 2.5) / (7.0 - 2.5)))
+
+        # 4) Space behind the offside line for the run. Reuse the same
+        #    second-last-defender geometry as the Law 11 check.
+        second_last = cls._second_last_defender_x(
+            def_players, position_engine, attacks_right)
+        behind = 0.5
+        rx, _ry = position_engine.get_position(receiver.name)
+        if second_last is not None:
+            if attacks_right:
+                window = rx - second_last        # positive = clearly beyond the line
+            else:
+                window = second_last - rx
+            behind = max(0.0, min(1.0, window / 15.0))
+
+        # 5) Receiver running toward the open channel: his lateral bias into
+        #    the widest gap and his vertical level vs the line. A receiver
+        #    camped ON the line can't run onto a through ball.
+        widest_band = 0.5
+        if len(ys) >= 2:
+            # Find the largest adjacent-gap midpoint and how close the
+            # receiver's y is to it.
+            best_mid, best_span = None, 0.0
+            for a, b in zip(ys, ys[1:]):
+                span = b - a
+                if span > best_span:
+                    best_span, best_mid = span, (a + b) / 2.0
+            if best_mid is not None:
+                near = max(0.0, 1.0 - abs(_ry - best_mid) / 8.0)
+                widest_band = max(0.0, min(1.0, 0.5 + near * 0.5))
+        if line_gap <= 0.05:
+            widest_band = max(0.0, widest_band - 0.3)
+
+        # 6) Combine — all three must be present for a real through-ball
+        #    chance; a flat mid-tight block suppresses all of them.
+        opportunity = line_gap * 0.45 + behind * 0.35 + widest_band * 0.20
+        return max(0.0, min(1.0, opportunity))
 
     @staticmethod
     def _second_last_defender_x(
@@ -6800,29 +7012,28 @@ class DefensiveChain(BaseChain):
         y = max(0, min(68, y))
 
         if action_type == "tackle":
-            # ── CRAFT THE TACKLE RATE ──────────────────────────────
+            # ── CRAFT THE TACKLE RATE (calibration anchor) ──────────
+            # The DNA roll stays the season-long baseline for how reliably
+            # this defender wins the ball; the PHYSICS layer below then
+            # voices the live geometry (technique + who physically reached
+            # the ball), so a sliding vs standing tackle is a real reach
+            # decision, not just a color label on the same dice.
             tackle_rate = DNAFactory.get_tackle_success_rate(defender.dna)
 
             # 1) Attacker voice — a skilled carrier erodes the defender's
-            #    edge. Uses the same attacking-skill differential as the
-            #    physics-race path (_dribble_confirmation_gate) so a
-            #    90-dribbling winger is measurably harder to win the ball
-            #    from than a leaden teammate in possession.
+            #    edge. Same attacking-skill differential as the physics-race
+            #    path (_dribble_confirmation_gate).
             if attacker is not None:
                 tackle_rate -= cls._tackle_attacker_resistance(attacker, defender)
 
-            # 2) Danger panic — mirroring clearance panic: a last-ditch
-            #    challenge is rushed and mistimed (lower success, and the
-            #    higher foul_base below). Zero danger → no change, so the
-            #    routine-challenge baseline roll is preserved.
+            # 2) Danger panic — a last-ditch challenge is rushed and
+            #    mistimed (lower success, higher foul chance below).
             risk = max(0.0, min(1.0, danger_level / 100.0))
             tackle_rate -= 0.10 * risk
 
-            # 3) Aggression/bravery tradeoff — committed (aggressive/brave)
-            #    tacklers dive in: the challenge is less reliable (this rate
-            #    is discounted — mistimed more often), but when it lands the
-            #    crunch wins the ball clean more often (the conversion roll
-            #    in the failure branch below).
+            # 3) Aggression/bravery tradeoff — committed tacklers dive in:
+            #    less reliable, but when the crunch lands it wins clean more
+            #    often (the conversion roll in the failure branch below).
             aggression = float(getattr(
                 getattr(defender.dna, "tendencies", None),
                 "tackles_aggressively", 0.40))
@@ -6832,26 +7043,80 @@ class DefensiveChain(BaseChain):
             tackle_rate *= (1.0 - 0.12 * commitment)
 
             tackle_rate = max(0.08, min(0.92, tackle_rate))
+
+            # ── PHYSICS-FIRST TACKLE (slide vs standing) ────────────
+            # DefensiveChain's tackle is now resolved through a real reach
+            # race (geometry_engine.resolve_tackle). The defender's DNA
+            # slide_tackle_aggression picks the technique:
+            #   * STANDING — short tackle_radius, stays on his feet; wins
+            #     only by cleanly reaching the ball, but a miss is clean and
+            #     the recovery is quick (few fouls).
+            #   * SLIDING  — the extended leg grows the reach envelope
+            #     sharply (gets to balls a standing tackle can't), but the
+            #     lunge commits the body: worse shoulder leverage, and a
+            #     mistimed slide that clips the man is a physical foul.
+            # The physics signal (who physically reached the ball) shifts the
+            # calibrated tackle_rate, so a decisive geometry edge is rewarded
+            # and a cleanly-beaten defender is punished — in proportion to
+            # how tight the contest actually is (opponent_distance).
+            slide_prob = float(getattr(
+                getattr(defender.dna, "tendencies", None),
+                "slide_tackle_aggression", aggression))
+            technique = "standing"
+            physics_won = None
+            physics_foul = False
+            physics_note = ""
+            distance_weight = 0.0
+            if (position_engine is not None and defender is not None
+                    and attacker is not None):
+                def_mp = cls._moving_player(defender, position_engine)
+                att_mp = cls._moving_player(attacker, position_engine)
+                sign = 1.0 if attacks_right else -1.0
+                ball_start = Vec2(x, y)
+                carrier_target = Vec2(
+                    min(105.0, max(0.0, x + sign * 6.0)),
+                    y + (34.0 - y) * 0.1,
+                )
+                tres = resolve_tackle(
+                    def_mp, att_mp, ball_start, carrier_target,
+                    slide_prob=slide_prob,
+                )
+                technique = tres.technique
+                physics_won = tres.won
+                physics_foul = tres.foul
+                physics_note = tres.resolution_note
+                if opponent_distance is not None:
+                    distance_weight = max(
+                        0.0, min(1.0, 1.0 - opponent_distance / 6.5))
+                else:
+                    distance_weight = 0.6
+
             success = random.random() < tackle_rate
+            if physics_won is not None:
+                # The live geometry edge nudges the calibrated roll; the
+                # tightness weight keeps it from overriding DNA wholesale
+                # when the contest is open.
+                edge = 0.16 if physics_won else -0.16
+                success = random.random() < max(
+                    0.03, min(0.97, tackle_rate + edge * distance_weight))
             clean_won = False
 
             # ── FAILURE RESOLUTION (foul vs clean-win vs dribble-past) ──
             foul_committed = False
             if not success:
-                # Not every failed tackle is a foul — depends on aggression.
-                # A foul off a bad challenge is the minority outcome (~40%
-                # of failed tackles at a dirty-profile player, less for a
-                # clean one), which keeps contextual tackle fouls realistic
-                # on top of the per-minute foul flow.
-                foul_base = 0.40
-                if defender.dna.tendencies.tackles_aggressively > 0.6:
-                    foul_base *= 1.3
-                # Danger makes the lunge mistimed: last-ditch tackles foul
-                # more, the same panic that lowered the success rate above.
-                foul_base *= (1.0 + 0.60 * risk)
-                foul_base *= max(0.5, defender.dna.tendencies.commits_fouls * 2.0)
-                pos_mult = {"CDM": 1.4, "CB": 1.3, "CM": 1.15, "LB": 1.1, "RB": 1.1}.get(defender.position, 1.0)
-                foul_committed = random.random() < (foul_base * pos_mult)
+                # A mistimed SLIDE is the physical foul — the extended leg
+                # clips the man. Standing misses are clean; a dirty profile
+                # and last-ditch panic still lift the foul chance.
+                if physics_foul:
+                    foul_committed = random.random() < (0.55 + 0.30 * risk)
+                else:
+                    foul_base = 0.40
+                    if defender.dna.tendencies.tackles_aggressively > 0.6:
+                        foul_base *= 1.3
+                    foul_base *= (1.0 + 0.60 * risk)
+                    foul_base *= max(0.5, defender.dna.tendencies.commits_fouls * 2.0)
+                    pos_mult = {"CDM": 1.4, "CB": 1.3, "CM": 1.15, "LB": 1.1, "RB": 1.1}.get(defender.position, 1.0)
+                    foul_committed = random.random() < (foul_base * pos_mult)
 
                 if not foul_committed:
                     # Clean win on the committed challenge: before conceding
@@ -6875,6 +7140,8 @@ class DefensiveChain(BaseChain):
                     "tackle_rate": round(tackle_rate, 3),
                     "committed": round(commitment, 2),
                     "clean_commitment": clean_won,
+                    "technique": technique,
+                    "physics_note": physics_note,
                 },
             ))
             if not success:
@@ -7078,7 +7345,8 @@ class DefensiveChain(BaseChain):
                     phase, gs,
                     location_x=x, location_y=y,
                     outcome=False,
-                    secondary_player=attacker.name if attacker else None,
+                    # Own goals never have an assisting player credited.
+                    secondary_player=None,
                     metadata={
                         "own_goal": True,
                         "clearance_body_part": body_part,

@@ -423,6 +423,9 @@ class PlayerSpatialState:
     # ── PHYSICS-DERIVED MOVEMENT (from PossessionEpisode trace) ──────
     # These are populated by record_physics_distance() and reset each minute.
     physics_distance_m: float = 0.0
+    physics_walk_time_s: float = 0.0
+    physics_jog_time_s: float = 0.0
+    physics_sprint_time_s: float = 0.0
     physics_sprint_count: float = 0.0
     physics_high_speed_sprint_count: float = 0.0
     physics_top_speed_mps: float = 0.0
@@ -909,6 +912,11 @@ class PositionEngine:
         self,
         player_name: str,
         distance_m: float = 0.0,
+        duration_s: float = 0.0,
+        speed_mps: float = 0.0,
+        walk_time_s: float = 0.0,
+        jog_time_s: float = 0.0,
+        sprint_time_s: float = 0.0,
         sprint_count: float = 0.0,
         high_speed_sprint_count: float = 0.0,
         top_speed_mps: float = 0.0,
@@ -923,6 +931,18 @@ class PositionEngine:
         if state is None:
             return
         state.physics_distance_m += float(distance_m)
+        duration_s = max(0.0, float(duration_s))
+        speed_mps = max(0.0, float(speed_mps))
+        state.physics_walk_time_s += max(0.0, float(walk_time_s))
+        state.physics_jog_time_s += max(0.0, float(jog_time_s))
+        state.physics_sprint_time_s += max(0.0, float(sprint_time_s))
+        if duration_s > 0.0:
+            if speed_mps < 2.0:
+                state.physics_walk_time_s += duration_s
+            elif speed_mps < 7.0:
+                state.physics_jog_time_s += duration_s
+            else:
+                state.physics_sprint_time_s += duration_s
         state.physics_sprint_count += float(sprint_count)
         state.physics_high_speed_sprint_count += float(high_speed_sprint_count)
         if float(top_speed_mps) > state.physics_top_speed_mps:
@@ -960,6 +980,9 @@ class PositionEngine:
                 "distance_touch": 0.0, "distance_drift": 0.0,
                 "distance_total": 0.0, "touches": 0, "peak_touch_jump": 0.0,
                 "physics_distance_m": 0.0,
+                "physics_walk_time_s": 0.0,
+                "physics_jog_time_s": 0.0,
+                "physics_sprint_time_s": 0.0,
                 "physics_sprint_count": 0.0,
                 "physics_high_speed_sprint_count": 0.0,
                 "physics_top_speed_mps": 0.0,
@@ -971,6 +994,9 @@ class PositionEngine:
             "touches": state.minute_touch_count,
             "peak_touch_jump": round(state.minute_peak_touch_jump, 2),
             "physics_distance_m": round(state.physics_distance_m, 2),
+            "physics_walk_time_s": round(state.physics_walk_time_s, 2),
+            "physics_jog_time_s": round(state.physics_jog_time_s, 2),
+            "physics_sprint_time_s": round(state.physics_sprint_time_s, 2),
             "physics_sprint_count": round(state.physics_sprint_count, 1),
             "physics_high_speed_sprint_count": round(state.physics_high_speed_sprint_count, 1),
             "physics_top_speed_mps": round(state.physics_top_speed_mps, 2),
@@ -980,6 +1006,9 @@ class PositionEngine:
         state.minute_peak_touch_jump = 0.0
         state.minute_drift_distance = 0.0
         state.physics_distance_m = 0.0
+        state.physics_walk_time_s = 0.0
+        state.physics_jog_time_s = 0.0
+        state.physics_sprint_time_s = 0.0
         state.physics_sprint_count = 0.0
         state.physics_high_speed_sprint_count = 0.0
         state.physics_top_speed_mps = 0.0
@@ -1004,40 +1033,30 @@ class PositionEngine:
         "ST": 0.80, "CF": 0.80,
     }
 
-    # Checkpoint 31 — Median ball-proximity bands (team IN possession).
-    # Elite midfielders sit one passing tier away from the ball carrier:
-    # far enough to stretch the opponent's block, close enough for a
-    # secure pass under pressure (the ~5.9m receive cushion from
-    # StatsBomb 360 lives INSIDE this macro-distance). Bands are the
-    # observed median distance-from-ball ranges per position:
-    #   CDM 12-16m  — anchor / recycling option, just outside pressing
-    #                 cover shadows, keeping passing lines alive.
-    #   CM  14-18m  — balances overload support vs macro half-space
-    #                 positioning and final-third advances.
-    #   LB/RB       — high variance: 18-25m preserving structural width
-    #                 on the weak side, tightened to 12-15m on their own
-    #                 flank in build-up when acting as a direct
-    #                 progressive passing outlet.
-    BALL_PROXIMITY_BAND: Dict[str, tuple] = {
-        "CDM": (12.0, 16.0),
-        "CM": (14.0, 18.0),
-        # CB support radius: When a CB has the ball, his partner CB should
-        # stay close enough for a safe sideways pass but far enough to
-        # stretch the opponent's press (typical CB-to-CB distance 15-20m).
-        "CB": (14.0, 20.0),
-        # CAM deliberately excluded: his home already sits where the ball
-        # usually is, so the band anchor (which pulls radial/behind the
-        # ball) fights his pocket-roam targets. _cam_pocket_roam owns the
-        # #10's in-possession movement instead.
-        # Winger support radius: When ball is on their flank (especially
-        # with fullback or fellow winger), stay within 15-22m to offer
-        # support angle. Wider than midfielders to maintain pitch width.
-        "LW": (15.0, 22.0),
-        "RW": (15.0, 22.0),
-        "LB": (18.0, 25.0),
-        "RB": (18.0, 25.0),
+    # Checkpoint 31 — deterministic role/third ball-proximity bands while
+    # in possession. Defenders protect the line as the ball advances,
+    # midfielders offer a passing tier, and the front line gets closer only
+    # in the final third. Values are metres from the ball.
+    BALL_PROXIMITY_BANDS_BY_THIRD: Dict[str, Dict[str, tuple]] = {
+        "defensive": {
+            "CB": (8.0, 12.0), "LB": (10.0, 15.0), "RB": (10.0, 15.0),
+            "CDM": (9.0, 13.0), "CM": (11.0, 15.0),
+            "LW": (22.0, 30.0), "RW": (22.0, 30.0),
+            "ST": (28.0, 36.0), "CF": (26.0, 34.0),
+        },
+        "middle": {
+            "CB": (16.0, 22.0), "LB": (16.0, 23.0), "RB": (16.0, 23.0),
+            "CDM": (12.0, 16.0), "CM": (14.0, 18.0),
+            "LW": (18.0, 25.0), "RW": (18.0, 25.0),
+            "ST": (20.0, 28.0), "CF": (18.0, 26.0),
+        },
+        "attacking": {
+            "CB": (30.0, 40.0), "LB": (25.0, 35.0), "RB": (25.0, 35.0),
+            "CDM": (18.0, 24.0), "CM": (20.0, 27.0),
+            "LW": (12.0, 18.0), "RW": (12.0, 18.0),
+            "ST": (10.0, 16.0), "CF": (10.0, 16.0),
+        },
     }
-    BALL_PROXIMITY_FULLBACK_OUTLET = (12.0, 15.0)
 
     def drift_minute(
         self,
@@ -1167,7 +1186,7 @@ class PositionEngine:
             if (
                 in_possession
                 and ball_x is not None and ball_y is not None
-                and state.position in self.BALL_PROXIMITY_BAND
+                and state.position in self.BALL_PROXIMITY_BANDS_BY_THIRD["middle"]
             ):
                 effective_home_x, effective_home_y = (
                     self._band_adjusted_anchor(
@@ -1427,6 +1446,17 @@ class PositionEngine:
                 team_name, minute, ball_x, ball_y,
                 self.team_attacks_right.get(team_name, True),
                 opponent_players or [],
+            )
+
+            # Checkpoint 31c — the role/third proximity target is the final
+            # in-possession positional authority. Role-specific run choices
+            # may choose the route in a future layer, but they must not move
+            # these roles outside their calibrated distance from the ball.
+            self._enforce_ball_proximity_targets(
+                team_name, ball_x, ball_y,
+                self.team_attacks_right.get(team_name, True),
+                start_positions=_start_snap,
+                minute=minute,
             )
 
         else:
@@ -1923,46 +1953,23 @@ class PositionEngine:
         ball_x: float, ball_y: float, attacks_right: bool,
     ):
         """
-        Checkpoint 31 — Median Proximity by Position (team in possession).
-
-        Returns the anchor (hx, hy) rescaled radially about the ball so its
-        distance sits inside the position's median band:
-
-          CB  14-20m — partner CB support for build-up play: close enough
-              for safe sideways pass, far enough to stretch the press.
-          CDM 12-16m — immediate anchor / recycling option, hovering just
-              outside pressing cover shadows to keep passing lines alive.
-          CM  14-18m — one passing tier away: far enough to stretch the
-              block, close enough for a secure pass under pressure (the
-              ~5.9m StatsBomb receive cushion lives INSIDE this macro-
-              distance).
-          LW/RW 15-22m — support radius when ball is on their flank (winger
-              or fullback has it). Only applies when ball is on their side
-              of the pitch to maintain width and avoid both wingers
-              collapsing centrally.
-          LB/RB      — high variance. Weak side / advanced ball: width
-              wins, anchor untouched. Own flank + build-up zone: tightened
-              to 12-15m as a direct progressive passing outlet.
-
-        Radial scaling preserves direction from the ball, so lateral
-        structure (touchline channels, line shape) is respected — only the
-        distance changes.
+        Returns the anchor rescaled radially about the ball so its distance
+        sits inside the role's calibrated band for the ball's attacking-
+        relative third. Radial scaling preserves the existing line/channel
+        direction; only ball proximity changes.
         """
-        lo, hi = self.BALL_PROXIMITY_BAND[state.position]
-        
-        # Fullback special case: tighten to outlet distance when on own flank in build-up
-        if state.position in ("LB", "RB"):
-            on_own_flank = abs(ball_y - state.home_y) < 22.0
-            ball_in_build_zone = (
-                ball_x < 62.0 if attacks_right else ball_x > 43.0
-            )
-            if not (on_own_flank and ball_in_build_zone):
-                return hx, hy
-            lo, hi = self.BALL_PROXIMITY_FULLBACK_OUTLET
-        
-        # Winger special case: only apply support radius when ball is on their flank
-        # This prevents both wingers collapsing centrally when one has the ball
-        elif state.position in ("LW", "RW"):
+        attacking_x = ball_x if attacks_right else self.PITCH_X - ball_x
+        if attacking_x < 35.0:
+            third = "defensive"
+        elif attacking_x <= 70.0:
+            third = "middle"
+        else:
+            third = "attacking"
+        lo, hi = self.BALL_PROXIMITY_BANDS_BY_THIRD[third][state.position]
+
+        # Only the near-side winger offers a direct support angle. The
+        # opposite winger remains wide instead of collapsing onto the ball.
+        if state.position in ("LW", "RW"):
             # Ball must be on same side of pitch as winger's home position
             ball_on_same_side = (
                 (ball_y < 34.0 and state.home_y < 34.0) or  # Both on left
@@ -1986,6 +1993,38 @@ class PositionEngine:
         ax = max(4.0, min(101.0, ball_x + dx * s))
         ay = max(2.0, min(66.0, ball_y + dy * s))
         return ax, ay
+
+    def _enforce_ball_proximity_targets(
+        self, team_name: str, ball_x: float, ball_y: float,
+        attacks_right: bool, start_positions: Dict[str, Tuple[float, float]],
+        minute: int,
+    ) -> None:
+        """Steer toward the band without cancelling a physical run."""
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position not in self.BALL_PROXIMITY_BANDS_BY_THIRD["middle"]:
+                continue
+            if state.last_active_minute == minute:
+                continue
+            target_x, target_y = self._band_adjusted_anchor(
+                state, state.home_x, state.home_y,
+                ball_x, ball_y, attacks_right,
+            )
+            start = start_positions.get(name)
+            if start is None:
+                continue
+            used = math.hypot(
+                state.current_x - start[0], state.current_y - start[1]
+            )
+            remaining = max(0.0, state.top_speed_mpm - used)
+            correction_x = target_x - state.current_x
+            correction_y = target_y - state.current_y
+            correction = math.hypot(correction_x, correction_y)
+            if correction <= 1e-6 or remaining <= 1e-6:
+                continue
+            step = min(correction, remaining)
+            state.current_x += correction_x / correction * step
+            state.current_y += correction_y / correction * step
 
     # Checkpoint 31b — roaming patterns the #10 cycles through while his
     # team has the ball: (metres ahead of ball, lateral offset from ball).
@@ -2701,6 +2740,10 @@ class PositionEngine:
                 continue
 
             mark = assignments.get(name)
+            # A goal-side shot-block lane taker. Initialised here so the CDM
+            # branch and the mark branch both leave it defined; only near-side,
+            # UNMARKED CB/LB/RB defenders actually take the lane (below).
+            shot_block = False
             if mark is not None and mark.covers_someone:
                 # ── MAN-MARKING BRANCH ─────────────────────────────
                 # The defender is responsible for a specific attacker.
@@ -2746,16 +2789,52 @@ class PositionEngine:
                     # Pack the screen toward the line's own centre too.
                     target_y = block_centroid_y + (target_y - block_centroid_y) * (1.0 - 0.5 * compactness)
             else:
-                # CB/LB/RB: sit on the line; near-side players shift harder.
-                target_x = line_x
-                near = 1.0 if abs(state.current_y - ball_y) < 20.0 else 0.4
-                target_y = state.current_y + (lateral - state.current_y) * near
-                if compactness > 0.0:
-                    # Compact sides pinch the line laterally toward its centroid.
-                    target_y = block_centroid_y + (target_y - block_centroid_y) * (1.0 - 0.5 * compactness)
+                # ── CHECKPOINT — SHOT-BLOCK ALIGNMENT (team blocks, defenders
+                #    first) ───────────────────────────────────────────────
+                # When the ball sits in the shooting box at high/CRITICAL
+                # danger, the defence "predicts the shot": instead of only
+                # holding the line, the nearest goal-side, UNMARKED defender
+                # steps up onto the ball-to-goal shirt line — getting his body
+                # in the way of where the shooter will aim before the trigger
+                # is pulled. This is the "defenders predict and position for a
+                # block" behaviour: CBs/LBs/RBs nearest the ball carrier slide
+                # goal-side of him, the rest of the line stays compact so the
+                # whole team funnels shots through bodies.
+                #
+                # This works with the geometry_engine blocker-closing fix:
+                # `defensive_block` positions the defender on the shot lane
+                # here, and resolve_shot's per-tick blocker advancement lunges
+                # him into the ball when the shot actually comes.
+                if risk >= 0.55 and mark is None:
+                    # Ball deep in the box relative to the goal line.
+                    shot_zone = (
+                        (goal_x - ball_x) < 22.0 if goal_x == 105.0
+                        else (ball_x - goal_x) < 22.0
+                    )
+                    # A near-side, free defender takes the shot lane.
+                    near = abs(state.current_y - ball_y) < 18.0
+                    if shot_zone and near:
+                        # Goal-side of the ball, on the shirt line toward goal.
+                        standoff = 3.0 + 3.0 * (1.0 - risk)
+                        target_x = ball_x + dir_toward_goal * standoff
+                        target_y = ball_y
+                        shot_block = True
 
-            state.current_x += (target_x - state.current_x) * intensity
-            state.current_y += (target_y - state.current_y) * intensity
+                if not shot_block:
+                    # CB/LB/RB: sit on the line; near-side players shift harder.
+                    target_x = line_x
+                    near = 1.0 if abs(state.current_y - ball_y) < 20.0 else 0.4
+                    target_y = state.current_y + (lateral - state.current_y) * near
+                    if compactness > 0.0:
+                        # Compact sides pinch the line laterally toward its centroid.
+                        target_y = block_centroid_y + (target_y - block_centroid_y) * (1.0 - 0.5 * compactness)
+
+            # The defender on the shot lane commits decisively (a stronger pull
+            # than the general block drift) so his body is actually on the line
+            # when the shot comes; everyone else takes the standard pull.
+            mover_intensity = intensity * (1.6 if shot_block else 1.0)
+            state.current_x += (target_x - state.current_x) * mover_intensity
+            state.current_y += (target_y - state.current_y) * mover_intensity
 
         # Keep the four-line shape cohesive after the block pull.
         self._apply_line_cohesion(team_name, compactness=compactness)

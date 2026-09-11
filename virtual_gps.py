@@ -250,9 +250,6 @@ class VirtualGPS:
         if in_s:
             st["s_cd"] = 0
             st["s_run"] += 1
-            if st["s_run"] >= 3 and not st["in_s"]:
-                sprint_inc = 1
-                st["in_s"] = True
         else:
             if st["s_run"] >= 3:
                 sprint_inc = 1
@@ -262,9 +259,6 @@ class VirtualGPS:
         if in_h:
             st["h_cd"] = 0
             st["h_run"] += 1
-            if st["h_run"] >= 2 and not st["in_h"]:
-                hi_inc = 1
-                st["in_h"] = True
         else:
             if st["h_run"] >= 2:
                 hi_inc = 1

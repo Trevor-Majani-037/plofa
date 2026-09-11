@@ -149,6 +149,7 @@ class BehavioralTendencies:
 
     # DEFENSIVE TENDENCIES
     tackles_aggressively: float     = 0.40   # Dives in vs stays on feet
+    slide_tackle_aggression: float  = 0.35   # 0 = stays standing, 1 = commits the slide
     holds_position: float           = 0.60   # Stays in shape vs follows runner
     attacks_the_ball: float         = 0.55   # Goes for header vs waits
 
@@ -484,6 +485,7 @@ class ArchetypeLibrary:
             "mental.bravery":          (80, 92),
             "passing.short_passing":   (55, 68),
             "tendencies.tackles_aggressively": 0.70,
+            "tendencies.slide_tackle_aggression": 0.60,
             "tendencies.attacks_the_ball":     0.75,
         },
 
@@ -499,6 +501,7 @@ class ArchetypeLibrary:
             "mental.concentration":    (80, 91),
             "tendencies.holds_position":       0.75,
             "tendencies.tackles_aggressively": 0.30,
+            "tendencies.slide_tackle_aggression": 0.18,
         },
 
         # ── FULLBACKS ─────────────────────────────────────────
@@ -517,6 +520,7 @@ class ArchetypeLibrary:
             "tendencies.cuts_inside":  0.20,
             "tendencies.sprints_frequently": 0.75,
             "tendencies.presses_high": 0.55,
+            "tendencies.slide_tackle_aggression": 0.40,
         },
 
         "inverted_fullback": {
@@ -548,6 +552,7 @@ class ArchetypeLibrary:
             "technical.crossing":      (52, 66),
             "tendencies.holds_position":       0.78,
             "tendencies.tackles_aggressively": 0.55,
+            "tendencies.slide_tackle_aggression": 0.50,
             "tendencies.sprints_frequently":   0.40,
         },
 
@@ -567,6 +572,7 @@ class ArchetypeLibrary:
             "tendencies.holds_position":  0.82,
             "tendencies.plays_safe":      0.70,
             "tendencies.tackles_aggressively": 0.45,
+            "tendencies.slide_tackle_aggression": 0.35,
         },
 
         "ball_winning_mid": {
@@ -581,6 +587,7 @@ class ArchetypeLibrary:
             "physical.strength":       (74, 86),
             "passing.short_passing":   (62, 74),
             "tendencies.tackles_aggressively": 0.72,
+            "tendencies.slide_tackle_aggression": 0.78,
             "tendencies.presses_high":         0.68,
             "tendencies.commits_fouls":        0.22,
         },

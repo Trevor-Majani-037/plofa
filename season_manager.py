@@ -867,6 +867,7 @@ class LeagueRunner:
         home_colors: Dict[str, str] = None,
         away_colors: Dict[str, str] = None,
         full_roster: Dict[str, List[str]] = None,
+        training: bool = True,
     ) -> List[Dict]:
         """
         Run every fixture scheduled for `matchday`. `squads` must already
@@ -1078,6 +1079,33 @@ class LeagueRunner:
         if auto_refs:
             ref_mgr.save()
         mgr_pool.save()
+
+        # Training week — the between-match subsystem. After every club has
+        # played its fixture, each squad works a training week that nudges
+        # confidence, fatigue recovery and (for young players) attribute
+        # development, keyed to manager emphasis and player professionalism.
+        # Committed straight into SeasonState so it persists to next matchday.
+        if training:
+            try:
+                from training_system import TrainingSystem
+                coach = TrainingSystem()
+                for team in team_profiles:
+                    team_squad: Dict[str, List] = squads.get(team, {})
+                    team_players = (team_squad.get("starters", [])
+                                    + team_squad.get("substitutes", []))
+                    if not team_players:
+                        continue
+                    team_records = coach.run_week(
+                        team_players, team_name=team, matchday=matchday,
+                        manager=mgr_pool.manager_for(team), state=self.state,
+                    )
+                    if not self.quiet:
+                        print(coach.report_text(team_records, team))
+            except Exception as e:  # training must never kill a matchday
+                if not self.quiet:
+                    print(f"  ⚠️  Training week skipped: {e}")
+
+        self.state.save()
         self.table.print_table()
         return results
 

@@ -537,6 +537,11 @@ def _persist_post_match(
         home_squad["starters"] + home_squad["substitutes"] +
         away_squad["starters"] + away_squad["substitutes"]
     )
+    starter_names = {
+        player.name
+        for squad in (home_squad, away_squad)
+        for player in squad["starters"]
+    }
 
     # Record the fixture into the league standings so attendance reflects
     # each team's season performance (position + recent form).
@@ -553,13 +558,24 @@ def _persist_post_match(
             s = acc.stats.get(player.name)
             if not s:
                 continue
+            minutes_played = int(s.get("minutes_played", 0) or 0)
+            actually_entered = (
+                player.name in starter_names
+                or bool(getattr(player, "_entered_pitch", False))
+                or minutes_played > 0
+            )
+            if not actually_entered:
+                # A named substitute who never entered is not a match
+                # participant: do not update form, fatigue, cards, or
+                # season_matches for an unused bench player.
+                continue
             stamina_state = sub_controller.stamina.get(player.name)
             ending_stamina = stamina_state.current_stamina if stamina_state else 100.0
             season_state.record_post_match(
                 name=player.name,
                 rating=s.get("rating", 6.0),
                 goals=s.get("goals", 0),
-                minutes_played=s.get("minutes_played", 0),
+                minutes_played=minutes_played,
                 ending_stamina=ending_stamina,
                 yellow=s.get("yellow_cards", 0) > 0,
                 red=s.get("red_cards", 0) > 0,

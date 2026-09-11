@@ -1,0 +1,390 @@
+{
+  "pool": [
+    {
+      "name": "Marcus Osei",
+      "strictness": 0.0,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 12,
+      "bias_home": 0.02,
+      "bias_away": -0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Avada Zenith": 2,
+        "Pearls": 1,
+        "Claw": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Juri Yuresh",
+      "strictness": 0.0,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 10,
+      "bias_home": -0.01,
+      "bias_away": 0.02,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Justice": 1,
+        "Ganester": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Eric Vanam",
+      "strictness": 0.2,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 14,
+      "bias_home": 0.0,
+      "bias_away": 0.0,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Claw": 1,
+        "Play City": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Daniel Liu",
+      "strictness": 0.0,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 9,
+      "bias_home": 0.01,
+      "bias_away": -0.02,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Rodice": 1,
+        "Telbey": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Ashley Mantu",
+      "strictness": 0.1,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 11,
+      "bias_home": -0.02,
+      "bias_away": 0.01,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Triumpher": 1,
+        "Trendboys": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Feriza Maria",
+      "strictness": 0.0,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 8,
+      "bias_home": 0.01,
+      "bias_away": 0.0,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Red Wolves": 1,
+        "Club Chovers": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "William Hurte",
+      "strictness": 0.0,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 13,
+      "bias_home": 0.0,
+      "bias_away": 0.01,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Seafcea": 1,
+        "Oxton": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Jofart Eli",
+      "strictness": 0.1,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 7,
+      "bias_home": -0.01,
+      "bias_away": -0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Telbey": 1,
+        "Claw": 1,
+        "Lige-8": 1,
+        "Club Chovers": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Carlos Caper",
+      "strictness": 0.1,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 15,
+      "bias_home": 0.02,
+      "bias_away": -0.02,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Uditon": 1,
+        "Lige-8": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Aron Deuztch",
+      "strictness": 0.0,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 10,
+      "bias_home": 0.01,
+      "bias_away": -0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Play City": 1,
+        "Natrican": 1,
+        "Telbey": 1,
+        "Red Wolves": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Semi Okarfor",
+      "strictness": 0.15,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 9,
+      "bias_home": -0.01,
+      "bias_away": 0.02,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Iron FC": 1,
+        "Rock FC": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Tomasz Bier",
+      "strictness": 0.05,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 11,
+      "bias_home": 0.0,
+      "bias_away": 0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Ganester": 1,
+        "Uditon": 1,
+        "Natrican": 1,
+        "Tryox City": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Liam Hargreaves",
+      "strictness": 0.08,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 8,
+      "bias_home": 0.02,
+      "bias_away": -0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Club Chovers": 1,
+        "Rodice": 1,
+        "Oxton": 1,
+        "Triumpher": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Daisuke Tanaka",
+      "strictness": 0.12,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 10,
+      "bias_home": -0.02,
+      "bias_away": 0.0,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Lige-8": 1,
+        "Red Wolves": 1,
+        "Ganester": 1,
+        "Seafcea": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Raphel Conti",
+      "strictness": 0.03,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 14,
+      "bias_home": 0.01,
+      "bias_away": 0.01,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Natrican": 1,
+        "Avada Zenith": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Nabil Zarouk",
+      "strictness": 0.07,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 7,
+      "bias_home": 0.0,
+      "bias_away": -0.02,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        1
+      ],
+      "teams_seen": {
+        "Rock FC": 1,
+        "Iron FC": 1
+      },
+      "last_matchday": 1
+    },
+    {
+      "name": "Eoin Gallagher",
+      "strictness": 0.1,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 12,
+      "bias_home": -0.01,
+      "bias_away": 0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Trendboys": 1,
+        "Seafcea": 1,
+        "Play City": 1,
+        "Rodice": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Kofi Asante",
+      "strictness": 0.05,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 9,
+      "bias_home": 0.01,
+      "bias_away": 0.0,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Tryox City": 1,
+        "Triumpher": 1,
+        "Uditon": 1,
+        "Justice": 1
+      },
+      "last_matchday": 3
+    },
+    {
+      "name": "Mikhail Sorokin",
+      "strictness": 0.18,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 13,
+      "bias_home": -0.02,
+      "bias_away": 0.02,
+      "matches_officiated": 1,
+      "matchdays_refd": [
+        2
+      ],
+      "teams_seen": {
+        "Pearls": 1,
+        "Tryox City": 1
+      },
+      "last_matchday": 2
+    },
+    {
+      "name": "Javier Rollan",
+      "strictness": 0.02,
+      "tier": 1,
+      "preferred_foot": "right",
+      "experience_years": 11,
+      "bias_home": 0.0,
+      "bias_away": -0.01,
+      "matches_officiated": 2,
+      "matchdays_refd": [
+        1,
+        3
+      ],
+      "teams_seen": {
+        "Oxton": 1,
+        "Justice": 1,
+        "Trendboys": 1,
+        "Pearls": 1
+      },
+      "last_matchday": 3
+    }
+  ]
+}

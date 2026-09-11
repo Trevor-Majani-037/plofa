@@ -263,15 +263,22 @@ class ChanceCreationLedger:
                     p["setpiece_shot_assists"] = p.get("setpiece_shot_assists", 0) + 1
 
     def _finalize_shot_assists(self) -> None:
-        """Redefine shot_assists as: all non-goal chances created by the
-        player.  This matches the user-facing convention:
-            shot_assists = chances_created - goal_assists
-        It deliberately ignores whether the chance came from a key pass,
-        a cross, a carry, or an explicit CHANCE_CREATED event."""
+        """Finalize non-goal chance counts without mixing in fantasy assists.
+
+        Fantasy assists are credited for rebounds or won fouls, but they are
+        not setup-pass chances and therefore must not reduce shot-assist
+        counts derived from chance creation.
+        """
         for p in self.per_player.values():
-            p["shot_assists"] = p.get("chances_created", 0) - p.get("goal_assists", 0)
-            p["open_play_shot_assists"] = p.get("open_play_cc", 0) - p.get("open_play_assists", 0)
-            p["setpiece_shot_assists"] = p.get("setpiece_cc", 0) - p.get("setpiece_assists", 0)
+            p["shot_assists"] = max(
+                0, p.get("chances_created", 0) - p.get("goal_assists", 0)
+            )
+            p["open_play_shot_assists"] = max(
+                0, p.get("open_play_cc", 0) - p.get("open_play_assists", 0)
+            )
+            p["setpiece_shot_assists"] = max(
+                0, p.get("setpiece_cc", 0) - p.get("setpiece_assists", 0)
+            )
 
     # ── SHOT COLLECTION ──────────────────────────────
 

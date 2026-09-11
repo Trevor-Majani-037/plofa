@@ -1205,35 +1205,76 @@ def resolve_shot(
     at ``dive_speed`` with ``dive_reach`` lateral extension beyond the control
     radius, and only a ball below their dive vertical reach can be saved.
     """
-    # Track blockers throughout flight
-    blocker_positions: List[Tuple[float, MovingPlayer, Vec2]] = []
+    # Track blockers throughout flight.
+    #
+    # BLOCKER RESPONSIVENESS (Checkpoint — "defenders predict / position for
+    # the shot"): a blocker is not a frozen statue standing where he happened
+    # to be when the ball was struck. The instant a shot is launched the
+    # defence reacts — the nearest players lunge/frame the ball, sliding onto
+    # the shot's line before it reaches them. We therefore advance each
+    # blocker's position toward the ball each tick (bounded by his own top
+    # speed and a reaction delay), which is what lets a defender a metre off
+    # the shot lane genuinely get his body in front of it instead of only
+    # blocking shots that thread through his starting coordinate.
+    #
+    # Blocking is a TEAM behaviour, but this is a physics kernel: each
+    # outfield defender gets the same urge to close, scaled by how close he
+    # already is (a defender right on the ball reacts and frames it; a player
+    # 15 m off can only cover so much ground in a 0.6 s shot).
+    effective_duration = max(0.0, flight.duration)
+    steps = max(1, int(math.ceil(effective_duration / sample_step)))
 
     for blocker in blockers:
-        steps = max(1, int(math.ceil(flight.duration / sample_step)))
+        # A defender off the ball will not instantly teleport: he commits to
+        # the block with the same reaction he brings to any challenge, then
+        # moves at a block effort (70-90% of a full sprint — lunging to block
+        # is a committed, but not full-stride, burst) toward the ball.
+        reaction = max(0.05, blocker.reaction_time * 0.55)
+        block_speed = blocker.top_speed * (0.72 + 0.18 * blocker.balance)
+        # Current live position, updated as we resolve (so a single defender
+        # walks the flight line rather than re-evaluating the same spot).
+        live = blocker.position
         for index in range(1, steps):
-            time_s = flight.duration * index / steps
-            point = flight.position_at(time_s)
-            blocker_positions.append((time_s, blocker, point))
-            if point.z > blocker.vertical_reach(point.z > 1.15):
+            time_s = (effective_duration * index / steps)
+            if time_s < reaction:
                 continue
-            if blocker.time_to_reach(point.horizontal(), blocker.tackle_radius) <= time_s:
-                # Calculate rebound from blocker
-                rebound_dir, rebound_speed = _calculate_rebound_velocity(
-                    flight, point,
-                    # Normal pointing away from goal
-                    Vec2(-1.0 if attacks_right else 1.0, 0.0),
-                    decay=0.75,
-                )
-                rebound = Vec2(
-                    point.x + rebound_dir.x * 5.0,
-                    point.y + rebound_dir.y * 5.0,
-                )
-                return ShotResolution(
-                    "blocked", point, time_s, blocker=blocker,
-                    rebound=rebound,
-                    ball_speed_at_contact=flight.speed_at(time_s),
-                    rebound_velocity=rebound_dir * rebound_speed,
-                )
+            point = flight.position_at(time_s)
+            # Vertical reach: the ball must be reachable; airborne/heads-up
+            # blockers can flick / smother an aerial effort (use the same
+            # reach the keeper's worldie path uses).
+            reach = blocker.vertical_reach(point.z > 1.15)
+            if point.z > reach:
+                continue
+            # Move the blocker toward the ball's current horizontal position.
+            # Time already elapsed since reaction bounds how far he can get.
+            away = point.horizontal() - live
+            d = math.hypot(away.x, away.y)
+            if d > 1e-9:
+                available = time_s - reaction
+                travel = min(d, block_speed * available)
+                live = Vec2(live.x + away.x / d * travel,
+                            live.y + away.y / d * travel)
+            # Did he get his body on the line before the ball arrived?
+            # Compare how fast the ball reaches him vs how long he needs.
+            if live.distance_to(point.horizontal()) <= blocker.tackle_radius + 0.15:
+                if blocker.time_to_reach(point.horizontal(), blocker.tackle_radius) <= time_s:
+                    # Calculate rebound from blocker
+                    rebound_dir, rebound_speed = _calculate_rebound_velocity(
+                        flight, point,
+                        # Normal pointing away from goal
+                        Vec2(-1.0 if attacks_right else 1.0, 0.0),
+                        decay=0.75,
+                    )
+                    rebound = Vec2(
+                        point.x + rebound_dir.x * 5.0,
+                        point.y + rebound_dir.y * 5.0,
+                    )
+                    return ShotResolution(
+                        "blocked", point, time_s, blocker=blocker,
+                        rebound=rebound,
+                        ball_speed_at_contact=flight.speed_at(time_s),
+                        rebound_velocity=rebound_dir * rebound_speed,
+                    )
     
     point = flight.position_at(flight.duration)
     in_frame = goal_left <= point.y <= goal_right and 0.0 <= point.z <= goal_height
@@ -1597,4 +1638,201 @@ def resolve_dribble(
     return DribbleResolution(
         "retained", target, duration,
         defender_positions=defender_positions,
+    )
+
+
+@dataclass(frozen=True)
+class TackleResolution:
+    """Outcome of a physically-resolved tackle challenge.
+
+    ``technique`` is ``"standing"`` or ``"sliding"``. A standing tackle
+    plays the ball with a short reach and stays on his feet (clean recovery,
+    low foul risk); a sliding tackle extends the leg for a much larger reach
+    envelope but commits: a mistimed slide clips the man (foul) more easily
+    and the lunging body duels worse (worse balance in the shoulder).
+    """
+
+    technique: str                     # "standing" | "sliding"
+    won: bool                          # defender came away with the ball
+    contact_time_s: float
+    contact_point: Vec2
+    tackler: MovingPlayer
+    foul: bool = False                 # mistimed slide clipped the man
+    body_duel: Optional["BodyDuel"] = None
+    resolution_note: str = ""          # reached_first | blow_up | timed_out | ...
+
+
+def resolve_tackle(
+    defender: MovingPlayer,
+    carrier: MovingPlayer,
+    ball_start: Vec2,
+    carrier_target: Vec2,
+    slide_prob: float = 0.35,
+    sample_step: float = TICK_S,
+    player_context: Optional[PlayerRaceContext] = None,
+    rng: Optional[random.Random] = None,
+) -> TackleResolution:
+    """Resolve a tackle as a PHYSICS RACE (not a flat probability roll).
+
+    Mirrors ``resolve_dribble``'s geometry: the carrier dribbles the ball
+    toward ``carrier_target`` at carry speed; the defender races to the live
+    ball point each tick. Whoever reaches the ball-to-carrier envelope first
+    decides the contest.
+
+    The key realism this adds on top of the plain race is the TECHNIQUE split:
+
+    * STANDING — short ``tackle_radius`` reach (stay on your feet, play the
+      ball). Wins only by cleanly getting to the ball, but a failed challenge
+      is clean (almost never a foul) and the defender keeps his feet for the
+      recovery.
+    * SLIDING — the leg is thrown in, so the effective reach grows sharply
+      (covers more ground and can reach balls the standing tackle can't). The
+      trade is commitment: a lunge that just misses the ball clips the man
+      (``foul=True``), and in a concurrent shoulder the lunging defender duels
+      with worse leverage (he's airborne / off-balance), so a skilled carrier
+      can ride it out.
+
+    ``slide_prob`` (0..1, from the defender's DNA) decides which technique is
+    attempted this contest.
+    """
+    _rng = rng or random
+    sliding = _rng.random() < max(0.0, min(1.0, slide_prob))
+
+    if sliding:
+        # Slide reach: the extended leg defeats the standing tackle's shorter,
+        # stay-on-feet envelope by a wide margin (~+70% radius).
+        reach = defender.tackle_radius * 1.70 + 0.35
+        # The lunge commits the whole body — poorer leverage in the shoulder.
+        slide_balance = defender.balance * 0.55
+        # A sliding challenge reaction is marginally quicker to commit.
+        reaction = defender.reaction_time * 0.85
+    else:
+        reach = defender.tackle_radius
+        slide_balance = defender.balance
+        reaction = defender.reaction_time
+
+    slide_defender = MovingPlayer(
+        player=defender.player,
+        position=defender.position,
+        pace=defender.pace,
+        acceleration=defender.acceleration,
+        reaction_time=reaction,
+        control_radius=defender.control_radius,
+        tackle_radius=reach,
+        is_goalkeeper=defender.is_goalkeeper,
+        jump_height=defender.jump_height,
+        standing_reach=defender.standing_reach,
+        dive_reach=defender.dive_reach,
+        dive_speed=defender.dive_speed,
+        dive_vertical_reach=defender.dive_vertical_reach,
+        body_mass_kg=defender.body_mass_kg,
+        balance=slide_balance,
+    )
+    slide_carrier = carrier
+
+    distance = ball_start.distance_to(carrier_target)
+    dribble_speed = carrier.top_speed * CARRIER_SHIELD_FACTOR
+    duration = distance / max(2.5, dribble_speed)
+    steps = max(1, int(math.ceil(duration / sample_step)))
+
+    tackle_range = carrier.control_radius + slide_defender.tackle_radius
+
+    for index in range(1, steps + 1):
+        time_s = duration * index / steps
+        ball = ball_start.lerp(carrier_target, time_s / duration) if duration else carrier_target
+
+        arrival = _race_motion(slide_defender, ball, tackle_range, player_context)
+        if arrival > time_s:
+            continue
+
+        margin = time_s - arrival
+        if margin > BODY_DUEL_TIE_WINDOW:
+            # Clean reach win — the defender beat the ball to the envelope.
+            return TackleResolution(
+                technique="sliding" if sliding else "standing",
+                won=True,
+                contact_time_s=time_s,
+                contact_point=ball,
+                tackler=defender,
+                resolution_note="reached_first",
+            )
+
+        # Simultaneous contact: the shoulder decides, with the technique's
+        # effective body/leverage. The carrier shields at carry speed.
+        defender_approach = slide_defender.top_speed * DEFENDER_CHALLENGE_FACTOR
+        carrier_approach = slide_carrier.top_speed * CARRIER_SHIELD_FACTOR
+        duel = resolve_body_duel(slide_defender, slide_carrier, defender_approach, carrier_approach)
+        if duel.winner == "defender":
+            return TackleResolution(
+                technique="sliding" if sliding else "standing",
+                won=True,
+                contact_time_s=time_s,
+                contact_point=ball,
+                tackler=defender,
+                body_duel=duel,
+                resolution_note="blown_up",
+            )
+        if duel.winner == "carrier" or not sliding:
+            # Standing: a clean lost challenge (no foul). Sliding: the carrier
+            # rode out the lunge — but the committed slide now risks clipping
+            # him as the carrier continues past the outstretched leg.
+            if sliding and _rng.random() < 0.55:
+                return TackleResolution(
+                    technique="sliding",
+                    won=False,
+                    contact_time_s=time_s,
+                    contact_point=ball,
+                    tackler=defender,
+                    foul=True,
+                    body_duel=duel,
+                    resolution_note="slide_clips_man",
+                )
+            return TackleResolution(
+                technique="sliding" if sliding else "standing",
+                won=False,
+                contact_time_s=time_s,
+                contact_point=ball,
+                tackler=defender,
+                body_duel=duel,
+                resolution_note="waved_off",
+            )
+        # Gray-zone 50/50 weighted by impulse.
+        if _rng.random() < _body_contest_win_probability(duel.impulse_ratio):
+            return TackleResolution(
+                technique="sliding" if sliding else "standing",
+                won=True,
+                contact_time_s=time_s,
+                contact_point=ball,
+                tackler=defender,
+                body_duel=duel,
+                resolution_note="50_50",
+            )
+        if sliding and _rng.random() < 0.45:
+            return TackleResolution(
+                technique="sliding",
+                won=False,
+                contact_time_s=time_s,
+                contact_point=ball,
+                tackler=defender,
+                foul=True,
+                body_duel=duel,
+                resolution_note="slide_clips_man",
+            )
+        return TackleResolution(
+            technique="sliding",
+            won=False,
+            contact_time_s=time_s,
+            contact_point=ball,
+            tackler=defender,
+            body_duel=duel,
+            resolution_note="waved_off",
+        )
+
+    return TackleResolution(
+        technique="sliding" if sliding else "standing",
+        won=False,
+        contact_time_s=duration,
+        contact_point=carrier_target,
+        tackler=defender,
+        resolution_note="carrier_kept_ball",
     )
