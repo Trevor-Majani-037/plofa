@@ -409,6 +409,7 @@ def build_players(season_stats, season_state):
                 "assists_per90": safe_round(totals.get("assists_per90", 0.0), 2),
                 "xg_per90": safe_round(totals.get("xg_per90", 0.0), 3),
                 "xa_per90": safe_round(totals.get("xa_per90", 0.0), 3),
+                "xT_per90": safe_round(totals.get("xT_per90", 0.0), 3),
                 "shots_on_target_per90": safe_round(totals.get("shots_on_target_per90", 0.0), 2),
                 "chances_created_per90": safe_round(totals.get("chances_created_per90", 0.0), 2),
                 "big_chances_created_per90": safe_round(totals.get("big_chances_created_per90", 0.0), 2),

@@ -18,6 +18,13 @@ from typing import Tuple, List, Optional
 from enum import Enum
 
 
+# Shared pitch frame (matches the match engine): x runs 0..PITCH_LENGTH where
+# the home team attacks toward x=PITCH_LENGTH and the away team toward x=0.
+# The xT grid assumes increasing x = increasing danger, so away-team events
+# are mirrored before grid lookup (see create_action_from_event).
+PITCH_LENGTH = 105.0
+
+
 @dataclass(frozen=True)
 class ActionSnapshot:
     """
@@ -365,13 +372,19 @@ class AdvancedValuationEngine:
 # INTEGRATION HELPERS
 # ═══════════════════════════════════════════════════════════
 
-def create_action_from_event(event, event_type: str = "pass") -> Optional[ActionSnapshot]:
+def create_action_from_event(event, event_type: str = "pass",
+                             attacks_right: bool = True) -> Optional[ActionSnapshot]:
     """
     Converts a match event into an ActionSnapshot for valuation.
     
     Args:
         event: Match event object with location_x, location_y, end_x, end_y, outcome
         event_type: Type of action ("pass", "carry", "dribble")
+        attacks_right: True if the acting team attacks toward the x=105 goal
+            (home side in the engine's shared pitch frame). The xT grid assumes
+            increasing x = increasing danger, so events from the away team
+            (attacking x=0) have their x coordinates mirrored into the same
+            orientation before lookup.
     
     Returns:
         ActionSnapshot or None if event lacks required data
@@ -380,11 +393,17 @@ def create_action_from_event(event, event_type: str = "pass") -> Optional[Action
         return None
     if not hasattr(event, 'end_x') or event.end_x is None:
         return None
+
+    start_x = event.location_x
+    end_x = event.end_x
+    if not attacks_right:
+        start_x = PITCH_LENGTH - start_x
+        end_x = PITCH_LENGTH - end_x
     
     return ActionSnapshot(
-        start_x=event.location_x,
+        start_x=start_x,
         start_y=event.location_y if hasattr(event, 'location_y') else 34.0,
-        end_x=event.end_x,
+        end_x=end_x,
         end_y=event.end_y if hasattr(event, 'end_y') else 34.0,
         is_successful=event.outcome if hasattr(event, 'outcome') else False,
         action_type=event_type,

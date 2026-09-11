@@ -150,6 +150,7 @@ PER90_STATS = {
         "long_passes_att", "long_passes_comp", "touches_opp_box", "possession_won",
     "chipped_passes", "headed_passes",
     "shot_ending_carries", "chance_creating_carries", "assist_carries",
+    "xT", "gpa", "pva", "epa",
 }
 
 BOOLEAN_COUNT_FIELDS = {
@@ -372,6 +373,18 @@ class SeasonStatsAccumulator:
 
         players_data = data.get("players", {})
         for pname, pstats in players_data.items():
+            # A named substitute who never entered is not a match
+            # participant. Keep unused bench rows out of per-matchday and
+            # season match totals; a final-minute entry is still valid via
+            # its non-null sub_in marker even if minutes round to zero.
+            minutes = int(pstats.get("minutes_played", 0) or 0)
+            participated = (
+                bool(pstats.get("is_starter"))
+                or minutes > 0
+                or pstats.get("sub_in") is not None
+            )
+            if not participated:
+                continue
             self._accumulate_player(pname, pstats, md)
 
     def _accumulate_player(self, name: str, stats: dict, md: int):

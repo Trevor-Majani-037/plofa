@@ -87,7 +87,7 @@ VENUE        = "Hartwell Arena"
 CAPACITY     = 42_000
 
 REFEREE      = "Marcus Osei"
-STRICTNESS   = 0.55    # 0.0 = lenient, 1.0 = very strict
+STRICTNESS   = 0.01    # 0.0 = lenient, 1.0 = very strict
 
 IS_DERBY     = False   # True if local rivalry match
 

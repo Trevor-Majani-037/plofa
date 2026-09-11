@@ -46,6 +46,248 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
+# ─────────────────────────────────────────────────────────────
+# SHARED XI PRESS-ENGAGEMENT CONTROLLER (TeamPressBrain)
+# ─────────────────────────────────────────────────────────────
+# ONE 24->32->32->1 brain drives the WHOLE unit's off-ball press Bernoulli:
+#     prob = _PRESS_PROB[pos] * g     at _offball_move_player.
+# g in [0,1] is the controller's engagement scalar for the current team-state
+# (ball zone vs our goal, danger, unit density, shape compactness).  Default
+# disabled (g = 1.0 -> pure role-rate Bernoulli, the heuristic baseline);
+# call set_team_press_brain(brain) / load_team_press_brain(path) to engage.
+_TEAM_PRESS_BRAIN = None          # shared TeamPressBrain or None
+_TEAM_PRESS_AUTO = True           # auto-load BRAINS_TEAM_DIR/XI.json on first tick
+_TEAM_PRESS_SENSOR_IMPORT = None  # cached extract_team_sensors callable
+_TEAM_PRESS_DIR = "brains_team"   # per-project controller directory
+_TEAM_PRESS_LOADED = False
+
+
+def set_team_press_dir(path: str) -> None:
+    """Override the controller directory (default "brains_team")."""
+    global _TEAM_PRESS_DIR, _TEAM_PRESS_LOADED
+    _TEAM_PRESS_DIR = path
+    _TEAM_PRESS_LOADED = False
+
+
+def set_team_press_auto(auto_load: bool) -> None:
+    """Enable/disable auto-loading of BRAINS_TEAM_DIR/XI.json (default True)."""
+    global _TEAM_PRESS_AUTO
+    _TEAM_PRESS_AUTO = bool(auto_load)
+
+
+def set_team_press_brain(brain) -> None:
+    """Engage the shared XI press controller (None disables -> g = 1.0)."""
+    global _TEAM_PRESS_BRAIN
+    _TEAM_PRESS_BRAIN = brain
+
+
+def load_team_press_brain(path: str):
+    """Load a TeamPressBrain JSON and engage it for every match."""
+    from football_brain import TeamPressBrain
+    brain = TeamPressBrain.load(path)
+    set_team_press_brain(brain)
+    return brain
+
+
+def _ensure_team_press_loaded() -> None:
+    global _TEAM_PRESS_BRAIN, _TEAM_PRESS_LOADED
+    if _TEAM_PRESS_LOADED:
+        return
+    _TEAM_PRESS_LOADED = True
+    if _TEAM_PRESS_AUTO and _TEAM_PRESS_BRAIN is None:
+        import os as _os
+        _path = _os.path.join(_TEAM_PRESS_DIR, "XI.json")
+        if _os.path.exists(_path):
+            try:
+                load_team_press_brain(_path)
+            except Exception:
+                pass
+
+
+def _team_press_sensors(engine: Any, team: str, ball_x: float,
+                        ball_y: float, danger_t: float) -> np.ndarray:
+    global _TEAM_PRESS_SENSOR_IMPORT
+    if _TEAM_PRESS_SENSOR_IMPORT is None:
+        from football_brain import extract_team_sensors
+        _TEAM_PRESS_SENSOR_IMPORT = extract_team_sensors
+    return _TEAM_PRESS_SENSOR_IMPORT(engine, team, ball_x, ball_y, danger_t)
+
+
+def _team_press_g(engine: Any, team: str, ball_x: float, ball_y: float,
+                  danger_t: float) -> float:
+    """Engagement scalar for this team-tick: brain(g) or 1.0 (heuristic)."""
+    _ensure_team_press_loaded()
+    brain = _TEAM_PRESS_BRAIN
+    if brain is None:
+        return 1.0
+    try:
+        return float(brain.forward(_team_press_sensors(
+            engine, team, ball_x, ball_y, danger_t)))
+    except Exception:
+        return 1.0
+
+
+# ─────────────────────────────────────────────
+# DEFENSIVE-ACTION CONTROLLER (DefensiveActionBrain)
+# ─────────────────────────────────────────────
+# ONE 24->32->32->4 brain picks WHICH defensive act to deploy on a contest
+# moment: tackle / interception / clearance / block.  It replaces the
+# hand-tuned _danger_scaled_action_weights table AND the hardcoded
+# "clearance" / recovery weights at the three defensive re/action sites:
+#   * open-play contest      (DefensiveChain dispatch, _simulate_minute)
+#   * direct clearance       (ball dead inside our defensive third)
+#   * defensive recovery     (deep block after a turnover)
+# Default: auto-load brains_def/ACTION.json on first use; disabled ->
+# the heuristic selection acts as the baseline.  A PHYSICS safety grip stays:
+# clearance/block far from our goal is refused (a "clearance" 60 m from your
+# own line is just a turnover) — feasibility is also a sensor (s[19]) so the
+# net learns to stay out of that zone on its own.
+_DEF_ACTION_BRAIN = None           # shared DefensiveActionBrain or None
+_DEF_ACTION_AUTO = True            # auto-load BRAINS_DEF_DIR/ACTION.json
+_DEF_ACTION_DIR = "brains_def"     # per-project controller directory
+_DEF_ACTION_LOADED = False
+_DEF_ACTION_SENSOR_IMPORT = None   # cached extract_defensive_sensors callable
+_DEF_ACTION_FEASIBLE = {           # physics gate zones (ball near OUR goal)
+    True: lambda cx: cx > 35.0,    # attacks_right: our goal is x=0
+    False: lambda cx: cx < 70.0,   # attacks_left : our goal is x=105
+}
+
+
+def set_defensive_action_dir(path: str) -> None:
+    global _DEF_ACTION_DIR, _DEF_ACTION_LOADED
+    _DEF_ACTION_DIR = path
+    _DEF_ACTION_LOADED = False
+
+
+def set_defensive_action_auto(auto_load: bool) -> None:
+    """Enable/disable auto-loading of BRAINS_DEF_DIR/ACTION.json (default True)."""
+    global _DEF_ACTION_AUTO
+    _DEF_ACTION_AUTO = bool(auto_load)
+
+
+def set_defensive_action_brain(brain) -> None:
+    """Engage the shared defensive-action controller (None disables -> heuristic)."""
+    global _DEF_ACTION_BRAIN
+    _DEF_ACTION_BRAIN = brain
+
+
+def load_defensive_action_brain(path: str):
+    """Load a DefensiveActionBrain JSON and engage it for every match."""
+    from football_brain import DefensiveActionBrain
+    brain = DefensiveActionBrain.load(path)
+    set_defensive_action_brain(brain)
+    return brain
+
+
+def _ensure_def_action_loaded() -> None:
+    global _DEF_ACTION_BRAIN, _DEF_ACTION_LOADED
+    if _DEF_ACTION_LOADED:
+        return
+    _DEF_ACTION_LOADED = True
+    if _DEF_ACTION_AUTO and _DEF_ACTION_BRAIN is None:
+        import os as _os
+        _path = _os.path.join(_DEF_ACTION_DIR, "ACTION.json")
+        if _os.path.exists(_path):
+            try:
+                load_defensive_action_brain(_path)
+            except Exception:
+                pass
+
+
+def _def_action_sensors(engine: Any, defending_team: str, attacking_team: str,
+                        ball_x: float, ball_y: float, danger_level: float,
+                        ball_aerial: bool, ctx_x: float, ctx_y: float,
+                        opponent_distance: float, press_occurred: bool) -> np.ndarray:
+    global _DEF_ACTION_SENSOR_IMPORT
+    if _DEF_ACTION_SENSOR_IMPORT is None:
+        from football_brain import extract_defensive_sensors
+        _DEF_ACTION_SENSOR_IMPORT = extract_defensive_sensors
+    return _DEF_ACTION_SENSOR_IMPORT(
+        engine, defending_team, attacking_team, ball_x, ball_y,
+        danger_level=danger_level, ball_aerial=ball_aerial,
+        contest_x=ctx_x, contest_y=ctx_y,
+        opponent_distance=opponent_distance,
+        press_occurred=press_occurred,
+    )
+
+
+def _def_action_choice(engine: Any, defending_team: str, attacking_team: str,
+                       danger_level: float, ctx_x: float, ctx_y: float,
+                       ball_aerial: bool, opponent_distance: Optional[float],
+                       attacks_right: bool, ball_x: float, ball_y: float,
+                       press_occurred: bool = False,
+                       fallback: Optional[str] = None,
+                       site: str = "contest") -> str:
+    """Pick the defensive action type for a contest moment.
+
+    Neural brain engaged -> softmax argmax over
+    [tackle, interception, clearance, block].  Otherwise -> the heuristic
+    _danger_scaled_action_weights table (or ``fallback`` for the legacy
+    hardcoded sites).  A PHYSICS grip refuses clearance/block far from our
+    goal (feasibility); if refused, the pick narrows to tackle/interception.
+    ``site`` labels the call origin ("contest", "direct_clearance",
+    "recovery") for collector probes — not a decision input.
+    """
+    _ensure_def_action_loaded()
+    feasible_fn = _DEF_ACTION_FEASIBLE.get(bool(attacks_right))
+    feasible = True
+    if ctx_x is not None and feasible_fn is not None:
+        feasible = feasible_fn(ctx_x)
+    # clamp to goal-side region so the physics gate makes real sense
+    own_goal_x = 105.0 if not attacks_right else 0.0
+    proj = abs(ctx_x - own_goal_x) / 105.0 if ctx_x is not None else 1.0
+
+    action = None
+    brain = _DEF_ACTION_BRAIN
+    if brain is not None:
+        try:
+            sens = _def_action_sensors(
+                engine, defending_team, attacking_team,
+                ball_x, ball_y, danger_level, ball_aerial,
+                ctx_x, ctx_y, opponent_distance or 0.0, press_occurred)
+            action = brain.predict(sens)
+        except Exception:
+            action = None
+    if action is None:
+        if fallback is not None:
+            action = fallback
+        else:
+            action = random.choices(
+                ["tackle", "interception", "clearance", "block"],
+                weights=_danger_scaled_action_weights_static(danger_level),
+            )[0]
+
+    if action in ("clearance", "block") and not feasible:
+        action = "tackle" if random.random() < 0.6 else "interception"
+    return action
+
+
+# module-level mirror of MatchEngine._danger_scaled_action_weights so the
+# controller hook can fall back without an engine instance.
+def _danger_scaled_action_weights_static(danger: float) -> List[float]:
+    if danger >= 85:
+        return [0.15, 0.08, 0.48, 0.29]
+    if danger >= 60:
+        return [0.20, 0.12, 0.44, 0.24]
+    if danger >= 30:
+        return [0.28, 0.25, 0.27, 0.20]
+    return [0.32, 0.28, 0.22, 0.18]
+
+
+# Dedicated RNG for cosmetic, non-football randomness (e.g. how long a
+# goal celebration lasts). Kept separate from the global random stream on
+# purpose: seeded match reproductions must draw the same football sequence
+# with or without the presentation layer switched on.
+#
+# Checkpoint 37: this must be SEEDED. An unseeded instance drew from
+# OS entropy, so the celebration length added into state.match_clock_s
+# diverged run-to-run even under a fixed match seed — the clock shift then
+# cascaded into minute/phase/added-time logic and broke seeded match
+# reproduction. A fixed seed keeps celebration lengths deterministic (and
+# still decoupled from the global football stream).
+_COSMETIC_RNG = random.Random(0x5EEDC05)
+
+
 # ─────────────────────────────────────────────
 # ENUMS — The language of the simulation
 # ─────────────────────────────────────────────
@@ -121,6 +363,7 @@ class EventType(Enum):
     GOAL_KICK            = auto()
     OFFSIDE              = auto()
     VAR_DISALLOWED_GOAL  = auto()
+    GOAL_CELEBRATION     = auto()   # Post-goal pause; adds 10-30s to the match clock
     KICKOFF              = auto()
 
     # Discipline events
@@ -551,6 +794,12 @@ class MatchState:
     # continuous, time-ordered ball trajectory instead of disconnected episodes.
     match_clock_s: float = 0.0
     match_ball_path: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Passive 5 Hz player-position recorder (reads position_engine.states only;
+    # never mutates, never consumes RNG, changes no outcome).  keyed by player
+    # name -> [(t, x, y)...] on the global clock; player_team maps name->team.
+    player_path: Dict[str, List[Tuple[float, float, float]]] = field(default_factory=dict)
+    player_team: Dict[str, str] = field(default_factory=dict)
 
     # Added time (decided at ~88th minute)
     added_time: int = 0
@@ -1316,6 +1565,9 @@ class MatchEngine:
         self._minute_start_snapshot: Dict[str, Tuple[float, float]] = {}
         self._top_speed_cache: Dict[str, float] = {}
         self._minute_start_clock: float = 0.0
+        # Team-press engagement cache: {(team, tick_key) -> g} so the shared
+        # controller's forward pass runs once per team per off-ball tick.
+        self._team_press_g_cache: Dict[Tuple[str, float], float] = {}
 
         # Virtual GPS recorder — a 10 Hz per-tick position log that the
         # off-ball integrator feeds for verification/visualisation. Disabled
@@ -1838,8 +2090,34 @@ class MatchEngine:
         "TACKLE_WON", "TACKLE_LOST",
     }
 
+    def _record_player_tick(self, t: float, home: str, away: str) -> None:
+        """Passive player-position sample (read-only, no RNG, no outcome
+        effect): snapshot every registered player's live coordinates onto
+        ``state.player_path`` at ~5 Hz on the global clock, paired with the
+        per-minute ball path so a 2D replay can show real compacted-shape
+        motion instead of once-per-minute ghost dots."""
+        if self.position_engine is None:
+            return
+        pp = self.state.player_path
+        pt = self.state.player_team
+        for team in (home, away):
+            for name in self.position_engine.team_rosters.get(team, []):
+                st = self.position_engine.states.get(name)
+                if st is None:
+                    continue
+                if name not in pt:
+                    pt[name] = team
+                lst = pp.get(name)
+                if lst is None:
+                    lst = []
+                    pp[name] = lst
+                lst.append((round(float(t), 2),
+                            round(float(st.current_x), 1),
+                            round(float(st.current_y), 1)))
+
     def _record_offball_distance(self, name: str, moved: float,
-                                 speed: float, top: float) -> None:
+                                 speed: float, top: float,
+                                 duration_s: float) -> None:
         """Accumulate REAL per-tick off-ball movement into PositionEngine's
         physics store, counting sprint SEGMENTS with minimum duration and
         cooldown so micro-oscillations around the threshold don't inflate
@@ -1864,8 +2142,6 @@ class MatchEngine:
                 sprint_inc = 1
                 st["in_sprint"] = True
         else:
-            if st["sprint_run"] >= 3:
-                sprint_inc = 1  # segment just ended
             st["sprint_run"] = 0
             st["in_sprint"] = False
             st["sprint_cooldown"] = 5
@@ -1877,13 +2153,12 @@ class MatchEngine:
                 hi_inc = 1
                 st["in_hi"] = True
         else:
-            if st["hi_run"] >= 2:
-                hi_inc = 1
             st["hi_run"] = 0
             st["in_hi"] = False
             st["hi_cooldown"] = 4
         self.position_engine.record_physics_distance(
-            name, distance_m=moved, sprint_count=sprint_inc,
+            name, distance_m=moved, duration_s=duration_s, speed_mps=speed,
+            sprint_count=sprint_inc,
             high_speed_sprint_count=hi_inc,
             top_speed_mps=speed if speed > 0 else 0.0,
         )
@@ -1979,7 +2254,12 @@ class MatchEngine:
         cst = self._chase_state.setdefault(pname, {"p": 0.0, "t": 0.0, "allow": 0.0})
         if chasing:
             if cst["p"] <= 0.0 and cst["allow"] == 0.0:
-                prob = self._PRESS_PROB.get(pos, 0.60)
+                _g_key = (team, round(self.state.match_clock_s * 10.0))
+                g = self._team_press_g_cache.get(_g_key)
+                if g is None:
+                    g = _team_press_g(self, team, ball_x, ball_y, danger_t)
+                    self._team_press_g_cache[_g_key] = g
+                prob = self._PRESS_PROB.get(pos, 0.60) * g
                 cst["allow"] = 1.0 if random.random() < prob else -1.0
             cst["t"] += DT
             if cst["allow"] > 0:
@@ -2019,7 +2299,7 @@ class MatchEngine:
         st.current_x, st.current_y = nx, ny
         # Real distance into both the physics store and the legacy drift
         # field (so distance_total stays the comprehensive real total).
-        self._record_offball_distance(pname, moved, spd, tgt)
+        self._record_offball_distance(pname, moved, spd, tgt, DT)
         st.minute_drift_distance += moved
 
     def _offball_run(self, duration_s: float, home_has_ball: bool) -> None:
@@ -2057,6 +2337,8 @@ class MatchEngine:
                     self._offball_move_player(
                         pname, team, ball_x, ball_y, has_ball,
                         danger.get(team, 0.0), cross_team, DT)
+            if i % 2 == 0:
+                self._record_player_tick(t0 + (i + 1) * DT, home, away)
             if self.gps is not None:
                 self.gps.record_tick(
                     self.state.minute, t0 + (i + 1) * DT, self.position_engine,
@@ -2104,6 +2386,8 @@ class MatchEngine:
                     "x": round(ball_x, 2), "y": round(ball_y, 2),
                     "kind": "rest", "team": self.state.possession_team or "",
                 })
+            if ti % 2 == 0:
+                self._record_player_tick(self.state.match_clock_s, home, away)
             if self.gps is not None:
                 self.gps.record_tick(
                     minute, self.state.match_clock_s, self.position_engine,
@@ -2324,6 +2608,7 @@ class MatchEngine:
             self._sprint_state = {}
             self._patrol = {}
             self._chase_state = {}
+            self._team_press_g_cache = {}
             self._minute_start_snapshot = {}
             for _t in (self.config.home_team, self.config.away_team):
                 self._minute_start_snapshot.update(
@@ -2445,6 +2730,9 @@ class MatchEngine:
                         "touches": activity["touches"],
                         "peak_touch_jump": activity["peak_touch_jump"],
                         "physics_distance_m": activity.get("physics_distance_m", 0.0),
+                        "physics_walk_time_s": activity.get("physics_walk_time_s", 0.0),
+                        "physics_jog_time_s": activity.get("physics_jog_time_s", 0.0),
+                        "physics_sprint_time_s": activity.get("physics_sprint_time_s", 0.0),
                         "physics_sprint_count": activity.get("physics_sprint_count", 0.0),
                         "physics_high_speed_sprint_count": activity.get("physics_high_speed_sprint_count", 0.0),
                         "physics_top_speed_mps": activity.get("physics_top_speed_mps", 0.0),
@@ -2487,6 +2775,12 @@ class MatchEngine:
         for minute in range(91, 91 + added):
             self.state.phase = MatchPhase.ADDED_TIME
             _run_minute(minute)
+
+        # Final whistle — any possession carry armed by the LAST sequence (a
+        # turnover in the closing seconds that the next sequence never got to
+        # consume) is moot: the match is over. Clear it so no dangling carry
+        # leaks past full-time.
+        self.state.possession_winner = ""
 
         # Final whistle — set minutes for everyone still on pitch
         total_mins = 90 + added
@@ -2643,6 +2937,32 @@ class MatchEngine:
         else:
             self.state.away_subs_made += 1
 
+        # Injury milestone: when the sub was forced by an in-match injury,
+        # surface an INJURY event BEFORE the substitution so the timeline
+        # (and exports) show the causality: the injury, then the change.
+        # Build it first so it lands ahead of the SUBSTITUTION event below.
+        ilabel = sub.get("reason", "tactical").lower()
+        inj_event = None
+        if ilabel == "injury":
+            inj_meta = {}
+            st_state = (self.sub_controller.stamina.get(name_off)
+                        if self.sub_controller is not None else None)
+            if st_state is not None:
+                inj_meta.update({
+                    "injury_type": st_state.injury_type or "unknown",
+                    "injury_severity": round(st_state.injury_severity, 1),
+                    "injury_minute": st_state.injury_minute,
+                })
+            inj_event = MatchEvent(
+                minute=minute, second=0,
+                event_type=EventType.INJURY,
+                team=team,
+                player=name_off,
+                phase=self.state.phase,
+                game_state=self.state.game_state,
+                metadata=inj_meta,
+            )
+
         # Emit substitution event
         sub_event = MatchEvent(
             minute=minute,
@@ -2659,6 +2979,8 @@ class MatchEngine:
                 "stamina_at_exit": sub.get("stamina_at_exit", 0),
             }
         )
+        if inj_event is not None:
+            self.timeline.append(inj_event)
         self.timeline.append(sub_event)
         self.subs.append(sub_event)
 
@@ -3262,27 +3584,55 @@ class MatchEngine:
             # low they win it back (tackle/interception bias). The defender
             # picks the action closest to the ball, and clears an AERIAL
             # ball with a headed clearance vs a low ball with a foot one.
+            # Checkpoint — TACKLE VOLUME fix (why teams were seeing too few
+            # tackles):
+            # Defensive contests were GATED behind a PRESS event having
+            # happened in this exact sequence (the `pressure_occurred` guard
+            # below). But a press is a narrow, probabilistically-scored event
+            # (engagement range x zone prob x intensity), so many possessions
+            # produced NO press roll at all — silently starving the entire
+            # defensive chain (tackles + interceptions + blocks) of chances to
+            # fire. That is precisely "a tackle = pressure but not vice versa":
+            # proactive defending should generate its own contests, not wait
+            # for a press event to happen to unlock them.
+            #
+            # Fix: the defensive contest now fires on its OWN probability,
+            # proportional to the defending team's press_intensity (how
+            # engaged the whole team is) and the phase multiplier — 
+            # INDEPENDENT of whether a PRESS event happened to roll — so a
+            # pressing side records tackles at realistic volume. A press event
+            # in the sequence still nudges the chance up (pressing player IS
+            # closer to the ball), but it is no longer a hard pre-requisite.
             pressure_occurred = any(
                 e.event_type == EventType.PRESS for e in poss_result.events
             )
+            base_contest = def_profile.press_intensity * PhaseEngine.press_mult(phase)
+            # Whether a press event actually happened boosts the raw contest
+            # chance (the pressing defender is tight to the ball).
             if pressure_occurred:
-                contest_prob = min(0.65, def_profile.press_intensity
-                                    * PhaseEngine.press_mult(phase) * 0.55)
-                if random.random() < contest_prob:
+                base_contest += 0.18
+            contest_prob = min(0.72, base_contest * 0.6)
+            if random.random() < contest_prob:
                     last_evt = poss_result.events[-1]
                     ctx_x = last_evt.end_x if last_evt.end_x is not None else last_evt.location_x
                     ctx_y = last_evt.end_y if last_evt.end_y is not None else last_evt.location_y
                     danger = self.threat.danger_at(defending_team)
                     own_goal_x = 105.0 if attacks_right else 0.0
-                    action_type = random.choices(
-                        ["tackle", "interception", "clearance", "block"],
-                        weights=self._danger_scaled_action_weights(danger),
-                    )[0]
-                    # Clearances/blocks only make sense defending near their
-                    # own goal — well upfield, fall back to tackle/interception.
-                    clearance_zone = ctx_x > 70 if attacks_right else ctx_x < 35
-                    if action_type in ("clearance", "block") and ctx_x is not None and not clearance_zone:
-                        action_type = "tackle" if random.random() < 0.6 else "interception"
+                    # Action type: learned DefensiveActionBrain when engaged,
+                    # else the heuristic danger-scaled weights.  The physical
+                    # clearance/block feasibility grip lives inside
+                    # _def_action_choice (a "clearance" 60 m from our own goal
+                    # line is a turnover, not an act).
+                    action_type = _def_action_choice(
+                        self, defending_team, attacking_team,
+                        danger, ctx_x, ctx_y,
+                        self._infer_aerial_ball(poss_result.events, last_evt),
+                        self._contest_distance(defending_team, attacking_team,
+                                               ctx_x, ctx_y),
+                        attacks_right,
+                        self.state.last_ball_x, self.state.last_ball_y,
+                        press_occurred=pressure_occurred,
+                    )
                     def_result = ChainDispatcher.defensive_action(
                         minute, defending_team, attacking_team,
                         def_players, att_players, self.state, action_type,
@@ -3314,12 +3664,29 @@ class MatchEngine:
                 ctx_y = last_evt.end_y if last_evt.end_y is not None else last_evt.location_y
                 dangerous_def = ctx_x > 80 if attacks_right else ctx_x < 25
                 if dangerous_def and random.random() < 0.50:
+                    danger_now = self.threat.danger_at(defending_team)
+                    # Same learned action controller as the open-play contest:
+                    # the trigger (dead ball in our third) is a material FEASIBILITY
+                    # fact, but WHICH act (clearance/block/tackle/interception) is
+                    # the brain's call, not a hardcoded "clearance".
+                    action_type = _def_action_choice(
+                        self, defending_team, attacking_team,
+                        danger_now, ctx_x, ctx_y,
+                        self._infer_aerial_ball(poss_result.events, last_evt),
+                        self._contest_distance(defending_team, attacking_team,
+                                               ctx_x, ctx_y),
+                        attacks_right,
+                        self.state.last_ball_x, self.state.last_ball_y,
+                        press_occurred=pressure_occurred,
+                        fallback="clearance",
+                        site="direct_clearance",
+                    )
                     def_result = ChainDispatcher.defensive_action(
                         minute, defending_team, attacking_team,
-                        def_players, att_players, self.state, "clearance",
+                        def_players, att_players, self.state, action_type,
                         context_x=ctx_x, context_y=ctx_y,
                         attacks_right=attacks_right,
-                        danger_level=self.threat.danger_at(defending_team),
+                        danger_level=danger_now,
                         ball_aerial=self._infer_aerial_ball(poss_result.events, last_evt),
                         own_goal_x=105.0 if attacks_right else 0.0,
                         position_engine=self.position_engine,
@@ -3551,11 +3918,22 @@ class MatchEngine:
         recovery_prob = 0.22 + min(0.20, danger / 250.0)
         if random.random() >= recovery_prob:
             return False
-        clearance_w = 0.70 + danger / 400.0
-        action_type = random.choices(
-            ["clearance", "block", "tackle"],
-            weights=[clearance_w, 0.16, 0.12],
-        )[0]
+        # Same learned action controller as the open-play contest: the deep
+        # recovery is a genuine "get it away" moment, but the act (clearance
+        # vs block vs winning it with a tackle/interception) is the brain's
+        # call — not a hardcoded clearance-heavy table.
+        action_type = _def_action_choice(
+            self, defending_team, attacking_team,
+            danger, ctx_x, ctx_y,
+            self._infer_aerial_ball(poss_result.events, last_evt),
+            self._contest_distance(defending_team, attacking_team,
+                                   ctx_x, ctx_y),
+            attacks_right,
+            self.state.last_ball_x, self.state.last_ball_y,
+            press_occurred=False,
+            fallback="clearance",
+            site="recovery",
+        )
         own_goal_x = 105.0 if attacks_right else 0.0
         from event_chain import ChainDispatcher
         def_result = ChainDispatcher.defensive_action(
@@ -3995,6 +4373,26 @@ class MatchEngine:
                     end_clock=self.state.match_clock_s, motion_folded=False,
                     events=list(chain_result.events),
                 ))
+                # GOAL CELEBRATION — the fixed real-world pause (10-30s) between
+                # a goal and the center restart. The chain span above was folded
+                # at the pre-celebration clock, so the celebration time lands in
+                # dead_time rather than inflating the goal chain's measured play.
+                # Drawn from the cosmetic RNG so presentation randomness never
+                # perturbs the seeded football sequence.
+                celebration_s = _COSMETIC_RNG.randint(10, 30)
+                self.state.match_clock_s += celebration_s
+                ce_min, ce_sec = divmod(int(self.state.match_clock_s), 60)
+                self.timeline.append(MatchEvent(
+                    minute=ce_min, second=ce_sec,
+                    event_type=EventType.GOAL_CELEBRATION,
+                    team=chain_result.goal_team,
+                    player=chain_result.goal_scorer,
+                    phase=self.state.phase, game_state=self.state.game_state,
+                    metadata={"duration": celebration_s},
+                ))
+                if not self.quiet:
+                    print(f"  🎉 CELEBRATION ({celebration_s}s)"
+                          f" @ {ce_min}'{ce_sec:02d}")
                 return True # Break sequence loop
 
         # Penalty scored (separate event type)
@@ -4582,6 +4980,17 @@ class MatchResult:
     def full_match_ball_path(self) -> List[Dict[str, Any]]:
         """The whole 90' as one monotonic, time-ordered ball trajectory."""
         return self.state.match_ball_path
+
+    @property
+    def full_match_player_path(self) -> Dict[str, Any]:
+        """~5 Hz per-player positions on the global clock (passive recorder).
+
+        Returns {"path": {name: [(t, x, y), ...]}, "team": {name: team}}.
+        """
+        return {
+            "path": self.state.player_path or {},
+            "team": self.state.player_team or {},
+        }
 
     # ── REAL PHYSICS DISTANCE / SPRINT TOTALS ──────────────────────
     def physics_totals(self) -> Dict[str, Dict[str, float]]:

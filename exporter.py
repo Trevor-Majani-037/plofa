@@ -594,6 +594,7 @@ class StatAccumulator:
 
             # Defending
             "tackles_att": 0, "tackles_won": 0,
+            "tackles_sliding": 0, "tackles_standing": 0,
             "interceptions": 0, "clearances": 0, "blocks": 0,
             "recoveries": 0, "ball_recoveries": 0,
             "pressures": 0, "press_success": 0,
@@ -636,6 +637,7 @@ class StatAccumulator:
             "zone14_entries": 0,
             "deep_completions": 0, "progressive_pass_distance": 0.0,
             "xT": 0.0, "gpa": 0.0, "pva": 0.0, "epa": 0.0,
+            "xT_per90": 0.0, "gpa_per90": 0.0, "pva_per90": 0.0, "epa_per90": 0.0,
 
             # Opta confirmed stats (Checkpoint 28)
             "pressed_sequences": 0,
@@ -1189,6 +1191,10 @@ class StatAccumulator:
             actor["tackles_att"] += 1
             actor["tackles_won"] += 1
             actor["possession_won"] += 1
+            if (e.metadata or {}).get("technique") == "sliding":
+                actor["tackles_sliding"] += 1
+            else:
+                actor["tackles_standing"] += 1
             # Tackle zone tracking (for last man tackles)
             if e.location_x is not None:
                 is_home = self._is_home_player(actor, e)
@@ -1202,6 +1208,10 @@ class StatAccumulator:
         elif e.event_type == EventType.TACKLE_LOST:
             actor["tackles_att"] += 1
             actor["dribbled_past"] += 1
+            if (e.metadata or {}).get("technique") == "sliding":
+                actor["tackles_sliding"] += 1
+            else:
+                actor["tackles_standing"] += 1
 
         elif e.event_type == EventType.INTERCEPTION:
             if not e.outcome:
@@ -1593,6 +1603,10 @@ class StatAccumulator:
                 s.setdefault("pva", 0.0)
                 s.setdefault("gpa", 0.0)
                 s.setdefault("epa", 0.0)
+                s.setdefault("xT_per90", 0.0)
+                s.setdefault("pva_per90", 0.0)
+                s.setdefault("gpa_per90", 0.0)
+                s.setdefault("epa_per90", 0.0)
 
                 # Rating (fixed weighted-sum system)
                 s["rating"] = self._calculate_rating(s, goals_conceded)
@@ -1733,22 +1747,27 @@ class StatAccumulator:
             
             player_name = event.player
             
+            # Away-team events are stored in the shared pitch frame (attacking
+            # toward x=0), so their coordinates must be mirrored for the xT/PVA
+            # grid which assumes increasing x = increasing danger.
+            attacks_right = (event.team == self.config.home_team)
+            
             # Convert event to ActionSnapshot for passes, carries, dribbles
             action = None
             action_type = None
             
             if event.event_type == EventType.PASS:
                 action_type = "pass"
-                action = create_action_from_event(event, action_type)
+                action = create_action_from_event(event, action_type, attacks_right=attacks_right)
             elif event.event_type == EventType.CARRY:
                 action_type = "carry"
-                action = create_action_from_event(event, action_type)
+                action = create_action_from_event(event, action_type, attacks_right=attacks_right)
             elif event.event_type in (EventType.DRIBBLE_SUCCESS, EventType.DRIBBLE_FAIL):
                 action_type = "dribble"
-                action = create_action_from_event(event, action_type)
+                action = create_action_from_event(event, action_type, attacks_right=attacks_right)
             elif event.event_type == EventType.PROGRESSIVE_PASS:
                 action_type = "pass"
-                action = create_action_from_event(event, action_type)
+                action = create_action_from_event(event, action_type, attacks_right=attacks_right)
             
             if action is not None:
                 player_actions[player_name].append(action)
@@ -1801,6 +1820,18 @@ class StatAccumulator:
                 player_actions.get(name, []),
                 player_opponents.get(name, []),
             )
+
+        # Per-90 rates — raw xT/PVA/EPA/GPA are cumulative sums that favour
+        # high-volume roles (CBs), so the rate columns level the comparison.
+        for stats in self.stats.values():
+            mins = stats.get("minutes_played", 0) or 0
+            if mins <= 0:
+                continue
+            rate = 90.0 / mins
+            stats["xT_per90"] = round(stats.get("xT", 0.0) * rate, 3)
+            stats["gpa_per90"] = round(stats.get("gpa", 0.0) * rate, 3)
+            stats["pva_per90"] = round(stats.get("pva", 0.0) * rate, 3)
+            stats["epa_per90"] = round(stats.get("epa", 0.0) * rate, 4)
     
     def _estimate_opponent_positions(
         self, event, ball_x: float, ball_y: float
@@ -2317,16 +2348,19 @@ class PLOFAExporter:
                     }:
                         break
 
-            pass_height = (m.get("pass_height") or "").lower()
+            pass_height = (m.get("pass_height") or "").lower().replace("_", " ")
             pass_advance = m.get("pass_advance", 0)
-            is_lofted_forward = pass_height in ("high", "lofted") and pass_advance > 0
+            # The pass detector emits the StatsBomb labels "High Pass" /
+            # "Low Pass" / "Ground". Only a measured High Pass is a chip;
+            # do not infer chips from distance, direction, or player role.
+            is_lofted_forward = pass_height == "high pass" and pass_advance > 0
 
             if is_headed_pass:
                 key = "type_headed pass"
                 actor = self.accumulator.stats.get(e.player)
                 if actor is not None:
                     actor["headed_passes"] = actor.get("headed_passes", 0) + 1
-            elif pt == "ground pass" and is_lofted_forward:
+            elif pt == "chipped pass" or (pt == "ground pass" and is_lofted_forward):
                 key = "type_chipped pass"
                 actor = self.accumulator.stats.get(e.player)
                 if actor is not None:
@@ -3777,10 +3811,10 @@ class PLOFAExporter:
         print(f"   xG Timeline    -> {filepath}")
 
     def plot_momentum(self, filepath: str):
-        """Per-minute momentum chart with scoreline goal markers.
+        """Render SofaScore-style per-minute momentum bars.
 
-        Momentum is +100..−100 from the home team's perspective
-        (positive = home dominant). The away side mirrors it.
+        Momentum is +100..-100 from the home team's perspective. Positive
+        bars belong to the home team; negative bars belong to the away team.
         """
         home = self.config.home_team
         away = self.config.away_team
@@ -3793,12 +3827,12 @@ class PLOFAExporter:
         if series:
             mins = [r["minute"] for r in series]
             vals = [r["momentum"] for r in series]
-            ax.fill_between(mins, vals, 0, where=[v >= 0 for v in vals],
-                            color=self.home_color, alpha=0.35)
-            ax.fill_between(mins, vals, 0, where=[v < 0 for v in vals],
-                            color=self.away_color, alpha=0.35)
-            ax.plot(mins, vals, color="#FFFFFF", linewidth=2.0,
-                    label="Momentum (+home / −away)")
+            home_vals = [max(0.0, v) for v in vals]
+            away_vals = [min(0.0, v) for v in vals]
+            ax.bar(mins, home_vals, width=0.86, color=self.home_color,
+                   alpha=0.90, label=f"{home} momentum")
+            ax.bar(mins, away_vals, width=0.86, color=self.away_color,
+                   alpha=0.90, label=f"{away} momentum")
 
         ax.axhline(0, color=PLOFAStyle.TEXT_MUTED, linewidth=1.0, alpha=0.6)
 
