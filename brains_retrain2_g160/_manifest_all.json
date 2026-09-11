@@ -1,0 +1,88 @@
+{
+  "surrogate": "brains/surrogate_pos_v3.json",
+  "states": 300,
+  "generations": 160,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.0,
+  "total_elapsed_s": 1758.4,
+  "results": {
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 702.5,
+      "summary": "LB: fitness=1.0000 (701.0s) -> brains_retrain2_g160\\LB.json",
+      "err": ""
+    },
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 707.0,
+      "summary": "CB: fitness=1.0000 (705.6s) -> brains_retrain2_g160\\CB.json",
+      "err": ""
+    },
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 707.0,
+      "summary": "RB: fitness=1.0000 (705.5s) -> brains_retrain2_g160\\RB.json",
+      "err": ""
+    },
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 707.1,
+      "summary": "GK: fitness=1.0000 (705.6s) -> brains_retrain2_g160\\GK.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 613.3,
+      "summary": "CDM: fitness=1.0000 (612.0s) -> brains_retrain2_g160\\CDM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 615.4,
+      "summary": "LW: fitness=1.0000 (614.5s) -> brains_retrain2_g160\\LW.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 615.9,
+      "summary": "CM: fitness=1.0000 (615.2s) -> brains_retrain2_g160\\CM.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 616.7,
+      "summary": "CAM: fitness=1.0000 (615.8s) -> brains_retrain2_g160\\CAM.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 434.5,
+      "summary": "RW: fitness=1.0000 (433.5s) -> brains_retrain2_g160\\RW.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 432.2,
+      "summary": "CF: fitness=1.0000 (431.2s) -> brains_retrain2_g160\\CF.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 435.2,
+      "summary": "ST: fitness=1.0000 (434.2s) -> brains_retrain2_g160\\ST.json",
+      "err": ""
+    }
+  }
+}

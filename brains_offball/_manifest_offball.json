@@ -1,0 +1,33 @@
+{
+  "positions": [
+    "LW",
+    "RW",
+    "CM"
+  ],
+  "generations": 40,
+  "population": 32,
+  "states": 400,
+  "results": {
+    "LW": {
+      "best_fitness": 0.9305,
+      "generations": 40,
+      "seed": 123,
+      "elapsed_s": 96.7,
+      "saved_to": "brains_offball\\LW.json"
+    },
+    "RW": {
+      "best_fitness": 0.9297,
+      "generations": 40,
+      "seed": 123,
+      "elapsed_s": 98.0,
+      "saved_to": "brains_offball\\RW.json"
+    },
+    "CM": {
+      "best_fitness": 0.9221,
+      "generations": 40,
+      "seed": 123,
+      "elapsed_s": 68.6,
+      "saved_to": "brains_offball\\CM.json"
+    }
+  }
+}

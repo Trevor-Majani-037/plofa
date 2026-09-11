@@ -1,0 +1,13 @@
+1. HOME WINGER HOMES (attacks right):
+   Home LW: home=(82, 11)
+   Home RW: home=(82, 57)
+2. AWAY WINGER HOMES (attacks left):
+   Away LW: home=(23, 57)
+   Away RW: home=(23, 11)
+3. HOME 10min in possession (ball x=85):
+   Home LW: (87.2, 24.3) zone=(4, 1) in_att=True wide=False
+   Home RW: (87.2, 43.7) zone=(4, 3) in_att=True wide=False
+4. AWAY 10min in possession (ball x=20):
+   Away LW: (26.9, 56.0) zone=(1, 4) in_att=True wide=True
+   Away RW: (26.9, 12.0) zone=(1, 0) in_att=True wide=True
+DONE

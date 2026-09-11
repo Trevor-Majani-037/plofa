@@ -1,0 +1,17 @@
+{
+  "positions": [
+    "ST"
+  ],
+  "generations": 160,
+  "population": 32,
+  "states": 300,
+  "results": {
+    "ST": {
+      "best_fitness": 1.0,
+      "generations": 160,
+      "seed": 123,
+      "elapsed_s": 434.2,
+      "saved_to": "brains_retrain2_g160\\ST.json"
+    }
+  }
+}

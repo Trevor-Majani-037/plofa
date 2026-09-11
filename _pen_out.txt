@@ -1,0 +1,449 @@
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 15' — Owen Låwitre → Hunan Lizurtan (Uditon) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 68' — Alpha Maůn (Uditon)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 82' — Lokambo-Jarah (Uditon)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 83' — Alpha Maůn (Uditon) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 85' — Sian Caprike (Uditon)
+  🟨 YELLOW CARD! 87' — Carl Tœvoda (Claw)
+  😮‍💨 SUB 91' — Farson Willord → Jacob Lendye (Claw) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 97' — Cruz Maetulo → Baron Siljan (Claw) [stamina]
+Uditon vs Claw s1000: 0-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 19' — Lewin Josin → Ednar Alecharv (Claw) [injury]
+  🟨 YELLOW CARD! 20' — Nils-Erik Dornic (Claw)
+  🟨 YELLOW CARD! 26' — Paul De Coupey (Claw)
+  🟨 YELLOW CARD! 36' — William D'Colen (Claw)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 68' — Nils-Erik Dornic (Claw) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 75' — Lim Brown (Claw)
+  🟨 YELLOW CARD! 81' — Alpha Maůn (Uditon)
+  🟨 YELLOW CARD! 82' — Cruz Maetulo (Claw)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 93' — Alpha Maůn (Uditon) SENT OFF
+  😮‍💨 SUB 94' — Lokambo-Jarah → Angel Donald (Uditon) [stamina]
+  😮‍💨 SUB 96' — Farson Willord → Jacob Lendye (Claw) [stamina]
+  🟨 YELLOW CARD! 96' — Ednar Alecharv (Claw)
+  😮‍💨 SUB 97' — Sian Caprike → Fonal Frances (Uditon) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+Uditon vs Claw s5000: 0-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 19' — Owen Låwitre (Uditon)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 31' — Lewin Josin (Claw)
+  ⚽ GOAL! 50' — Jean Cselios (Uditon) [1–0]
+  🟨 YELLOW CARD! 63' — Caut Mayoderoki (Claw)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 77' — Alpha Maůn → Dani Bellan (Uditon) [game_state]
+  🟨 YELLOW CARD! 77' — Lokambo-Jarah (Uditon)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 89' — Grantędd (Claw)
+  ♟️ SUB 90' — Sian Caprike → Hunan Lizurtan (Uditon) [game_state]
+  🟥 RED CARD! 90' — Tyrell Rohan (Uditon) SENT OFF
+  😮‍💨 SUB 93' — Cruz Maetulo → Baron Siljan (Claw) [stamina]
+  ♟️ SUB 94' — Carl Tœvoda → Arnell Duch (Claw) [game_state]
+  ♟️ SUB 95' — William D'Colen → Jacob Lendye (Claw) [game_state]
+Uditon vs Claw s9000: 1-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 42' — Wesse Mbamba → Charlton Gonn (Pearls) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 57' — Hillary Monzade → Rayan Victor Jam¢s (Pearls) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 63' — Mijjer Kalistus (Natrican)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 76' — Felix Aăntrope (Pearls)
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 88' — Denis Doxel → Victor Benley (Natrican) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 93' — Mijjer Kalistus (Natrican) SENT OFF
+Pearls vs Natrican s1010: 0-0 | pens_won=1 scored=0 missed=0
+  ⚽ GOAL! 9' — Pablo Antares (Natrican) [0–1]
+  🤕 SUB 18' — Joe Berv → Ellie Steward (Natrican) [injury]
+  🟨 YELLOW CARD! 20' — Francis Bonadi (Pearls)
+  🟨 YELLOW CARD! 21' — Henry Mioriugnam (Natrican)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 53' — Edward Tipō (Pearls) [1–1]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 81' — Wesse Mbamba (Pearls) [2–1]
+  😮‍💨 SUB 83' — Hillary Monzade → Rayan Victor Jam¢s (Pearls) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 85' — Francis Bonadi (Pearls) SENT OFF
+  🟨 YELLOW CARD! 86' — Francis Sesina (Natrican)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 91' — Francis Sesina (Natrican) SENT OFF
+  ♟️ SUB 93' — Jordan Kyllan → Victor Benley (Natrican) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 98' — Danso Potwemi (Natrican)
+Pearls vs Natrican s5010: 2-1 | pens_won=2 scored=1 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 2' — Felix Aăntrope (Pearls) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 23' — Hillary Monzade (Pearls) [2–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 38' — Mark Randolph (Natrican)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 66' — Ken Shaddy (Pearls)
+  ♟️ SUB 71' — Filip Sŷson → Victor Benley (Natrican) [game_state]
+  ♟️ SUB 77' — Perćy Luka → Quinten Swertch (Pearls) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 80' — Hillary Monzade → Rayan Victor Jam¢s (Pearls) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 86' — Jordan Kyllan → Rodney Esinda (Natrican) [game_state]
+  🟨 YELLOW CARD! 86' — Danso Potwemi (Natrican)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 92' — Felix Aăntrope (Pearls)
+  😮‍💨 SUB 93' — Pablo Antares → Jacques Ilomba (Natrican) [stamina]
+Pearls vs Natrican s9010: 2-0 | pens_won=2 scored=0 missed=1
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 31' — Junior Swertch (Lige-8)
+  ⚽ GOAL! 47' — Benard Vuwo Urida (Lige-8) [1–0]
+  🟨 YELLOW CARD! 51' — Archangel San-Joseρ (Lige-8)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 64' — Van Lee (Triumpher)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 69' — Orley Valence → Creg Nlova (Triumpher) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 73' — Jovan Codi (Lige-8) [2–0]
+  ♟️ SUB 75' — Van Lee → Tony Coupey (Triumpher) [game_state]
+  ♟️ SUB 81' — Rob Mardalov → Caya Tlipa (Triumpher) [game_state]
+  🟨 YELLOW CARD! 83' — John Pesićko (Lige-8)
+  🟥🟨 SECOND YELLOW! 84' — Junior Swertch (Lige-8) SENT OFF
+  🤕 SUB 92' — Paul Kilman → Elvis Gedarda (Lige-8) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 95' — Elias Tavren → Engin Warder (Lige-8) [stamina]
+Lige-8 vs Triumpher s1020: 2-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 19' — Elias Tavren → Engin Warder (Lige-8) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 37' — Moses Kopǿnsenme (Lige-8) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 64' — Rob Mardalov (Triumpher)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 77' — Junior Swertch → Wesan Wecu (Lige-8) [game_state]
+  🟨 YELLOW CARD! 78' — Orley Valence (Triumpher)
+  ♟️ SUB 81' — Moses Kopǿnsenme → Cryfton Jumacca (Lige-8) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 91' — Lee Jordan (Lige-8) [2–0]
+Lige-8 vs Triumpher s5020: 2-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 19' — Jovan Codi → Sezzi Parkinson (Lige-8) [injury]
+  🤕 SUB 24' — Ayle Moosh → Huier Cestopher (Triumpher) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 34' — Jovan Jochёr (Triumpher)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 71' — Dan Mirov (Triumpher)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 87' — Orley Valence (Triumpher)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 90' — Jovan Jochёr (Triumpher) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 92' — Elias Tavren (Lige-8) [1–0]
+  😮‍💨 SUB 94' — Zachery Worth → Creg Nlova (Triumpher) [stamina]
+  ♟️ SUB 96' — Archangel San-Joseρ → Wesan Wecu (Lige-8) [game_state]
+  😮‍💨 SUB 97' — Orley Valence → John Slirson (Triumpher) [stamina]
+Lige-8 vs Triumpher s9020: 1-0 | pens_won=0 scored=0 missed=0
+  ⚽ GOAL! 4' — Onike Lisim (Play City) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 37' — Quintten Robeź (Red Wolves)
+  🤕 SUB 38' — Onike Lisim → Mikey Somren (Play City) [injury]
+  🤕 SUB 38' — Quintten Robeź → Jonas Banarķ (Red Wolves) [injury]
+  ⚽ GOAL! 39' — Jack Đaven (Play City) [2–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 67' — Floart Zakari → Francis Dućźè (Red Wolves) [game_state]
+  😮‍💨 SUB 71' — Jack Đaven → Marko Rovia (Play City) [stamina]
+  😮‍💨 SUB 72' — Segan Ealong → Capitel (Play City) [stamina]
+  ♟️ SUB 73' — Nathan Opaz → Seane Bellind (Red Wolves) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 81' — Jony Rigann (Red Wolves)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 88' — Artem Morfes (Red Wolves)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 96' — Mikey Somren (Play City) [3–0]
+  🟨 YELLOW CARD! 97' — Capitel (Play City)
+  ⚠️ No stamina mapping for: OFFSIDE
+Play City vs Red Wolves s1030: 3-0 | pens_won=2 scored=0 missed=1
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 29' — Tim Jonasić (Play City) [1–0]
+  🟨 YELLOW CARD! 32' — Souze Maod (Red Wolves)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 34' — Julian Lingĺ (Red Wolves) [1–1]
+  🟨 YELLOW CARD! 35' — Hans Nigel (Play City)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 47' — Souze Maod (Red Wolves) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 61' — Danso Castro (Play City) [2–1]
+  ♟️ SUB 66' — Nathan Opaz → Francis Dućźè (Red Wolves) [game_state]
+  ♟️ SUB 67' — Floart Zakari → Seane Bellind (Red Wolves) [game_state]
+  😮‍💨 SUB 71' — Tim Jonasić → Luis Campton (Play City) [stamina]
+  😮‍💨 SUB 72' — Freoť Rance → Junior Merdec (Play City) [stamina]
+  😮‍💨 SUB 73' — Jack Đaven → Marko Rovia (Play City) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 77' — Quintten Robeź → Jonas Banarķ (Red Wolves) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+Play City vs Red Wolves s5030: 2-1 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 7' — Danso Castro (Play City) [1–0]
+  ⚽ GOAL! 10' — Onike Lisim (Play City) [2–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 21' — Freoť Rance (Play City) [3–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 73' — Jack Đaven → Marko Rovia (Play City) [stamina]
+  😮‍💨 SUB 74' — Tim Jonasić → Luis Campton (Play City) [stamina]
+  😮‍💨 SUB 75' — Onike Lisim → Mikey Somren (Play City) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 76' — Marko Rovia (Play City)
+  ♟️ SUB 78' — Floart Zakari → Francis Dućźè (Red Wolves) [game_state]
+  😮‍💨 SUB 80' — Quintten Robeź → Jonas Banarķ (Red Wolves) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 84' — Souze Maod → Benardo Zico (Red Wolves) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 91' — Freoť Rance (Play City) [4–0]
+Play City vs Red Wolves s9030: 4-0 | pens_won=0 scored=0 missed=0
+  🤕 SUB 8' — Lesley Lehton → Van Skimms (Justice) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 86' — Omar Seet → Basel Coudey (Justice) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 91' — Roy Steupŷ (Telbey)
+  ⚽ GOAL! 94' — Charles Leston (Telbey) [1–0]
+  😮‍💨 SUB 95' — Ryan Drummont → Judas Marh (Justice) [stamina]
+Telbey vs Justice s1040: 1-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 11' — Ryan Drummont (Justice)
+  ⚽ GOAL! 39' — Krim Srević (Telbey) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 64' — Charles Leston (Telbey)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 76' — Davis Jordanson → Sik Darmon (Telbey) [game_state]
+  🤕 SUB 78' — Carlo Voven → Nǿǿxy (Justice) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 87' — Ryan Drummont → Basel Coudey (Justice) [game_state]
+  ♟️ SUB 92' — Printan De Lonbert → Lartem Caliůre (Telbey) [game_state]
+  🟨 YELLOW CARD! 93' — Roy Steupŷ (Telbey)
+  🟨 YELLOW CARD! 94' — Yannick Vorshell (Justice)
+  ♟️ SUB 95' — Jion Masel → Davi Wǘnder (Telbey) [game_state]
+Telbey vs Justice s5040: 1-0 | pens_won=2 scored=1 missed=0
+  🤕 SUB 3' — Roy Steupŷ → Davi Wǘnder (Telbey) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 36' — Krim Srević (Telbey)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 66' — Omar Seet (Justice)
+  🟨 YELLOW CARD! 68' — Joey Farńez (Telbey)
+  🟨 YELLOW CARD! 76' — Ryan Drummont (Justice)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 85' — Chris Livre (Justice)
+  ⚽ GOAL! 88' — Charles Leston (Telbey) [1–0]
+  ♟️ SUB 92' — Printan De Lonbert → Sik Darmon (Telbey) [game_state]
+  ♟️ SUB 93' — Ryan Drummont → Nǿǿxy (Justice) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥🟨 SECOND YELLOW! 93' — Joey Farńez (Telbey) SENT OFF
+Telbey vs Justice s9040: 1-0 | pens_won=2 scored=0 missed=1
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 9' — Patrick Chalep (Tryox City) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 23' — Kayimbe John → Sdyivk Ankov (Tryox City) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 63' — Kivin Solem (Tryox City)
+  🤕 SUB 65' — Andrew Brad → Roger Dano (Tryox City) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 67' — Mirev Jr → Gard Elkana (Oxton) [game_state]
+  😮‍💨 SUB 71' — Newmań → Ushton Aaron (Tryox City) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 83' — Alpha Juan → Kaman Verda (Oxton) [stamina]
+  😮‍💨 SUB 85' — Coupey-Daniels → Pedro Mashon (Oxton) [stamina]
+  🟨 YELLOW CARD! 91' — Ushton Aaron (Tryox City)
+  🟥🟨 SECOND YELLOW! 93' — Kivin Solem (Tryox City) SENT OFF
+Tryox City vs Oxton s1050: 1-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 22' — Newmań → Ushton Aaron (Tryox City) [injury]
+  ⚽ GOAL! 23' — Agrey Vviķ (Oxton) [0–1]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 30' — Patrick Chalep (Tryox City) [1–1]
+  ⚽ GOAL! 31' — Patrick Chalep (Tryox City) [2–1]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 45' — Gabriel Jinker → Nad Billian (Tryox City) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 51' — Jake Jivan → Gard Elkana (Oxton) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 61' — Kal Grett → Tim Alphus (Oxton) [injury]
+  ♟️ SUB 67' — Mirev Jr → Pedro Mashon (Oxton) [game_state]
+  😮‍💨 SUB 72' — Andrew Brad → Roger Dano (Tryox City) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 84' — Ednar Pekisc (Oxton)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 93' — Roger Dano (Tryox City) [3–1]
+  🟨 YELLOW CARD! 93' — Pedro Mashon (Oxton)
+  🟥🟨 SECOND YELLOW! 94' — Ednar Pekisc (Oxton) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+Tryox City vs Oxton s5050: 3-1 | pens_won=2 scored=0 missed=1
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 9' — Sheamer Jacobs (Oxton) [0–1]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 17' — Miguel Senior (Tryox City)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 33' — Andrew Brad (Tryox City) [1–1]
+  🟥 RED CARD! 37' — Alpha Juan (Oxton) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 40' — Kal Grett (Oxton)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 72' — Zivez Daniso → Roger Dano (Tryox City) [stamina]
+  😮‍💨 SUB 73' — Newmań → Ushton Aaron (Tryox City) [stamina]
+  😮‍💨 SUB 74' — Raphael Rağe → Rahab Michael (Tryox City) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 90' — Jake Jivan → Gard Elkana (Oxton) [stamina]
+  😮‍💨 SUB 97' — Robin Fred-Pibar → Kaman Verda (Oxton) [stamina]
+Tryox City vs Oxton s9050: 1-1 | pens_won=0 scored=0 missed=0
+  ⚽ GOAL! 5' — Harry Twenson (Trendboys) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 25' — Kiené (Club Chovers)
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 35' — Juve Grantedd (Trendboys)
+  🤕 SUB 39' — Kiené → Cedrik Lane (Club Chovers) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🤕 SUB 40' — Nelson Cóeysan → Allan Fripo (Club Chovers) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 69' — Harry Twenson (Trendboys) [2–0]
+  🟨 YELLOW CARD! 74' — Zaddoc Meloche (Trendboys)
+  ♟️ SUB 78' — Harry Twenson → Molen Ben (Trendboys) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 83' — Zaddoc Meloche (Trendboys) [3–0]
+  🟨 YELLOW CARD! 83' — Valle Doxel (Club Chovers)
+  ⚠️ No stamina mapping for: OFFSIDE
+  😮‍💨 SUB 91' — Johnny Beldt → Benson Depo (Club Chovers) [stamina]
+  ♟️ SUB 94' — Marcet Tickley → José (Trendboys) [game_state]
+Trendboys vs Club Chovers s1060: 3-0 | pens_won=0 scored=0 missed=0
+  🤕 SUB 30' — Haszick → Ronge Goshem (Trendboys) [injury]
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 43' — Kiené (Club Chovers)
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟥 RED CARD! 46' — Johnny Beldt (Club Chovers) SENT OFF
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 86' — Kom Dåak (Club Chovers)
+  🤕 SUB 88' — Ernest Kaliso → Benson Depo (Club Chovers) [injury]
+  🟨 YELLOW CARD! 89' — Howard Duart (Trendboys)
+  😮‍💨 SUB 95' — Marcet Tickley → Juve Pitreć (Trendboys) [stamina]
+  😮‍💨 SUB 96' — Harry Twenson → Alfred Beloy (Trendboys) [stamina]
+  😮‍💨 SUB 97' — Callan Kiŕo → Allan Fripo (Club Chovers) [stamina]
+  😮‍💨 SUB 98' — Nelson Cóeysan → Alexander Podach (Club Chovers) [stamina]
+Trendboys vs Club Chovers s5060: 0-0 | pens_won=0 scored=0 missed=0
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚽ GOAL! 30' — Zaddoc Meloche (Trendboys) [1–0]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  ⚠️ No stamina mapping for: OFFSIDE
+  🟨 YELLOW CARD! 70' — Kom Dåak (Club Chovers)
+  🟨 YELLOW CARD! 75' — Zaddoc Meloche (Trendboys)
+  🟨 YELLOW CARD! 82' — Ernest Kaliso (Club Chovers)
+  🤕 SUB 83' — Ernest Kaliso → Benson Depo (Club Chovers) [injury]
+  ♟️ SUB 86' — Harry Twenson → Molen Ben (Trendboys) [game_state]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 90' — Milo Shúrz → Jay Marcet (Club Chovers) [game_state]
+  😮‍💨 SUB 93' — Nelson Cóeysan → Allan Fripo (Club Chovers) [stamina]
+  ⚠️ No stamina mapping for: OFFSIDE
+  ♟️ SUB 97' — Trey Wilis → José (Trendboys) [game_state]
+Trendboys vs Club Chovers s9060: 1-0 | pens_won=2 scored=1 missed=0
+
+=== across 21 matches ===
+   foul_committed: 480  (~22.86/match)
+   foul_won: 480  (~22.86/match)
+   penalty_missed: 4  (~0.19/match)
+   penalty_scored: 3  (~0.14/match)
+   penalty_won: 15  (~0.71/match)
+   red_card: 15  (~0.71/match)
+   yellow_card: 68  (~3.24/match)
+   penalties actually taken: 7  (~0.33/match)

@@ -1,0 +1,66 @@
+.......................F...                                              [100%]
+================================== FAILURES ===================================
+___________________ test_soul_system_actually_affects_match ___________________
+
+    def test_soul_system_actually_affects_match():
+        """End-to-end: a match with Percy (soul) should produce different stats
+        for him vs an identical match where he has no soul."""
+        from copy import deepcopy
+        # Match 1: Percy has soul
+        random.seed(1)
+        e1, h1, _ = build_match(seed=1)
+        percy1 = next(p for p in h1["starters"] if p.name == "Percy")
+        percy1.dna.soul = PlayerSoul("Percy", SoulArchetype.ATTACKING_PROPHET,
+                                      GreatnessPillars(0.97, 0.99, 0.91))
+        r1 = e1.simulate()
+    
+        # Match 2: Percy has no soul (identical seed)
+        random.seed(1)
+        e2, h2, _ = build_match(seed=1)
+        percy2 = next(p for p in h2["starters"] if p.name == "Percy")
+        percy2.dna.soul = None
+        r2 = e2.simulate()
+    
+        # Soul should produce different xG contribution
+        from exporter import StatAccumulator
+        all_p1 = {"Hartwell City": h1}
+>       acc1 = StatAccumulator(r1, all_p1)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests.py:453: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+exporter.py:273: in __init__
+    self._build()
+exporter.py:339: in _build
+    self._count_off_ball_runs()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <exporter.StatAccumulator object at 0x0000025119B92A50>
+
+    def _count_off_ball_runs(self):
+        """Count significant off-ball movements from position_log."""
+        position_log = getattr(self.result, "position_log", [])
+        if not position_log:
+            return
+    
+        RUN_THRESHOLD = 15.0
+        prev_positions: Dict[str, Tuple[float, float]] = {}
+        for frame in position_log:
+            for side in ("home", "away"):
+                for p in frame.get(side, []):
+                    name = p["player"]
+                    x, y = p.get("x", 50.0), p.get("y", 34.0)
+                    if name in prev_positions:
+                        px, py = prev_positions[name]
+                        dist = ((x - px) ** 2 + (y - py) ** 2) ** 0.5
+                        if dist >= RUN_THRESHOLD:
+>                           self.stats[name]["runs_without_ball"] += 1
+                            ^^^^^^^^^^^^^^^^
+E                           KeyError: 'P0'
+
+exporter.py:1196: KeyError
+---------------------------- Captured stdout call -----------------------------
+  \u26bd GOAL! 39' \u2014 Adri Vela (Hartwell City) [1\u20130]\n  \u26bd GOAL! 44' \u2014 Dragan Novak (Hartwell City) [2\u20130]\n  \u26bd GOAL! 50' \u2014 Percy (Hartwell City) [3\u20130]\n  \u26bd GOAL! 59' \u2014 Darius Frost (Hartwell City) [4\u20130]\n  \U0001f7e8 YELLOW CARD! 95' \u2014 Adri Vela (Hartwell City)\n  \U0001f7e8 YELLOW CARD! 16' \u2014 P1 (Away)\n  \u26bd GOAL! 25' \u2014 P1 (Away) [0\u20131]\n  \u26bd GOAL! 39' \u2014 Adri Vela (Hartwell City) [1\u20131]\n  \U0001f7e8 YELLOW CARD! 61' \u2014 Percy (Hartwell City)\n  \u26bd GOAL! 63' \u2014 P4 (Away) [1\u20132]\n  \U0001f7e5\U0001f7e8 SECOND YELLOW! 70' \u2014 Percy (Hartwell City) SENT OFF\n  \U0001f7e8 YELLOW CARD! 78' \u2014 Keano Walsh (Hartwell City)\n  \u26bd GOAL! 85' \u2014 Luca Ferrini (Hartwell City) [2\u20132]\n  \U0001f7e8 YELLOW CARD! 96' \u2014 Mateo Sanz (Hartwell City)
+=========================== short test summary info ===========================
+FAILED tests.py::test_soul_system_actually_affects_match - KeyError: 'P0'
+1 failed, 26 passed, 3 deselected in 175.63s (0:02:55)

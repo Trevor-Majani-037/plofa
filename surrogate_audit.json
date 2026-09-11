@@ -1,0 +1,209 @@
+[
+  {
+    "position": "GK",
+    "total_samples": 3308,
+    "n_buckets": 20,
+    "fewest": {
+      "bucket": "P1FT1OH0S1C1G0",
+      "n": 1
+    },
+    "clear_chance_samples": 636,
+    "clear_chance_strict": 454,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|RECYCLE": 21,
+      "P1FT1OH0S1C1G1|RECYCLE": 54,
+      "P1FT1OH0S0C1G1|RECYCLE": 17,
+      "P0FT1OH0S1C1G1|RECYCLE": 56,
+      "P0FT1OH0S0C1G1|SAFE_PASS": 78,
+      "P1FT1OH0S1C1G1|SAFE_PASS": 135,
+      "P1FT1OH0S0C1G1|SAFE_PASS": 66,
+      "P0FT1OH0S1C1G1|SAFE_PASS": 209
+    }
+  },
+  {
+    "position": "CB",
+    "total_samples": 6686,
+    "n_buckets": 28,
+    "fewest": {
+      "bucket": "P0FT0OH0S1C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 656,
+    "clear_chance_strict": 11,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|RECYCLE": 74,
+      "P1FT1OH0S1C1G1|RECYCLE": 1,
+      "P1FT1OH0S0C1G1|RECYCLE": 79,
+      "P0FT1OH0S1C1G1|RECYCLE": 1,
+      "P0FT1OH0S0C1G1|SAFE_PASS": 210,
+      "P1FT1OH0S1C1G1|SAFE_PASS": 1,
+      "P1FT1OH0S0C1G1|SAFE_PASS": 282,
+      "P0FT1OH0S1C1G1|SAFE_PASS": 8
+    }
+  },
+  {
+    "position": "LB",
+    "total_samples": 1713,
+    "n_buckets": 30,
+    "fewest": {
+      "bucket": "P1FT1OH0S1C1G0",
+      "n": 1
+    },
+    "clear_chance_samples": 115,
+    "clear_chance_strict": 30,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|CROSS": 61,
+      "P1FT1OH0S1C1G1|CROSS": 7,
+      "P1FT1OH0S0C1G1|CROSS": 24,
+      "P0FT1OH0S1C1G1|CROSS": 23
+    }
+  },
+  {
+    "position": "RB",
+    "total_samples": 1756,
+    "n_buckets": 30,
+    "fewest": {
+      "bucket": "P0FT0OH0S1C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 178,
+    "clear_chance_strict": 63,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|CROSS": 34,
+      "P1FT1OH0S1C1G1|CROSS": 31,
+      "P1FT1OH0S0C1G1|CROSS": 81,
+      "P0FT1OH0S1C1G1|CROSS": 32
+    }
+  },
+  {
+    "position": "CDM",
+    "total_samples": 2720,
+    "n_buckets": 25,
+    "fewest": {
+      "bucket": "P1FT0OH1S1C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 193,
+    "clear_chance_strict": 8,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|RECYCLE": 29,
+      "P1FT1OH0S1C1G1|RECYCLE": 1,
+      "P1FT1OH0S0C1G1|RECYCLE": 30,
+      "P0FT1OH0S1C1G1|RECYCLE": 2,
+      "P0FT1OH0S0C1G1|SAFE_PASS": 67,
+      "P1FT1OH0S1C1G1|SAFE_PASS": 0,
+      "P1FT1OH0S0C1G1|SAFE_PASS": 59,
+      "P0FT1OH0S1C1G1|SAFE_PASS": 5
+    }
+  },
+  {
+    "position": "CM",
+    "total_samples": 6787,
+    "n_buckets": 28,
+    "fewest": {
+      "bucket": "P1FT1OH0S1C0G1",
+      "n": 2
+    },
+    "clear_chance_samples": 270,
+    "clear_chance_strict": 48,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|THROUGH_BALL": 3,
+      "P1FT1OH0S1C1G1|THROUGH_BALL": 0,
+      "P1FT1OH0S0C1G1|THROUGH_BALL": 26,
+      "P0FT1OH0S1C1G1|THROUGH_BALL": 0,
+      "P0FT1OH0S0C1G1|PROGRESSIVE_PASS": 142,
+      "P1FT1OH0S1C1G1|PROGRESSIVE_PASS": 1,
+      "P1FT1OH0S0C1G1|PROGRESSIVE_PASS": 51,
+      "P0FT1OH0S1C1G1|PROGRESSIVE_PASS": 47
+    }
+  },
+  {
+    "position": "CAM",
+    "total_samples": 1090,
+    "n_buckets": 16,
+    "fewest": {
+      "bucket": "P1FT1OH0S1C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 69,
+    "clear_chance_strict": 50,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|THROUGH_BALL": 0,
+      "P1FT1OH0S1C1G1|THROUGH_BALL": 46,
+      "P1FT1OH0S0C1G1|THROUGH_BALL": 13,
+      "P0FT1OH0S1C1G1|THROUGH_BALL": 0,
+      "P0FT1OH0S0C1G1|PROGRESSIVE_PASS": 0,
+      "P1FT1OH0S1C1G1|PROGRESSIVE_PASS": 4,
+      "P1FT1OH0S0C1G1|PROGRESSIVE_PASS": 6,
+      "P0FT1OH0S1C1G1|PROGRESSIVE_PASS": 0
+    }
+  },
+  {
+    "position": "LW",
+    "total_samples": 496,
+    "n_buckets": 28,
+    "fewest": {
+      "bucket": "P0FT1OH0S1C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 30,
+    "clear_chance_strict": 12,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|CROSS": 7,
+      "P1FT1OH0S1C1G1|CROSS": 10,
+      "P1FT1OH0S0C1G1|CROSS": 11,
+      "P0FT1OH0S1C1G1|CROSS": 2
+    }
+  },
+  {
+    "position": "RW",
+    "total_samples": 496,
+    "n_buckets": 29,
+    "fewest": {
+      "bucket": "P1FT1OH0S1C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 9,
+    "clear_chance_strict": 5,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|CROSS": 0,
+      "P1FT1OH0S1C1G1|CROSS": 5,
+      "P1FT1OH0S0C1G1|CROSS": 4,
+      "P0FT1OH0S1C1G1|CROSS": 0
+    }
+  },
+  {
+    "position": "ST",
+    "total_samples": 2170,
+    "n_buckets": 27,
+    "fewest": {
+      "bucket": "P0FT1OH0S0C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 87,
+    "clear_chance_strict": 17,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|SHOOT": 32,
+      "P1FT1OH0S1C1G1|SHOOT": 16,
+      "P1FT1OH0S0C1G1|SHOOT": 38,
+      "P0FT1OH0S1C1G1|SHOOT": 1
+    }
+  },
+  {
+    "position": "CF",
+    "total_samples": 1043,
+    "n_buckets": 15,
+    "fewest": {
+      "bucket": "P0FT1OH0S0C0G0",
+      "n": 1
+    },
+    "clear_chance_samples": 65,
+    "clear_chance_strict": 21,
+    "clear_chance_by_cell": {
+      "P0FT1OH0S0C1G1|SHOOT": 44,
+      "P1FT1OH0S1C1G1|SHOOT": 0,
+      "P1FT1OH0S0C1G1|SHOOT": 0,
+      "P0FT1OH0S1C1G1|SHOOT": 21
+    }
+  }
+]

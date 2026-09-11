@@ -1,0 +1,59 @@
+
+======================================================================
+AWAY_HIGH_PRESS
+======================================================================
+  🟨 YELLOW CARD! 14' — Kofi Mensah (Hartwell City)
+  ⚽ GOAL! 29' — P6 (Away) [0–1]
+  ⚽ GOAL! 34' — P7 (Away) [0–2]
+  ⚽ GOAL! 36' — Adri Vela (Hartwell City) [1–2]
+  🟨 YELLOW CARD! 37' — P7 (Away)
+  🟨 YELLOW CARD! 40' — Darius Frost (Hartwell City)
+  ⚽ GOAL! 62' — Adri Vela (Hartwell City) [2–2]
+  🟨 YELLOW CARD! 68' — P3 (Away)
+  🟥🟨 SECOND YELLOW! 70' — P7 (Away) SENT OFF
+  ⚽ GOAL! 81' — P4 (Away) [2–3]
+  🟨 YELLOW CARD! 82' — Rico Alves (Hartwell City)
+  🟨 YELLOW CARD! 95' — P2 (Away)
+  seed=1 Adri Vela    anchor_y=10.8   passes=58  mean|lateral|=8.3 postCARRY_passing_from=5.0(n=22) directReceive_pass_from=7.4(n=21) carries=26 dy_absmean=1.01
+  seed=1 Percy        anchor_y=57.2   passes=49  mean|lateral|=11.2 postCARRY_passing_from=10.1(n=20) directReceive_pass_from=12.0(n=16) carries=22 dy_absmean=2.31
+  🟨 YELLOW CARD! 17' — Darius Frost (Hartwell City)
+  ⚽ GOAL! 66' — Kofi Mensah (Hartwell City) [1–0]
+  🟨 YELLOW CARD! 73' — Luca Ferrini (Hartwell City)
+  🟥🟨 SECOND YELLOW! 78' — Luca Ferrini (Hartwell City) SENT OFF
+  🥅 OWN GOAL! 79' — Darius Frost (Away) [1–1]
+  🟨 YELLOW CARD! 89' — Kofi Mensah (Hartwell City)
+  🟨 YELLOW CARD! 93' — P7 (Away)
+  seed=2 Adri Vela    anchor_y=10.8   passes=59  mean|lateral|=10.4 postCARRY_passing_from=5.0(n=21) directReceive_pass_from=12.1(n=16) carries=30 dy_absmean=1.07
+  seed=2 Percy        anchor_y=57.2   passes=33  mean|lateral|=8.4 postCARRY_passing_from=8.9(n=16) directReceive_pass_from=9.0(n=7) carries=23 dy_absmean=1.84
+
+  AVERAGE Adri Vela: mean lateral dev of pass origin = 9.4 m
+  Adri Vela pass-origin distribution: {'0-6m on flank': 65, '6-12m half-space edge': 18, '12-20m inside': 10, '20-30m central': 21, '30m+ far central': 3}
+
+  AVERAGE Percy: mean lateral dev of pass origin = 9.8 m
+  Percy pass-origin distribution: {'0-6m on flank': 32, '6-12m half-space edge': 21, '12-20m inside': 18, '20-30m central': 9, '30m+ far central': 2}
+
+======================================================================
+AWAY_PARK_BUS
+======================================================================
+  ⚽ GOAL! 7' — Adri Vela (Hartwell City) [1–0]
+  ⚽ GOAL! 19' — Percy (Hartwell City) [2–0]
+  ⚽ GOAL! 22' — Dragan Novak (Hartwell City) [3–0]
+  🟨 YELLOW CARD! 38' — P6 (Away)
+  🟥🟨 SECOND YELLOW! 66' — P6 (Away) SENT OFF
+  seed=1 Adri Vela    anchor_y=10.8   passes=69  mean|lateral|=9.9 postCARRY_passing_from=7.1(n=23) directReceive_pass_from=8.5(n=23) carries=31 dy_absmean=1.51
+  seed=1 Percy        anchor_y=57.2   passes=51  mean|lateral|=10.6 postCARRY_passing_from=5.9(n=18) directReceive_pass_from=11.0(n=19) carries=24 dy_absmean=1.87
+  🟨 YELLOW CARD! 2' — P7 (Away)
+  🟨 YELLOW CARD! 30' — Kofi Mensah (Hartwell City)
+  🟥 RED CARD! 48' — Darius Frost (Hartwell City) SENT OFF
+  ⚽ GOAL! 56' — Adri Vela (Hartwell City) [1–0]
+  🟥🟨 SECOND YELLOW! 74' — P7 (Away) SENT OFF
+  🟨 YELLOW CARD! 75' — P6 (Away)
+  🟨 YELLOW CARD! 82' — P3 (Away)
+  seed=2 Adri Vela    anchor_y=10.8   passes=64  mean|lateral|=6.4 postCARRY_passing_from=3.9(n=22) directReceive_pass_from=5.8(n=30) carries=25 dy_absmean=0.96
+  seed=2 Percy        anchor_y=57.2   passes=37  mean|lateral|=7.9 postCARRY_passing_from=4.8(n=12) directReceive_pass_from=9.5(n=17) carries=18 dy_absmean=1.12
+
+  AVERAGE Adri Vela: mean lateral dev of pass origin = 8.2 m
+  Adri Vela pass-origin distribution: {'0-6m on flank': 79, '6-12m half-space edge': 23, '12-20m inside': 13, '20-30m central': 16, '30m+ far central': 2}
+
+  AVERAGE Percy: mean lateral dev of pass origin = 9.2 m
+  Percy pass-origin distribution: {'0-6m on flank': 41, '6-12m half-space edge': 20, '12-20m inside': 17, '20-30m central': 8, '30m+ far central': 2}

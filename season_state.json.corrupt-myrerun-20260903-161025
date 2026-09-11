@@ -1,0 +1,1546 @@
+{
+  "season": "26/27",
+  "players": {
+    "Mijjer Kalistus": {
+      "confidence": 58.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        7.53
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Jordan Kyllan": {
+      "confidence": 54.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        7.01
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Joe Berv": {
+      "confidence": 54.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        7.19
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Francis Sesina": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 66,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.64
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Nashan Gwum": {
+      "confidence": 54.0,
+      "fatigue_level": 6.0,
+      "starting_stamina": 94.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        7.37
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Filip S\u0177son": {
+      "confidence": 58.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": true,
+      "injury_type": "ligament",
+      "matches_remaining_out": 5,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        7.66
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [
+        {
+          "date": "2026-08-31",
+          "injury_type": "ligament",
+          "recovery_days": 7,
+          "expected_return": "2026-09-07"
+        }
+      ],
+      "injury_date": "2026-08-31",
+      "recovery_days": 7,
+      "expected_return_date": "2026-09-07"
+    },
+    "Henry Mioriugnam": {
+      "confidence": 50.0,
+      "fatigue_level": 4.2,
+      "starting_stamina": 95.8,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.03
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Danso Potwemi": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": true,
+      "injury_type": "ligament",
+      "matches_remaining_out": 7,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 65,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.29
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [
+        {
+          "date": "2026-08-31",
+          "injury_type": "ligament",
+          "recovery_days": 12,
+          "expected_return": "2026-09-12"
+        }
+      ],
+      "injury_date": "2026-08-31",
+      "recovery_days": 12,
+      "expected_return_date": "2026-09-12"
+    },
+    "Pablo Antares": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": true,
+      "injury_type": "ligament",
+      "matches_remaining_out": 6,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 61,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.28
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [
+        {
+          "date": "2026-08-31",
+          "injury_type": "ligament",
+          "recovery_days": 11,
+          "expected_return": "2026-09-11"
+        }
+      ],
+      "injury_date": "2026-08-31",
+      "recovery_days": 11,
+      "expected_return_date": "2026-09-11"
+    },
+    "Denis Doxel": {
+      "confidence": 58.0,
+      "fatigue_level": 0.2,
+      "starting_stamina": 99.8,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        7.64
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Mark Randolph": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        1
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.9
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Moses Saint-Allan": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 28,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.92
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Victor Benley": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 33,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.17
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Brianz Majonzie": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.03
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Rodney Esinda": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 29,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.12
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Lyndall Hens\u00e9": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.03
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Ellie Steward": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.03
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Jacques Ilomba": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.03
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Joakob Masuley": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.74
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Wevan Powett": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": true,
+      "injury_type": "ligament",
+      "matches_remaining_out": 3,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 28,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.99
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [
+        {
+          "date": "2026-08-31",
+          "injury_type": "ligament",
+          "recovery_days": 20,
+          "expected_return": "2026-09-20"
+        }
+      ],
+      "injury_date": "2026-08-31",
+      "recovery_days": 20,
+      "expected_return_date": "2026-09-20"
+    },
+    "Servin Uze Jr": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.77
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Tyrone Catcher": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 67,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.09
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Quintin Forvik": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 67,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.04
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Victor Otieno Oloo": {
+      "confidence": 50.0,
+      "fatigue_level": 6.8,
+      "starting_stamina": 93.2,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.13
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Arnold Masty": {
+      "confidence": 50.0,
+      "fatigue_level": 7.7,
+      "starting_stamina": 92.3,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.2
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Poresh Hanz David": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.97
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Ajun Sawulu": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.95
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Erivon Der\u00e7arov": {
+      "confidence": 50.0,
+      "fatigue_level": 0.2,
+      "starting_stamina": 99.8,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        1
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.92
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Fredy Farbi": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 94,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.22
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Suigey Aloyce": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 27,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.67
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Carlos Salav": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 27,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.07
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Yashmin Dengry": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.97
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Ernest Michael": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.97
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Joni Anders": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.97
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Tony Durwen": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        5.97
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "William Diuda": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [
+        0
+      ],
+      "red_card_ban": 0,
+      "season_minutes": 66,
+      "season_matches": 1,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.26
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Laban Duimarsch": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Erian Divine": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Tael Wika": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Joli Arenza": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Ty France": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Rodney Qucone": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Steven Caliso": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Oba Daniels": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Allan Campstone": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Moen": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Willy Jervand": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    },
+    "Orti Theubacham": {
+      "confidence": 50.0,
+      "fatigue_level": 0.0,
+      "starting_stamina": 100.0,
+      "is_injured": false,
+      "injury_type": "none",
+      "matches_remaining_out": 0,
+      "yellow_cards_last_6": [],
+      "red_card_ban": 0,
+      "season_minutes": 0,
+      "season_matches": 0,
+      "recent_ratings": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0
+      ],
+      "recent_goals": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "injury_history": [],
+      "injury_date": null,
+      "recovery_days": 0,
+      "expected_return_date": null
+    }
+  },
+  "chemistry": {}
+}

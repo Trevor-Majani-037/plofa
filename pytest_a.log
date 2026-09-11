@@ -1,0 +1,116 @@
+FF..............................F.....................................   [100%]
+================================== FAILURES ===================================
+_______ test_defensive_block_preserves_fullback_touchline_but_cb_tucks ________
+
+    def test_defensive_block_preserves_fullback_touchline_but_cb_tucks():
+        random.seed(3)
+        pe, squad = _build(attacks_right=True)          # home defends own_goal_x=0
+        lb = pe.states['LB']
+        cb = pe.states['CB1']
+        # Full-back on the left touchline; ball deep in own half on the RIGHT side.
+        lb.current_x, lb.current_y = 40.0, 10.0
+        cb.current_x, cb.current_y = 40.0, 34.0
+        pe.defensive_block('Test FC', 18.0, 48.0, own_goal_x=0.0,
+                           danger_level=80.0, pull_strength=1.0)
+        # CB is the compact core: tucks hard toward the ball's side.
+        assert cb.current_y > 40.0, f"CB should tuck toward ball, got y={cb.current_y:.1f}"
+        # Full-back keeps the touchline: never dragged onto the ball's opposite flank.
+>       assert lb.current_y < 22.0, f"LB must hold its own touchline, got y={lb.current_y:.1f}"
+E       AssertionError: LB must hold its own touchline, got y=23.2
+E       assert 23.247382400000003 < 22.0
+E        +  where 23.247382400000003 = PlayerSpatialState(player_name='LB', position='LB', team='Test FC', home_x=28.4, home_y=13.2, current_x=13.80308000000...ctive_minute=0, minute_touch_distance=0.0, minute_touch_count=0, minute_peak_touch_jump=0.0, minute_drift_distance=0.0).current_y
+
+test_touchline_wide.py:53: AssertionError
+_______ test_out_of_possession_touchline_press_gated_by_press_intensity _______
+
+    def test_out_of_possession_touchline_press_gated_by_press_intensity():
+        random.seed(5)
+        pe_hi, squad = _build(attacks_right=True, press_intensity=0.9)
+        pe_lo = PositionEngine()
+        pe_lo.initialize_team('Test FC', squad['starters'], _profile(0.4),
+                              attacks_right=True)
+        lb_hi = pe_hi.states['LB']
+        lb_lo = pe_lo.states['LB']
+    
+        phase = type('P', (), {'value': 'second_open'})()
+        # Same live ball: high in the opponent's half, on the LB's flank (y small).
+        for m in range(1, 4):
+            pe_hi.drift_minute('Test FC', _profile(0.9), phase,
+                               minute=m, in_possession=False,
+                               ball_x=70.0, ball_y=12.0)
+            pe_lo.drift_minute('Test FC', _profile(0.4), phase,
+                               minute=m, in_possession=False,
+                               ball_x=70.0, ball_y=12.0)
+        # High press: full-back surges FORWARD up the flank to press.
+        # Low press: stays deeper (no touchline press).
+>       assert lb_hi.current_x > lb_lo.current_x + 8.0, (
+            f"High-press LB should push forward past low-press LB: "
+            f"hi={lb_hi.current_x:.1f} lo={lb_lo.current_x:.1f}")
+E       AssertionError: High-press LB should push forward past low-press LB: hi=24.4 lo=21.6
+E       assert 24.389014421601498 > (21.582058286324 + 8.0)
+E        +  where 24.389014421601498 = PlayerSpatialState(player_name='LB', position='LB', team='Test FC', home_x=28.4, home_y=13.2, current_x=24.38901442160...ctive_minute=0, minute_touch_distance=0.0, minute_touch_count=0, minute_peak_touch_jump=0.0, minute_drift_distance=0.0).current_x
+E        +  and   21.582058286324 = PlayerSpatialState(player_name='LB', position='LB', team='Test FC', home_x=25.4, home_y=13.2, current_x=21.58205828632...ctive_minute=0, minute_touch_distance=0.0, minute_touch_count=0, minute_peak_touch_jump=0.0, minute_drift_distance=0.0).current_x
+
+test_touchline_wide.py:76: AssertionError
+___________ test_possession_chain_unchanged_without_position_engine ___________
+
+    def test_possession_chain_unchanged_without_position_engine():
+        random.seed(12)
+        att = _make_squad("Att FC")
+        prof = TeamProfile("Att FC", TeamStyle.BALANCED, PlayingStyle.MIXED, Intensity.MEDIUM)
+        state = MatchState()
+    
+>       res = ChainDispatcher.possession(
+            30, "Att FC", att, prof, state, 4,
+            defending_players=[], context_x=50.0, context_y=34.0,
+        )
+
+test_attacking_matrix.py:554: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+event_chain.py:5164: in possession
+    return PossessionChain.generate(
+event_chain.py:1175: in generate
+    end_px, end_py = cls._pass_destination_to_receiver(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cls = <class 'event_chain.PossessionChain'>
+receiver = PlayerProfile(Att CAM 8, CAM, Att FC, OVR=86), x = 50.0, y = 34.0
+pass_dist = 11.414, position_engine = None, attacks_right = True
+
+    @classmethod
+    def _pass_destination_to_receiver(
+        cls, receiver: PlayerProfile,
+        x: float, y: float, pass_dist: float,
+        position_engine: Optional[PositionEngine],
+        attacks_right: bool,
+    ) -> Tuple[float, float]:
+        """
+        Checkpoint 21 — anti-clustering pass delivery.
+    
+        The old `_pass_destination` aimed the ball at a RANDOM vector: a
+        forward stride of `pass_dist * (0.20..0.70)` plus a lateral jitter of
+        ±2-10m. The receiver never had to be near the landing point, so the
+        receiver was then teleported to wherever the vector happened to land
+        — and because that vector only moved forward with a tiny lateral
+        spread, the whole team crept up the central channel over 90 minutes.
+    
+        Instead the ball is aimed at the receiver's LIVE position from the
+        position engine. The receiver controls the endpoint, so the delivery
+        and the next event's starting point agree. A winger whose post is the
+        touchline ends up ON the touchline; a fullback recycling stays on his
+        flank. `pass_dist` (the intended weight of the pass) caps how far the
+        ball can travel so a short pass still cannot reach a far receiver.
+        """
+        if position_engine is not None:
+            rx, ry = position_engine.get_position(receiver.name)
+        else:
+>           rx, ry = receiver.position_home
+                     ^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'PlayerProfile' object has no attribute 'position_home'
+
+event_chain.py:2678: AttributeError
+=========================== short test summary info ===========================
+FAILED test_touchline_wide.py::test_defensive_block_preserves_fullback_touchline_but_cb_tucks
+FAILED test_touchline_wide.py::test_out_of_possession_touchline_press_gated_by_press_intensity
+FAILED test_attacking_matrix.py::test_possession_chain_unchanged_without_position_engine
+3 failed, 67 passed in 87.38s (0:01:27)

@@ -1,0 +1,50 @@
+
+======================================================================
+AWAY_HIGH_PRESS
+======================================================================
+  🟨 YELLOW CARD! 29' — P9 (Away)
+  🟨 YELLOW CARD! 30' — P3 (Away)
+  🟥🟨 SECOND YELLOW! 34' — P3 (Away) SENT OFF
+  🟨 YELLOW CARD! 48' — P8 (Away)
+  🟨 YELLOW CARD! 64' — P5 (Away)
+  🟥🟨 SECOND YELLOW! 72' — P5 (Away) SENT OFF
+  🟨 YELLOW CARD! 75' — P2 (Away)
+  🟨 YELLOW CARD! 88' — Mateo Sanz (Hartwell City)
+  🟨 YELLOW CARD! 94' — P0 (Away)
+  seed=1 Adri Vela    anchor_y=10.8   passes=55  mean|lateral|=8.3 postCARRY_passing_from=8.0(n=25) directReceive_pass_from=8.5(n=23) carries=31 dy_absmean=1.79
+  seed=1 Percy        anchor_y=57.2   passes=37  mean|lateral|=7.2 postCARRY_passing_from=4.8(n=12) directReceive_pass_from=8.7(n=15) carries=18 dy_absmean=1.71
+  🟨 YELLOW CARD! 53' — P9 (Away)
+  🟨 YELLOW CARD! 88' — P6 (Away)
+  ⚽ GOAL! 91' — Dragan Novak (Hartwell City) [1–0]
+  seed=2 Adri Vela    anchor_y=10.8   passes=71  mean|lateral|=5.6 postCARRY_passing_from=3.7(n=26) directReceive_pass_from=5.1(n=29) carries=29 dy_absmean=1.06
+  seed=2 Percy        anchor_y=57.2   passes=39  mean|lateral|=13.3 postCARRY_passing_from=8.5(n=14) directReceive_pass_from=12.5(n=15) carries=15 dy_absmean=2.15
+
+  AVERAGE Adri Vela: mean lateral dev of pass origin = 7.0 m
+  Adri Vela pass-origin distribution: {'0-6m on flank': 82, '6-12m half-space edge': 23, '12-20m inside': 9, '20-30m central': 9, '30m+ far central': 3}
+
+  AVERAGE Percy: mean lateral dev of pass origin = 10.2 m
+  Percy pass-origin distribution: {'0-6m on flank': 40, '6-12m half-space edge': 7, '12-20m inside': 15, '20-30m central': 10, '30m+ far central': 4}
+
+======================================================================
+AWAY_PARK_BUS
+======================================================================
+  ⚽ GOAL! 7' — Adri Vela (Hartwell City) [1–0]
+  ⚽ GOAL! 21' — Darius Frost (Hartwell City) [2–0]
+  ⚽ GOAL! 40' — Kofi Mensah (Hartwell City) [3–0]
+  ⚽ GOAL! 68' — Dragan Novak (Hartwell City) [4–0]
+  seed=1 Adri Vela    anchor_y=10.8   passes=85  mean|lateral|=6.0 postCARRY_passing_from=4.0(n=34) directReceive_pass_from=6.0(n=33) carries=39 dy_absmean=1.19
+  seed=1 Percy        anchor_y=57.2   passes=54  mean|lateral|=8.2 postCARRY_passing_from=6.1(n=18) directReceive_pass_from=7.7(n=18) carries=25 dy_absmean=0.8
+  🟨 YELLOW CARD! 2' — P7 (Away)
+  ⚽ GOAL! 11' — Kofi Mensah (Hartwell City) [1–0]
+  🟨 YELLOW CARD! 65' — P4 (Away)
+  🟨 YELLOW CARD! 66' — P5 (Away)
+  🟨 YELLOW CARD! 82' — P8 (Away)
+  🟨 YELLOW CARD! 86' — P2 (Away)
+  seed=2 Adri Vela    anchor_y=10.8   passes=80  mean|lateral|=7.1 postCARRY_passing_from=6.8(n=38) directReceive_pass_from=6.1(n=29) carries=48 dy_absmean=1.17
+  seed=2 Percy        anchor_y=57.2   passes=51  mean|lateral|=8.4 postCARRY_passing_from=7.3(n=18) directReceive_pass_from=6.9(n=24) carries=22 dy_absmean=1.06
+
+  AVERAGE Adri Vela: mean lateral dev of pass origin = 6.5 m
+  Adri Vela pass-origin distribution: {'0-6m on flank': 108, '6-12m half-space edge': 26, '12-20m inside': 17, '20-30m central': 12, '30m+ far central': 2}
+
+  AVERAGE Percy: mean lateral dev of pass origin = 8.3 m
+  Percy pass-origin distribution: {'0-6m on flank': 57, '6-12m half-space edge': 20, '12-20m inside': 19, '20-30m central': 5, '30m+ far central': 4}

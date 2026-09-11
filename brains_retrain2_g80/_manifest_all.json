@@ -1,0 +1,88 @@
+{
+  "surrogate": "brains/surrogate_pos_v3.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.0,
+  "total_elapsed_s": 1007.6,
+  "results": {
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 351.3,
+      "summary": "GK: fitness=1.0000 (350.0s) -> brains_retrain2_g80\\GK.json",
+      "err": ""
+    },
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 352.7,
+      "summary": "RB: fitness=0.9597 (351.3s) -> brains_retrain2_g80\\RB.json",
+      "err": ""
+    },
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 353.9,
+      "summary": "LB: fitness=1.0000 (352.4s) -> brains_retrain2_g80\\LB.json",
+      "err": ""
+    },
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 355.4,
+      "summary": "CB: fitness=1.0000 (354.1s) -> brains_retrain2_g80\\CB.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 361.5,
+      "summary": "CM: fitness=0.9883 (359.9s) -> brains_retrain2_g80\\CM.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 363.6,
+      "summary": "CDM: fitness=0.9356 (362.1s) -> brains_retrain2_g80\\CDM.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 361.7,
+      "summary": "CAM: fitness=0.9896 (360.4s) -> brains_retrain2_g80\\CAM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 361.6,
+      "summary": "LW: fitness=0.9912 (360.1s) -> brains_retrain2_g80\\LW.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 290.4,
+      "summary": "CF: fitness=0.9649 (288.9s) -> brains_retrain2_g80\\CF.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 291.7,
+      "summary": "ST: fitness=0.9331 (290.3s) -> brains_retrain2_g80\\ST.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 292.6,
+      "summary": "RW: fitness=1.0000 (291.1s) -> brains_retrain2_g80\\RW.json",
+      "err": ""
+    }
+  }
+}

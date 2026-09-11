@@ -1,0 +1,91 @@
+{
+  "prior": 0.5,
+  "table": {
+    "fluid_counter": {
+      "Z1D0A0O1E1F1M0": {
+        "block": 1.0,
+        "clearance": 1.0
+      },
+      "Z1D0A0O0E0F1M0": {
+        "clearance": 0.5
+      },
+      "Z0D1A0O1E1F1M0": {
+        "clearance": 0.5
+      },
+      "Z2D0A0O1E1F1M1": {
+        "clearance": 1.0
+      },
+      "Z0D0A0O1E1F0M0": {
+        "tackle": 0.9333333333333332
+      },
+      "Z0D0A0O0E0F0M0": {
+        "interception": 0.5
+      }
+    },
+    "": {
+      "Z1D0A0O1E1F1M0": {
+        "block": 1.0,
+        "clearance": 1.0
+      },
+      "Z1D0A0O0E0F1M0": {
+        "clearance": 0.5
+      },
+      "Z0D1A0O1E1F1M0": {
+        "clearance": 0.5
+      },
+      "Z2D0A0O1E1F1M1": {
+        "clearance": 1.0
+      },
+      "Z0D0A0O1E1F0M0": {
+        "tackle": 0.9333333333333332
+      },
+      "Z0D0A0O0E0F0M0": {
+        "interception": 0.5
+      }
+    }
+  },
+  "counts": {
+    "fluid_counter": {
+      "Z1D0A0O1E1F1M0": {
+        "block": 1,
+        "clearance": 1
+      },
+      "Z1D0A0O0E0F1M0": {
+        "clearance": 1
+      },
+      "Z0D1A0O1E1F1M0": {
+        "clearance": 1
+      },
+      "Z2D0A0O1E1F1M1": {
+        "clearance": 1
+      },
+      "Z0D0A0O1E1F0M0": {
+        "tackle": 3
+      },
+      "Z0D0A0O0E0F0M0": {
+        "interception": 1
+      }
+    },
+    "": {
+      "Z1D0A0O1E1F1M0": {
+        "block": 1,
+        "clearance": 1
+      },
+      "Z1D0A0O0E0F1M0": {
+        "clearance": 1
+      },
+      "Z0D1A0O1E1F1M0": {
+        "clearance": 1
+      },
+      "Z2D0A0O1E1F1M1": {
+        "clearance": 1
+      },
+      "Z0D0A0O1E1F0M0": {
+        "tackle": 3
+      },
+      "Z0D0A0O0E0F0M0": {
+        "interception": 1
+      }
+    }
+  }
+}

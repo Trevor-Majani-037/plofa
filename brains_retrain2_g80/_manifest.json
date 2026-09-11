@@ -1,0 +1,17 @@
+{
+  "positions": [
+    "RW"
+  ],
+  "generations": 80,
+  "population": 32,
+  "states": 300,
+  "results": {
+    "RW": {
+      "best_fitness": 1.0,
+      "generations": 80,
+      "seed": 123,
+      "elapsed_s": 291.1,
+      "saved_to": "brains_retrain2_g80\\RW.json"
+    }
+  }
+}

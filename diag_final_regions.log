@@ -1,0 +1,41 @@
+  ⚽ GOAL! 7' — Adri Vela (Hartwell City) [1–0]
+  ⚽ GOAL! 21' — Darius Frost (Hartwell City) [2–0]
+  ⚽ GOAL! 40' — Kofi Mensah (Hartwell City) [3–0]
+  ⚽ GOAL! 68' — Dragan Novak (Hartwell City) [4–0]
+
+=== Adri Vela anchor_y=10.8 ===
+Pass origins: final-third (x>70) vs mid (35-70) vs own (<35):
+  final_third  on-flank<=6m:  61  6-12m:  10  12-20m:   6  20m+ central:   7
+  mid_third    on-flank<=6m:   0  6-12m:   1  12-20m:   0  20m+ central:   0
+  final-third pass origins: n=84 mean|lateral|=6.0m
+    x=98 y=45 dev=34.0
+    x=95 y=38 dev=27.3
+    x=103 y=38 dev=27.1
+    x=103 y=37 dev=26.4
+    x=103 y=37 dev=26.1
+    x=103 y=34 dev=23.0
+    x=103 y=34 dev=23.0
+    x=102 y=30 dev=19.3
+  mid-third pass origins:  n=1 mean|lateral|=9.3m
+    x=66 y=20 dev=9.3
+
+=== Percy anchor_y=57.2 ===
+Pass origins: final-third (x>70) vs mid (35-70) vs own (<35):
+  final_third  on-flank<=6m:  25  6-12m:  11  12-20m:   8  20m+ central:   4
+  mid_third    on-flank<=6m:   3  6-12m:   2  12-20m:   1  20m+ central:   0
+  final-third pass origins: n=48 mean|lateral|=8.4m
+    x=89 y=25 dev=32.0
+    x=103 y=27 dev=30.4
+    x=89 y=29 dev=28.4
+    x=93 y=30 dev=27.0
+    x=102 y=38 dev=19.6
+    x=90 y=40 dev=17.7
+    x=103 y=43 dev=14.3
+    x=94 y=43 dev=14.1
+  mid-third pass origins:  n=6 mean|lateral|=7.1m
+    x=54 y=38 dev=19.5
+    x=66 y=50 dev=7.4
+    x=55 y=51 dev=6.4
+    x=62 y=52 dev=4.9
+    x=47 y=54 dev=2.8
+    x=69 y=56 dev=1.4
