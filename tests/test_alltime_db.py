@@ -5,7 +5,11 @@ import sqlite3
 import pytest
 
 from alltime_db import (
+    add_alias,
+    alias_scan,
+    apply_alias_fixup,
     connect,
+    get_or_create_player,
     init_schema,
     ingest_match_package,
     import_legacy_xlsx,
@@ -149,3 +153,91 @@ def test_fidelity_tags(db_path, match_json):
         "SELECT DISTINCT fidelity FROM matches").fetchall()[0]["fidelity"] == "v26"
     assert conn.execute(
         "SELECT DISTINCT fidelity FROM player_match_stats").fetchall()[0]["fidelity"] == "v26"
+
+
+def _pkg(tmp_path, name, matchday, home="Alpha", away="Beta"):
+    doc = {
+        "match": {
+            "home_team": home, "away_team": away, "score": "1\u20130",
+            "home_xg": 1.0, "away_xg": 0.3, "matchday": matchday,
+            "season": "26/27", "competition": "PLOFA",
+            "venue": "Stadium", "date": f"2026-09-0{matchday}",
+        },
+        "timeline": [],
+        "players": {
+            name: {
+                "player": name, "team": home, "position": "ST",
+                "age": 25, "goals": 1, "xg": 0.8, "shots_on_target": 2,
+                "passes_attempted": 10, "passes_completed": 8,
+                "minutes_played": 90, "is_starter": True,
+                "home_or_away": "home",
+            },
+        },
+        "goals": [{
+            "minute": 10, "team": home, "scorer": name,
+            "assist": "", "situation": "open_play", "xg": 0.8,
+        }],
+    }
+    p = tmp_path / f"match_{matchday}_{name.replace(' ', '_')}.json"
+    p.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def test_alias_add_forwards_new_ingests(db_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    add_alias(conn, "Victor James", "Rayan Victor James")
+    old = get_or_create_player(conn, "Victor James")
+    new = get_or_create_player(conn, "Rayan Victor James")
+    assert old == new
+
+
+def test_alias_add_apply_rewires_and_dedupes(db_path, tmp_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    ingest_match_package(conn, str(_pkg(tmp_path, "Victor James", 1)))
+    ingest_match_package(conn, str(_pkg(tmp_path, "Victor James", 2)))
+    ingest_match_package(conn, str(_pkg(tmp_path, "Rayan Victor James", 3)))
+
+    old_by_name = conn.execute(
+        "SELECT p.player_id FROM players p WHERE p.name='Victor James'"
+    ).fetchone()
+    new_by_name = conn.execute(
+        "SELECT p.player_id FROM players p WHERE p.name='Rayan Victor James'"
+    ).fetchone()
+
+    add_alias(conn, "Victor James", "Rayan Victor James")
+    moved, deleted = apply_alias_fixup(conn)
+    assert moved + deleted == 2  # the two 26/27 rows now live under canonical
+
+    gone = conn.execute(
+        "SELECT COUNT(*) FROM player_match_stats WHERE player_id=?",
+        (old_by_name["player_id"],)).fetchone()[0]
+    assert gone == 0
+    canon_rows = conn.execute(
+        "SELECT COUNT(*) FROM player_match_stats WHERE player_id=?",
+        (new_by_name["player_id"],)).fetchone()[0]
+    assert canon_rows == 3
+    names = conn.execute(
+        "SELECT DISTINCT player_name FROM player_match_stats WHERE player_id=?",
+        (new_by_name["player_id"],)).fetchall()
+    assert all(r["player_name"] == "Rayan Victor James" for r in names)
+
+
+def test_alias_scan_proposes_same_person_pairs(db_path, tmp_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    ingest_match_package(conn, str(_pkg(tmp_path, "Victor James", 1)))
+    ingest_match_package(conn, str(_pkg(tmp_path, "Rayan Victor James", 2)))
+    cands = alias_scan(conn)
+    hits = [c for c in cands
+            if "Victor James" in (c["alias"], c["canonical"])
+            and "Rayan Victor James" in (c["alias"], c["canonical"])]
+    assert hits, "alias_scan should propose the Victor James rename pair"
+
+
+def test_idempotent_alias_add_same_name(db_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    add_alias(conn, "Rayan Victor James", "Rayan Victor James")
+    assert conn.execute("SELECT COUNT(*) FROM player_aliases").fetchone()[0] == 0

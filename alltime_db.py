@@ -33,6 +33,15 @@ python alltime_db.py init [--db path]
 python alltime_db.py import-legacy [--db path] [--xlsx path]
 python alltime_db.py sync [--db path] [--root plofa_output] [--dry-run]
 python alltime_db.py report [--db path]
+python alltime_db.py alias add <alias> <canonical> [--apply] [--note text]
+python alltime_db.py alias scan
+python alltime_db.py alias list
+python alltime_db.py alias apply --all
+
+Run `sync` after every matchday you play to append new 26/27 matches to the
+warehouse (idempotent). `alias` handles player renames / spelling variants:
+the same person's different names share one canonical identity forever, and
+reports aggregate across them.
 
 The canonical DB lives at <repo>/alltime.db (gitignored).
 """
@@ -43,6 +52,7 @@ import json
 import re
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -50,7 +60,7 @@ DEFAULT_DB = Path(__file__).resolve().parent / "alltime.db"
 LEGACY_XLSX = r"D:\TOLAND FOOTBALL FEDERATION\PLOFA-2025-2026.COM\PLOFA-ALL-TIME.xlsx"
 PLOFA_OUTPUT = Path(__file__).resolve().parent / "plofa_output"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SEASONS = {
     "24/25": ("2024-08-01", "2025-06-30", "legacy",
@@ -279,6 +289,14 @@ def init_schema(conn):
         archetype TEXT,
         UNIQUE(name)
     );
+    CREATE TABLE IF NOT EXISTS player_aliases (
+        alias TEXT PRIMARY KEY,
+        canonical_player_id INTEGER NOT NULL REFERENCES players(player_id),
+        note TEXT,
+        source TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_aliases_canon ON player_aliases
+        (canonical_player_id);
     CREATE TABLE IF NOT EXISTS matches (
         match_id INTEGER PRIMARY KEY,
         season TEXT,
@@ -419,11 +437,32 @@ def get_or_create_team(conn, name):
     return cur.lastrowid
 
 
+def _resolve_alias(conn, name):
+    """If `name` is registered as a player alias, return the canonical player_id,
+    else None. Follows one level only (aliases always point at canonical ids)."""
+    name = _txt(name)
+    if not name:
+        return None
+    row = conn.execute(
+        "SELECT canonical_player_id FROM player_aliases WHERE alias=?", (name,),
+    ).fetchone()
+    return row["canonical_player_id"] if row else None
+
+
 def get_or_create_player(conn, name, team_id=None, position=None,
                          nationality=None, archetype=None):
     name = _txt(name)
     if not name:
         return None
+    canon = _resolve_alias(conn, name)
+    if canon is not None:
+        conn.execute(
+            """UPDATE players SET team_id=COALESCE(?, team_id),
+               position=COALESCE(?, position), nationality=COALESCE(?, nationality),
+               archetype=COALESCE(?, archetype) WHERE player_id=?""",
+            (team_id, position, nationality, archetype, canon),
+        )
+        return canon
     row = conn.execute("SELECT player_id FROM players WHERE name=?", (name,)).fetchone()
     if row:
         pid = row["player_id"]
@@ -440,6 +479,208 @@ def get_or_create_player(conn, name, team_id=None, position=None,
         (name, team_id, position, nationality, archetype),
     )
     return cur.lastrowid
+
+
+def norm_name(name):
+    """Lower-cased, accent-stripped, tokenised name for fuzzy identity matching."""
+    n = unicodedata.normalize("NFKD", str(name))
+    n = "".join(c for c in n if not unicodedata.combining(c)).lower()
+    return re.findall(r"[a-z0-9]+", n)
+
+
+def add_alias(conn, alias, canonical, note=None, source="manual"):
+    """Register `alias` as another name of the same person (`canonical`).
+    Returns the canonical player_id. Safe to call again (idempotent)."""
+    alias = _txt(alias)
+    canonical = _txt(canonical)
+    if not alias or not canonical:
+        raise ValueError("alias and canonical must both be non-empty")
+    if alias.strip().lower() == canonical.strip().lower():
+        # identical string spellings carry no alias information
+        canon_id = get_or_create_player(conn, canonical)
+        return canon_id
+    canon_id = _resolve_alias(conn, canonical) or get_or_create_player(conn, canonical)
+    conn.execute(
+        """INSERT OR REPLACE INTO player_aliases(alias, canonical_player_id, note, source)
+           VALUES (?,?,?,?)""",
+        (alias, canon_id, note, source),
+    )
+    conn.commit()
+    return canon_id
+
+
+def apply_alias_fixup(conn):
+    """Rewire historical stat rows from alias identities to their canonical
+    player. Where both alias and canonical already have a row for the same
+    match/aggregate key, keep the canonical row and drop the alias duplicate.
+    Returns (moved, deleted). Idempotent."""
+    moved = deleted = 0
+    alias_rows = conn.execute(
+        "SELECT alias, canonical_player_id FROM player_aliases",
+    ).fetchall()
+    for r in alias_rows:
+        alias = r["alias"]
+        canon_id = r["canonical_player_id"]
+        prow = conn.execute(
+            "SELECT player_id, name FROM players WHERE name=?", (alias,),
+        ).fetchone()
+        apid = prow["player_id"] if prow else None
+        if apid is None or apid == canon_id:
+            continue
+        cname = conn.execute(
+            "SELECT name FROM players WHERE player_id=?", (canon_id,),
+        ).fetchone()["name"]
+        for rw in conn.execute(
+                """SELECT season, match_date, team_id FROM player_match_stats
+                   WHERE player_id=?""", (apid,)).fetchall():
+            if conn.execute(
+                    """SELECT 1 FROM player_match_stats
+                       WHERE season=? AND match_date=? AND team_id=? AND player_id=?""",
+                    (rw["season"], rw["match_date"], rw["team_id"], canon_id)).fetchone():
+                conn.execute(
+                    """DELETE FROM player_match_stats
+                       WHERE season=? AND match_date=? AND team_id=? AND player_id=?""",
+                    (rw["season"], rw["match_date"], rw["team_id"], apid))
+                deleted += 1
+            else:
+                conn.execute(
+                    """UPDATE player_match_stats SET player_id=?, player_name=?
+                       WHERE season=? AND match_date=? AND team_id=? AND player_id=?""",
+                    (canon_id, cname, rw["season"], rw["match_date"],
+                     rw["team_id"], apid))
+                moved += 1
+        for rw in conn.execute(
+                "SELECT season, team_id FROM player_season_stats WHERE player_id=?",
+                (apid,)).fetchall():
+            if conn.execute(
+                    """SELECT 1 FROM player_season_stats
+                       WHERE season=? AND team_id=? AND player_id=?""",
+                    (rw["season"], rw["team_id"], canon_id)).fetchone():
+                conn.execute(
+                    """DELETE FROM player_season_stats
+                       WHERE season=? AND team_id=? AND player_id=?""",
+                    (rw["season"], rw["team_id"], apid))
+                deleted += 1
+            else:
+                conn.execute(
+                    """UPDATE player_season_stats SET player_id=?, player_name=?
+                       WHERE season=? AND team_id=? AND player_id=?""",
+                    (canon_id, cname, rw["season"], rw["team_id"], apid))
+                moved += 1
+        # tidy: drop the now-redundant alias identity row in players
+        rem = conn.execute(
+            """SELECT 1 FROM player_match_stats WHERE player_id=?
+               UNION ALL SELECT 1 FROM player_season_stats WHERE player_id=?""",
+            (apid, apid)).fetchone()
+        if not rem:
+            conn.execute("DELETE FROM players WHERE player_id=?", (apid,))
+        conn.execute(
+            "UPDATE goals SET scorer=? WHERE scorer=?", (cname, alias))
+    conn.commit()
+    return moved, deleted
+
+
+_career_facts_cache = None
+
+
+def career_facts(conn, player_id, name):
+    """Per-identity facts used by alias_scan: seasons, teams, positions and the
+    number of matched games, drawn from both stat tables."""
+    global _career_facts_cache
+    if _career_facts_cache is None:
+        cache = {}
+        for r in conn.execute(
+                """SELECT pms.player_id, pms.season, t.name AS team, pms.position
+                   FROM player_match_stats pms
+                   LEFT JOIN teams t ON t.team_id = pms.team_id"""):
+            facts = cache.setdefault(
+                r["player_id"],
+                {"seasons": set(), "teams": set(), "positions": set(), "games": 0})
+            team = _txt(r["team"])
+            pos = _txt(r["position"])
+            if r["season"]:
+                facts["seasons"].add(r["season"])
+            if team and team != "0":
+                facts["teams"].add(team)
+            if pos and pos != "0":
+                facts["positions"].add(pos)
+            facts["games"] += 1
+        for r in conn.execute(
+                """SELECT pss.player_id, pss.season, t.name AS team, pss.position
+                   FROM player_season_stats pss
+                   LEFT JOIN teams t ON t.team_id = pss.team_id"""):
+            facts = cache.setdefault(
+                r["player_id"],
+                {"seasons": set(), "teams": set(), "positions": set(), "games": 0})
+            team = _txt(r["team"])
+            pos = _txt(r["position"])
+            if r["season"]:
+                facts["seasons"].add(r["season"])
+            if team and team != "0":
+                facts["teams"].add(team)
+            if pos and pos != "0":
+                facts["positions"].add(pos)
+        _career_facts_cache = cache
+    return _career_facts_cache.get(player_id, {"seasons": set(), "teams": set(),
+                                              "positions": set(), "games": 0})
+
+
+def alias_scan(conn, min_score=0):
+    """Propose same-person name pairs. Heuristic: identical surname token with a
+    token-subset or same-token-set name (accent/spelling variants and first-
+    name extensions), sharing evidence (same club across seasons and/or same
+    position). Returns candidates ranked by strength. NEVER auto-applies."""
+    rows = conn.execute(
+        """SELECT p.player_id, p.name FROM players p
+           LEFT JOIN player_aliases a ON a.alias = p.name
+           WHERE a.alias IS NULL""").fetchall()
+    info = [(_r["player_id"], _r["name"]) for _r in rows]
+    info = [(pid, name, career_facts(conn, pid, name)) for pid, name in info]
+    candidates = []
+    for i in range(len(info)):
+        for j in range(i + 1, len(info)):
+            pid_a, name_a, fa = info[i]
+            pid_b, name_b, fb = info[j]
+            ta, tb = norm_name(name_a), norm_name(name_b)
+            if not ta or not tb or ta[-1] != tb[-1]:
+                continue
+            sa, sb = set(ta), set(tb)
+            if sa == sb:
+                kind = "spelling-variant"
+            elif sa <= sb or sb <= sa:
+                kind = "name-extension"
+            else:
+                continue
+            shared_teams = fa["teams"] & fb["teams"]
+            shared_pos = fa["positions"] & fb["positions"]
+            overlap = fa["seasons"] & fb["seasons"]
+            if kind == "name-extension" and overlap and not shared_teams:
+                continue  # two live names in the same season at different clubs
+            if not shared_teams and not shared_pos:
+                continue
+            score = (10 + 2 * len(shared_teams) if shared_teams else 2) \
+                + (2 if shared_pos else 0)
+            if score < min_score:
+                continue
+            candidates.append({
+                "score": score, "kind": kind,
+                "alias": name_a if sa <= sb else name_b,
+                "canonical": name_b if sa <= sb else name_a,
+                "seasons_a": sorted(fa["seasons"]), "seasons_b": sorted(fb["seasons"]),
+                "teams_a": sorted(fa["teams"]), "teams_b": sorted(fb["teams"]),
+                "shared_teams": sorted(shared_teams),
+                "positions": sorted(shared_pos),
+                "games_a": fa["games"], "games_b": fb["games"],
+            })
+    candidates.sort(key=lambda c: (-c["score"], c["alias"]))
+    return candidates
+
+
+def list_aliases(conn):
+    return conn.execute(
+        """SELECT a.alias, p.name AS canonical, a.note
+           FROM player_aliases a JOIN players p ON p.player_id = a.canonical_player_id
+           ORDER BY canonical, alias""").fetchall()
 
 
 def _score_goals(score_str):
@@ -863,12 +1104,15 @@ def report(conn):
     lines.append("")
     lines.append("Top 5 all-time scorers: " + str([
         dict(zip(("player", "goals", "games"),
-                 conn.execute(
-                     """SELECT player_name, SUM(goals) AS g, COUNT(*) AS games
-                        FROM player_match_stats
-                        WHERE season IN ('24/25','25/26','26/27')
-                        GROUP BY player_name ORDER BY g DESC LIMIT 5""").fetchall()[i]))
-        for i in range(5)
+                 row))
+        for row in conn.execute(
+            """SELECT p2.name, SUM(pms.goals) AS g, COUNT(*) AS games
+               FROM player_match_stats pms
+               JOIN players p ON p.player_id = pms.player_id
+               LEFT JOIN player_aliases a ON a.alias = p.name
+               JOIN players p2 ON p2.player_id = COALESCE(a.canonical_player_id, p.player_id)
+               WHERE pms.season IN ('24/25','25/26','26/27')
+               GROUP BY p2.player_id ORDER BY g DESC LIMIT 5""").fetchall()
     ]))
     lines.append("")
     lines.append("Rows per table: " + str({
@@ -891,6 +1135,18 @@ def main(argv=None):
     p_sync.add_argument("--root", default=None, help="output root (default plofa_output)")
     p_sync.add_argument("--dry-run", action="store_true")
     sub.add_parser("report", help="print warehouse summary")
+    p_alias = sub.add_parser("alias", help="manage player name identities")
+    asub = p_alias.add_subparsers(dest="alias_cmd", required=True)
+    p_aadd = asub.add_parser("add", help="register an alias name -> canonical name")
+    p_aadd.add_argument("alias", help="old / variant player name")
+    p_aadd.add_argument("canonical", help="current / true player name")
+    p_aadd.add_argument("--note", default=None, help="why (renamed, spelling fix...)?")
+    p_aadd.add_argument("--apply", action="store_true",
+                        help="also rewire existing stat rows to the canonical identity")
+    asub.add_parser("scan", help="propose same-person name pairs (never auto-applies)")
+    asub.add_parser("list", help="show registered aliases")
+    p_aapply = asub.add_parser("apply", help="rewire all registered aliases' stat rows")
+    p_aapply.add_argument("--all", action="store_true", help="apply every registered alias")
     args = ap.parse_args(argv)
 
     conn = connect(args.db)
@@ -908,6 +1164,42 @@ def main(argv=None):
     elif args.cmd == "report":
         init_schema(conn)
         print(report(conn))
+    elif args.cmd == "alias":
+        init_schema(conn)
+        if args.alias_cmd == "add":
+            canon = add_alias(conn, args.alias, args.canonical, note=args.note)
+            cname = conn.execute(
+                "SELECT name FROM players WHERE player_id=?", (canon,)).fetchone()["name"]
+            if args.apply:
+                moved, deleted = apply_alias_fixup(conn)
+            else:
+                moved = deleted = 0
+            print(f"alias: {args.alias!r} -> {cname!r} (canonical player_id {canon}); "
+                  f"applied moved={moved} deleted={deleted}")
+        elif args.alias_cmd == "scan":
+            cands = alias_scan(conn)
+            if not cands:
+                print("alias scan: no candidate name pairs found")
+            for c in cands:
+                print(f"[score {c['score']}] {c['kind']}: {c['alias']!r} -> {c['canonical']!r}")
+                print(f"  {c['alias']!r}: seasons={c['seasons_a']} teams={c['teams_a']} games={c['games_a']}")
+                print(f"  {c['canonical']!r}: seasons={c['seasons_b']} teams={c['teams_b']} games={c['games_b']}")
+                print(f"  evidence: shared teams={c['shared_teams']} "
+                      f"shared positions={c['positions']}")
+                print(f"  apply: python alltime_db.py alias add {c['alias']!r} {c['canonical']!r} --apply")
+        elif args.alias_cmd == "list":
+            rows = list_aliases(conn)
+            if not rows:
+                print("alias list: none registered")
+            for r in rows:
+                print(f"{r['alias']!r} -> {r['canonical']!r}" + (f"  ({r['note']})" if r["note"] else ""))
+        elif args.alias_cmd == "apply":
+            if args.all:
+                moved, deleted = apply_alias_fixup(conn)
+                print(f"alias apply: moved={moved} rows, deleted={deleted} duplicates")
+            else:
+                print("alias apply: use --all to rewire every registered alias, or "
+                      "re-run 'alias add ... --apply'")
     return 0
 
 

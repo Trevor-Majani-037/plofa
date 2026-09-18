@@ -335,6 +335,10 @@ standings, goals, and league-shape records. Rows are tagged with a
 & ".\.venv\Scripts\python.exe" alltime_db.py report          # per-season summary + all-time leaderboards
 ```
 
+**After every matchday you play:** just re-run `sync` — it scans
+`plofa_output\` and appends any new exporter JSON it hasn't seen yet
+(`sync` reports `scanned`/`ingested`). Run `report` to see updated totals.
+
 `sync` de-duplicates on `(season, matchday, home, away)` and goals on
 `(season, matchday, team, minute, scorer)`, so re-running is safe. The DB
 file is gitignored; the tables are:
@@ -347,3 +351,33 @@ file is gitignored; the tables are:
 Legacy seasons currently live at player/aggregate fidelity (no `team_match_stats`
 rows); team-level legacy queries are one `GROUP BY` over `player_match_stats`
 away. Tests: `tests/test_alltime_db.py` (synthetic 26/27 package + idempotency).
+
+### Player renames / name variants — one identity per person
+
+PLOFA renames players between seasons (e.g. `Victor James` → `Rayan Victor James`)
+and the legacy sheets squeezed punctuation/accents (`D John` vs `D. John`,
+`Roy Steupy` vs `Roy Steupŷ`). Without handling, the same human becomes two
+rows forever. The `alias` commands fix that retroactively AND forward:
+
+```powershell
+# register a name as another name of the same person, then rewire stored rows:
+& ".\.venv\Scripts\python.exe" alltime_db.py alias add "Victor James" "Rayan Victor James" --apply
+
+# auto-propose same-person pairs (same club across seasons + same position):
+& ".\.venv\Scripts\python.exe" alltime_db.py alias scan
+
+# show/govern registered aliases:
+& ".\.venv\Scripts\python.exe" alltime_db.py alias list
+& ".\.venv\Scripts\python.exe" alltime_db.py alias apply --all
+```
+
+Once registered, every future `sync`/ingest maps the old spelling to the
+canonical identity automatically, and `report` aggregates across the variants.
+`alias scan` only proposes — it never merges without `alias add ... --apply`.
+
+Applied 2026-09-18 (8 confirmed renames): `D John→D. John`,
+`Franća→Diederik Franća`, `Hee Jo→Wang Hee Jo`, `Onike-Lisim→Onike Lisim`,
+`Roy Steupy→Roy Steupŷ`, `Tony-Belé→Tony Belé`, `Vuwo Urida→Benard Vuwo Urida`,
+`Omar-Seet→Omar Seet` (Pearls 24/25 → Seafcea 25/26 → Justice 26/27).
+Canonical = the spelling you use today; old spellings auto-map forever.
+`Rayan Victor Jam¢s` was already a single identity (pre-fixed; Justice → Pearls).
