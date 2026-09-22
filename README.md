@@ -381,3 +381,87 @@ Applied 2026-09-18 (8 confirmed renames): `D John→D. John`,
 `Omar-Seet→Omar Seet` (Pearls 24/25 → Seafcea 25/26 → Justice 26/27).
 Canonical = the spelling you use today; old spellings auto-map forever.
 `Rayan Victor Jam¢s` was already a single identity (pre-fixed; Justice → Pearls).
+
+---
+
+## 10. 2026-09-22 — Match event-count collapse & restoration (Checkpoint 32)
+
+**Symptom:** post-Checkpoint-6 seed runs dropped the match timeline from
+~3000+ events to ~1900–2000 (Hartwell vs Thornfield MD1, seed 1031). Chains
+shrunk to ~4 events and possessions died early.
+
+Two independent regressions caused it. Each was isolated with controlled
+swaps (same-brains A/B, consequence critic disabled via `PLOFA_CONSEQUENCE=0`,
+HEAD-module overlay runs) before any change was made.
+
+### 10.1 Brain over-switching (fixed)
+
+`brains/surrogate_pos.json` carried sparse SWITCH cells with lucky,
+goal-weighted payoffs that out-priced the safe options (e.g. CM
+midfield-pressure SWITCH=2.31 vs SAFE_PASS=1.78). Evolution optimises the
+ARGMAX of `expected_success`, so the converged per-position nets learned
+"SWITCH is the best midfield play" and emitted it ~1 in 4 touches — and the
+engine's forced-switch delivery truncated possessions.
+
+`brains_trainer/rebalance_switch_surrogate.py` produced
+`brains_trainer/surrogate_switchfix.json`, which caps SWITCH expected-success
+in every own-half/middle bucket strictly below the best safe option
+(SAFE_PASS / RECYCLE / PROTECT_POSSESSION / PROGRESSIVE_PASS), leaving
+final-third switches untouched. All 11 position brains were retrained
+against it with the identical pipeline (same arch/features/generations/seed —
+verified structure-identical, only weights differ) and promoted into
+`brains/` (pre-switch snapshot kept in
+`brains_backup_pre_switchfix_20260922_101516/`). Result: `SWITCH` intents
+164→~50, `SWITCH_OF_PLAY` events 163→~60.
+
+### 10.2 The forced-receiver layer was disabled (the dominant loss)
+
+The real head-versus-current difference was a behavioural flag:
+`PossessionChain.POLICY_INTENT_AUTHORITY` (event_chain.py). It had been
+flipped to `True`, making the neural brain the **only** receiver selector
+and downgrading every deterministic layer to advice:
+
+- the phase engine's `RELEASE_TO_GK` / `EMERGENCY_DROP_TO_GK` directives
+  (`regression_mode`) were zeroed before they could pick the keeper
+  (`event_chain.py` `if cls.POLICY_INTENT_AUTHORITY: regression_mode = None`),
+- the AttackingMatrix pass target and the Checkpoint-24 wide-combo override
+  were gated off.
+
+The pre-flip code (your 2026-09-20 GitHub upload and the pre-Checkpoint-21
+head) forces a real receiver on pass-like touches — matrix target or phase
+directive or wide-combo — and delivers to it. That "forced receiver"
+guarantee is what produced the 3000–3700-event matches and the modern
+12–30-touch keeper lines. Flipping authority on starved the keeper
+(~4–11 GK receptions/match, your report) and collapsed match events to
+~1900–2000 in one stroke.
+
+### 10.3 Delivery-range vs spacing decoupling (secondary symptom)
+
+With authority on, every pass went through `_pass_destination_to_receiver`,
+whose cap (`min(d, max(pass_dist, 3))`) was calibrated when receivers sat
+~15m apart; the Checkpoint-21-onwards shape/stretch layer sits them ~26m
+out, so ~48% of passes died `underhit`. Checkpoint 32 re-couples the
+delivery reach to actual spacing (`0.93 × separation`, 30m ceiling; long
+passes untouched). Constants: `REACH_SPACING_TARGET`, `REACH_SPACING_CEIL_M`.
+Plus the GK is now a `SAFE_PASS` outlet again in the defensive third
+(`_find_target._nearest_teammate`, brain_integration.py).
+
+### 10.4 The fix: authority re-enabled + neural brain retained
+
+`POLICY_INTENT_AUTHORITY` defaults to `False` (Checkpoint 32b). The neural
+policy still samples the intent; the forced-receiver layers guarantee
+deliveries and keeper involvement. The switchfix brains (§10.1) remain the
+loaded policy, so the earlier SWITCH overpricing stays fixed.
+
+### Verified end state (seed 1031)
+
+timeline **~3100–3400** (restored into the old 3000–3700 band; two runs
+3172 / 3394) · PASS ~770–800 (≈690–730 completed) · `SWITCH_OF_PLAY`
+80–86 · GK receptions via pass **~51–58/match** (~30–39 home, ~12–19 away;
+was ~18 total) · GK primary actions ~57 receipts / ~55 passes — real
+build-up keeper territory · `TURNOVER` ~140–165.
+
+> Runs still carry per-process RNG variance; set `$env:PYTHONHASHSEED="0"`
+> for reproducible comparisons (see §8). Run with the prev-generation brains
+> in `brains_switchfix/` via `PLOFA_BRAIN_DIR=<path>` if you ever need the A/B
+> baseline.

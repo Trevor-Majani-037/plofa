@@ -28,6 +28,11 @@ from typing import Any, Dict, List, Optional
 
 from football_brain import FootballBrain, INTENT_LABELS
 from brain_sensors import extract_sensors, _get_attr, _fatigue_estimate, _clamp
+from perception import perceive, get_perception_config, set_perception
+from role_features import role_block, build_v2_vector
+from tactics_context import (
+    V3_INPUT_D, build_v3_vector, tactics_context_block,
+)
 from decision_brain import (
     PlayerDecision, PlayerIntent, CARRY_LIKE_INTENTS,
 )
@@ -41,6 +46,33 @@ _INTENT_BY_INDEX = [PlayerIntent(label) for label in INTENT_LABELS]
 
 # Index mapping from FootballBrain output to PlayerIntent
 _IDX = {label: i for i, label in enumerate(INTENT_LABELS)}
+
+
+def _apply_coach_bias(probs: Any, player: Any,
+                      bias: Optional[Dict[str, float]]) -> Any:
+    """Phase 8 v1 — coach's on-ball say ("shoot less", "dribble more").
+
+    Log-space bonus on the forward-pass distribution, pre-sample, scaled
+    by the carrier's listener_scale (maverick tax). Empty/None bias (flag
+    OFF, static manager, BALANCED posture) returns probs untouched.
+    """
+    if not bias:
+        return probs
+    try:
+        from coach_instructions import listener_scale
+        scale = listener_scale(player)
+    except Exception:
+        scale = 1.0
+    import numpy as _np
+    p = _np.asarray(probs, dtype=_np.float64)
+    logits = _np.log(_np.clip(p, 1e-9, 1.0))
+    for label, bonus in bias.items():
+        i = _IDX.get(label)
+        if i is not None:
+            logits[i] += float(bonus) * scale
+    z = logits - logits.max()
+    e = _np.exp(z)
+    return e / e.sum()
 
 # Always-visible intents (fallbacks that the heuristic brain never hides)
 _ALWAYS_VISIBLE = frozenset({
@@ -90,7 +122,14 @@ def set_brain_dir(path: str) -> None:
 
 
 def _brain_for_position(position: str) -> Optional[FootballBrain]:
-    """Load and cache the brain for a position, or None if unavailable."""
+    """Load and cache the brain for a position, or None if unavailable.
+
+    A genuinely missing file → None (falls back to a random brain, as
+    before).  A file that FAILS schema validation (unknown kind, arch
+    version, sensor/normalization/DNA schema, or misshaped weights) is
+    NOT silently swallowed: BrainSchemaError propagates loudly so an
+    incompatible brain can never masquerade as a valid one.
+    """
     if position in _pos_brain_cache:
         return _pos_brain_cache[position]
     if not position:
@@ -98,10 +137,7 @@ def _brain_for_position(position: str) -> Optional[FootballBrain]:
     path = os.path.join(BRAIN_DIR, f"{position}.json")
     if not os.path.exists(path):
         return None
-    try:
-        brain = FootballBrain.load(path)
-    except Exception:
-        return None
+    brain = FootballBrain.load(path)
     _pos_brain_cache[position] = brain
     return brain
 
@@ -246,6 +282,13 @@ class NeuralDecisionBrain:
     Same ``decide()`` signature, same ``PlayerDecision`` return type.
     The only difference is HOW the intent is selected: a learned
     forward pass instead of hand-crafted heuristic scoring + softmax.
+
+    When the cognition layer is engaged (``set_cognition(True)``) and the
+    player has a registered ``PlayerMind``, the decision routes through
+    ``CognitionDecisionBrain`` (cognition_brain.py) so the player only
+    perceives what his senses allow and samples the brain's distribution
+    with his temperament (the TOLAND merge seam).  Players without a mind
+    keep the vanilla path.
     """
 
     @staticmethod
@@ -263,108 +306,371 @@ class NeuralDecisionBrain:
         minute: float = 45.0,
         soul: Any = None,
         record_trace: bool = False,
+        coach_instructions: Any = None,
     ) -> PlayerDecision:
-        # ── Look up the player's brain ─────────────────────────
-        brain = get_brain(getattr(player, "name", ""))
-        if brain is None:
-            # Auto-load a trained brain for this player's position if one
-            # is available (cached per position).  Only fall back to a
-            # random brain if no trained net exists for the role.
-            brain = _brain_for_position(getattr(player, "position", ""))
-            if brain is not None:
-                register_brain(getattr(player, "name", ""), brain)
-        if brain is None:
-            # Fallback: generate a random brain on the fly so the
-            # match never crashes.  In production all players should
-            # be registered before kickoff.
-            brain = FootballBrain.random()
-            register_brain(getattr(player, "name", "unknown"), brain)
+        routed = _maybe_cognition(
+            player, x, y, teammates, defenders, position_engine,
+            team_profile, under_pressure, attacks_right, game_state,
+            minute, soul, record_trace, coach_instructions,
+        )
+        if routed is not None:
+            return routed
+        return _decide_core(
+            player, x, y, teammates, defenders, position_engine,
+            team_profile, under_pressure, attacks_right, game_state,
+            minute, soul, record_trace, coach_instructions,
+        )
 
-        # ── Build sensor vector ────────────────────────────────
-        score_diff = 0
-        gs_name = getattr(game_state, "name", "LEVEL")
-        if "HOME_AHEAD" in gs_name or "HOME_CHASE" in gs_name:
-            score_diff = 1
-        elif "AWAY_AHEAD" in gs_name or "AWAY_CHASE" in gs_name:
-            score_diff = -1
 
-        sensors = extract_sensors(
+# ─────────────────────────────────────────────────────────────
+# COGNITION ROUTER AND SHARED NEURAL PIPELINE
+# ─────────────────────────────────────────────────────────────
+# _decide_core is the vanilla neural path — byte-identical to
+# NeuralDecisionBrain before the cognition layer existed.  The helpers below
+# are shared with CognitionDecisionBrain so the two paths differ ONLY in
+# (1) the scene fed to the sensors (FOV-gated vs omniscient) and (2) how
+# the forward-pass distribution is sampled (temperament vs raw).
+
+# The cognition layer is ON by default since 2026-09-20 (minds route once
+# registered, mirroring the reasoned-by-default seam).  It only matters for
+# players WITH a registered mind — everyone else keeps the vanilla core.
+_cognition_enabled = True
+
+
+def set_cognition(enabled: bool) -> None:
+    """Engage/disengage the cognition layer for every subsequent decision."""
+    global _cognition_enabled
+    _cognition_enabled = bool(enabled)
+
+
+# ─────────────────────────────────────────────────────────────
+# CONSEQUENCE REASONING SEAM (policy + consequence evaluation)
+# ─────────────────────────────────────────────────────────────
+# The FootballBrain proposes intent probabilities; the value critic
+# (consequence_decision.ConsequenceEvaluator, loaded from a V3 value_critic
+# file via set_consequence / PLOFA_CONSEQUENCE_*) predicts each intent's
+# expected possession payoff in the SAME perceived state, and the sampled
+# distribution is consequence-corrected.  Since 2026-09-20 the seam is ON
+# BY DEFAULT (graduated v5 critic @ blend 0.3); it is OFF only when an
+# evaluator is absent and PLOFA_CONSEQUENCE=0 / default_enabled(False)
+# pin the process, in which case probs return byte-identical.  The base
+# 24-d block the critic reads is the perceived vector's shared head
+# (sensors[:24] for v1/v2/v3), i.e. the same imperfect world the network
+# forward pass read.
+
+_consequence_checked = False
+
+
+def _apply_consequence(probs: Any, sensor_24: Any, position: str,
+                       record_trace: bool = False):
+    """Return (probs, extra_trace_or_None).  Byte-identical when off."""
+    global _consequence_checked
+    try:
+        from consequence_decision import (
+            apply_reasoning, clear_consequence, consequence_enabled,
+            init_from_env,
+        )
+    except Exception:
+        return probs, None
+    if not _consequence_checked:
+        _consequence_checked = True
+        init_from_env()  # PLOFA_CONSEQUENCE=1 + _CRITIC path enable the seam
+    if not consequence_enabled():
+        return probs, None
+    corrected, trace = apply_reasoning(
+        probs, np.asarray(sensor_24, dtype=np.float64), position)
+    if not record_trace:
+        trace = None
+    return corrected, trace
+
+
+def clear_consequence() -> None:
+    """Turn the reasoning seam off (clears any loaded critic)."""
+    global _consequence_checked
+    try:
+        from consequence_decision import clear_consequence as _clear
+        _clear()
+    except Exception:
+        pass
+    _consequence_checked = False
+
+
+def _maybe_cognition(
+    player: Any, x: float, y: float,
+    teammates: List[Any], defenders: List[Any],
+    position_engine: Any, team_profile: Any,
+    under_pressure: bool, attacks_right: bool, game_state: Any,
+    minute: float, soul: Any, record_trace: bool,
+    coach_instructions: Any = None,
+) -> Optional[PlayerDecision]:
+    """The cognition route when engaged, else None (stay on the neural core)."""
+    if not _cognition_enabled:
+        return None
+    try:
+        from cognition.mind import get_mind
+        if get_mind(getattr(player, "name", "")) is None:
+            return None
+        from cognition_brain import CognitionDecisionBrain
+        return CognitionDecisionBrain.decide(
+            player, x, y, teammates, defenders, position_engine,
+            team_profile, under_pressure, attacks_right, game_state,
+            minute, soul, record_trace, coach_instructions,
+        )
+    except Exception:
+        # A cognitive failure must NEVER kill a match — degrade to the core.
+        return None
+
+
+def _resolve_brain(player: Any) -> FootballBrain:
+    """Look up the player's brain, auto-loading by position when needed."""
+    brain = get_brain(getattr(player, "name", ""))
+    if brain is None:
+        # Auto-load a trained brain for this player's position if one is
+        # available (cached per position).  Only fall back to a random
+        # brain if no trained net exists for the role.
+        brain = _brain_for_position(getattr(player, "position", ""))
+        if brain is not None:
+            register_brain(getattr(player, "name", ""), brain)
+    if brain is None:
+        # Fallback: generate a random brain on the fly so the match never
+        # crashes.  In production all players should be registered before
+        # kickoff.
+        brain = FootballBrain.random()
+        register_brain(getattr(player, "name", "unknown"), brain)
+    return brain
+
+
+def _score_diff_of(game_state: Any) -> int:
+    score_diff = 0
+    gs_name = getattr(game_state, "name", "LEVEL")
+    if "HOME_AHEAD" in gs_name or "HOME_CHASE" in gs_name:
+        score_diff = 1
+    elif "AWAY_AHEAD" in gs_name or "AWAY_CHASE" in gs_name:
+        score_diff = -1
+    return score_diff
+
+
+def build_sensors(
+    brain: FootballBrain,
+    player: Any, x: float, y: float,
+    teammates: List[Any], defenders: List[Any],
+    position_engine: Any, team_profile: Any,
+    under_pressure: bool, attacks_right: bool,
+    game_state: Any, minute: float,
+    perception_config: Any = None,
+) -> Any:
+    """Build the sensor vector for the brain's input width from a scene.
+
+    Routed through the PERCEPTION layer (audit V2 Step 1).  With perception
+    disabled (the default) perceive() is the identity: it calls
+    extract_sensors() with the same arguments and returns the exact v1
+    array, so neural behaviour is byte-identical.  v1 = shared 24-d;
+    v2 = role-features tail from the SAME perceived scene; v3 = tactics
+    context plus the manager/team instruction block.
+
+    ``perception_config``: when provided (e.g. PerceptionConfig(enabled=False)),
+    overrides the global config for this call.  The cognition path uses this
+    to bypass the perception layer's own FOV — the cognition senses gate IS
+    the player's subjective view, so no second FOV is applied.
+    """
+    score_diff = _score_diff_of(game_state)
+    n_in = brain.w1.shape[0]
+    perc_cfg = (
+        perception_config if perception_config is not None
+        else get_perception_config()
+    )
+    if n_in in V3_INPUT_D.values():
+        # Schema-v3 TACTICS-CONTEXT brain: shared 24-d + role tail from
+        # the SAME perceived scene (like v2) PLUS the manager / team
+        # instruction block built from the live `team_profile` (an
+        # EffectiveTactics in the match engine).  Same duck-typed
+        # identity-defaults as evolution's random_tactics_context, so a
+        # brain trained across the dial reads the real instruction set.
+        base_vec, scene = perceive(
             player, x, y, teammates, defenders, position_engine,
             under_pressure, attacks_right, game_state, minute,
             team_possession=True, score_diff=score_diff,
+            config=perc_cfg, return_scene=True,
         )
-
-        # ── Forward pass ───────────────────────────────────────
-        probs = brain.forward(sensors)
-        fatigue = _fatigue_estimate(player, minute)
-
-        # Temperature-based probabilistic sampling (not argmax): a high
-        # composure / decisions player commits more firmly to the
-        # network's top pick; a flustered or low-decisions player is
-        # more likely to sample a lower-probability option.  This gives
-        # the same bounded-variety feel the heuristic DecisionBrain had,
-        # but the probabilities themselves come from the learned net.
-        temperature = _decision_temperature(player, under_pressure, fatigue)
-        chosen_idx = _sample_from_probs(probs, temperature)
-        chosen_prob = float(probs[chosen_idx])
-        intent = _INTENT_BY_INDEX[chosen_idx]
-
-        # ── Build PlayerDecision ───────────────────────────────
-        near_def = _nearest_defender_dist(x, y, defenders, position_engine)
-
-        risk = _estimate_risk(intent, near_def, fatigue)
-        quality = _decision_quality(chosen_idx, probs.tolist())
-        action = "CARRY" if intent in CARRY_LIKE_INTENTS else "PASS"
-
-        # Perceived intents: every intent with probability > 5%
-        perceived = frozenset(
-            _INTENT_BY_INDEX[i] for i, p in enumerate(probs) if p > 0.05
+        role = role_block(
+            player, x, y,
+            scene["teammates"], scene["defenders"],
+            scene["position_engine"], attacks_right,
         )
-
-        # Find best target (same logic as heuristic brain for backward compat)
-        target = _find_target(
-            intent, player, x, y, teammates, defenders,
-            position_engine, attacks_right,
+        tactics = tactics_context_block(team_profile)
+        sensors = build_v3_vector(base_vec, role, tactics)
+        if sensors.shape[0] != n_in:
+            padded = np.zeros(n_in, dtype=np.float64)
+            padded[:min(sensors.shape[0], n_in)] = sensors[:n_in]
+            sensors = padded
+    elif n_in > 24:
+        # Schema-v2 role-features brain: the shared 24-d block comes
+        # from the SAME perceived scene as the role tail, so the net
+        # reads one coherent (imperfect) world.  Unknown-role players
+        # zero-pad the tail (deterministic, learns nothing from dead
+        # inputs — matches evolution's unknown-role corpus behaviour).
+        base_vec, scene = perceive(
+            player, x, y, teammates, defenders, position_engine,
+            under_pressure, attacks_right, game_state, minute,
+            team_possession=True, score_diff=score_diff,
+            config=perc_cfg, return_scene=True,
         )
-
-        trace = None
-        if record_trace:
-            trace = {
-                "player": getattr(player, "name", "?"),
-                "fatigue": round(fatigue, 3),
-                "sensor_vector": sensors.tolist(),
-                "output_probs": {
-                    label: round(float(probs[i]), 4)
-                    for i, label in enumerate(INTENT_LABELS)
-                },
-                "chosen_idx": chosen_idx,
-                "choice_probability": round(chosen_prob, 4),
-            }
-
-        return PlayerDecision(
-            intent=intent,
-            action=action,
-            confidence=round(_clamp(chosen_prob), 3),
-            reason=_REASONS.get(intent, "neural: on-ball decision"),
-            risk_level=round(risk, 3),
-            decision_quality=round(quality, 3),
-            evaluation_error=0.0,  # neural nets don't have an "objective" to compare against at decision time
-            is_error=False,
-            target=target,
-            perceived_intents=perceived,
-            trace=trace,
+        role = role_block(
+            player, x, y,
+            scene["teammates"], scene["defenders"],
+            scene["position_engine"], attacks_right,
         )
+        sensors = build_v2_vector(base_vec, role)
+        if sensors.shape[0] != n_in:
+            padded = np.zeros(n_in, dtype=np.float64)
+            padded[:min(sensors.shape[0], n_in)] = sensors[:n_in]
+            sensors = padded
+    else:
+        sensors = perceive(
+            player, x, y, teammates, defenders, position_engine,
+            under_pressure, attacks_right, game_state, minute,
+            team_possession=True, score_diff=score_diff,
+            config=perc_cfg,
+        )
+    return sensors
+
+
+def _build_decision(
+    brain: FootballBrain,
+    player: Any, x: float, y: float,
+    teammates: List[Any], defenders: List[Any],
+    position_engine: Any, attacks_right: bool,
+    fatigue: float, sensors: Any, probs: Any,
+    chosen_idx: int, chosen_prob: float,
+    minute: float, record_trace: bool,
+    favored_flank: Optional[str] = None,
+    cons_trace: Optional[Dict[str, Any]] = None,
+) -> PlayerDecision:
+    """Assemble the PlayerDecision the engine expects from a sample."""
+    intent = _INTENT_BY_INDEX[chosen_idx]
+    near_def = _nearest_defender_dist(x, y, defenders, position_engine)
+    risk = _estimate_risk(intent, near_def, fatigue)
+    quality = _decision_quality(chosen_idx, probs.tolist())
+    action = "CARRY" if intent in CARRY_LIKE_INTENTS else "PASS"
+
+    # Perceived intents: every intent with probability > 5%
+    perceived = frozenset(
+        _INTENT_BY_INDEX[i] for i, p in enumerate(probs) if p > 0.05
+    )
+
+    # Find best target (same logic as heuristic brain for backward compat)
+    target = _find_target(
+        intent, player, x, y, teammates, defenders,
+        position_engine, attacks_right, favored_flank,
+    )
+
+    trace = None
+    if record_trace:
+        trace = {
+            "player": getattr(player, "name", "?"),
+            "fatigue": round(fatigue, 3),
+            "sensor_vector": sensors.tolist(),
+            "output_probs": {
+                label: round(float(probs[i]), 4)
+                for i, label in enumerate(INTENT_LABELS)
+            },
+            "chosen_idx": chosen_idx,
+            "choice_probability": round(chosen_prob, 4),
+        }
+        if cons_trace is not None:
+            trace["consequence"] = cons_trace
+
+    return PlayerDecision(
+        intent=intent,
+        action=action,
+        confidence=round(_clamp(chosen_prob), 3),
+        reason=_REASONS.get(intent, "neural: on-ball decision"),
+        risk_level=round(risk, 3),
+        decision_quality=round(quality, 3),
+        evaluation_error=0.0,  # neural nets don't have an "objective" to compare against at decision time
+        is_error=False,
+        target=target,
+        perceived_intents=perceived,
+        trace=trace,
+    )
+
+
+def _decide_core(
+    player: Any,
+    x: float,
+    y: float,
+    teammates: List[Any],
+    defenders: List[Any],
+    position_engine: Any,
+    team_profile: Any,
+    under_pressure: bool,
+    attacks_right: bool,
+    game_state: Any,
+    minute: float = 45.0,
+    soul: Any = None,
+    record_trace: bool = False,
+    coach_instructions: Any = None,
+) -> PlayerDecision:
+    """The vanilla neural decision path (cognition off / no mind)."""
+    brain = _resolve_brain(player)
+    sensors = build_sensors(
+        brain, player, x, y, teammates, defenders, position_engine,
+        team_profile, under_pressure, attacks_right, game_state, minute,
+    )
+    probs = brain.forward(sensors)
+    # Coach's on-ball say (None when flag OFF / static / BALANCED).
+    favored_flank: Optional[str] = None
+    if coach_instructions is not None:
+        probs = _apply_coach_bias(
+            probs, player,
+            getattr(coach_instructions, "intent_bias", None))
+        favored_flank = getattr(coach_instructions, "favored_flank", None)
+    fatigue = _fatigue_estimate(player, minute)
+
+    # Consequence reasoning seam: correct the policy distribution with the
+    # critic's expected-payoff read of each intent in this perceived state.
+    # Byte-identical (returns probs unchanged) when the seam is off.
+    cons_trace = None
+    base24 = np.asarray(sensors[:24], dtype=np.float64)
+    probs, cons_trace = _apply_consequence(
+        probs, base24, getattr(player, "position", ""), record_trace,
+    )
+
+    # Temperature-based probabilistic sampling (not argmax): a high
+    # composure / decisions player commits more firmly to the network's top
+    # pick; a flustered or low-decisions player is more likely to sample a
+    # lower-probability option.  The probabilities come from the learned net.
+    temperature = _decision_temperature(player, under_pressure, fatigue)
+    chosen_idx = _sample_from_probs(probs, temperature)
+    chosen_prob = float(probs[chosen_idx])
+    return _build_decision(
+        brain, player, x, y, teammates, defenders, position_engine,
+        attacks_right, fatigue, sensors, probs, chosen_idx, chosen_prob,
+        minute, record_trace, favored_flank, cons_trace,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
 # TARGET SELECTION (finds best teammate for the chosen intent)
 # ─────────────────────────────────────────────────────────────
 
+def _flank_bonus(ty: float, favored_flank: Optional[str],
+                 attacks_right: bool) -> float:
+    """Phase 8 v1 — "target their left/right": small bonus for teammates
+    on the coach's favored flank (normalised space: R = high y)."""
+    if favored_flank not in ("L", "R"):
+        return 0.0
+    ny = ty if attacks_right else (68.0 - ty)
+    on_flank = (ny > 34.0) if favored_flank == "R" else (ny <= 34.0)
+    return 0.15 if on_flank else 0.0
+
+
 def _find_target(
     intent: PlayerIntent,
     player: Any, x: float, y: float,
     teammates: List[Any], defenders: List[Any],
     position_engine: Any, attacks_right: bool,
+    favored_flank: Optional[str] = None,
 ) -> Any:
     """Find the most relevant teammate for the chosen intent.
     This is a lightweight geometric lookup, not a scoring system."""
@@ -373,16 +679,19 @@ def _find_target(
         return None
 
     if intent == PlayerIntent.SAFE_PASS:
-        return _nearest_teammate(x, y, teammates, position_engine)
+        return _nearest_teammate(x, y, teammates, position_engine,
+                                 favored_flank, attacks_right)
 
     if intent == PlayerIntent.RECYCLE:
         return _deepest_teammate(x, y, teammates, position_engine, attacks_right)
 
     if intent == PlayerIntent.PROGRESSIVE_PASS:
-        return _best_forward(x, y, teammates, defenders, position_engine, attacks_right)
+        return _best_forward(x, y, teammates, defenders, position_engine,
+                             attacks_right, favored_flank)
 
     if intent == PlayerIntent.THROUGH_BALL:
-        return _best_forward(x, y, teammates, defenders, position_engine, attacks_right)
+        return _best_forward(x, y, teammates, defenders, position_engine,
+                             attacks_right, favored_flank)
 
     if intent == PlayerIntent.SWITCH:
         return _wide_teammate(x, y, teammates, defenders, position_engine)
@@ -390,14 +699,27 @@ def _find_target(
     return None
 
 
-def _nearest_teammate(x, y, teammates, position_engine):
+def _nearest_teammate(x, y, teammates, position_engine,
+                      favored_flank: Optional[str] = None,
+                      attacks_right: bool = True):
     best, best_dist = None, 999.0
+    # Own-third GK as SAFE_PASS outlet: the keeper is the build-up release
+    # valve, so in the defensive third (normalised x < 35) he is a valid
+    # safe target instead of being blanket-excluded. Outside the own third
+    # the keeper stays off-limits for a SAFE_PASS.
+    nx = x if attacks_right else (105.0 - x)
+    own_third = nx < 35.0
     for t in teammates or []:
-        if getattr(t, "position", "") == "GK":
+        is_gk = getattr(t, "position", "") == "GK"
+        if is_gk and not own_third:
             continue
         tx, ty = position_engine.get_position(t.name) if position_engine else (x, y)
         d = math.hypot(tx - x, ty - y)
-        if 1.0 < d < 22.0 and d < best_dist:
+        d -= _flank_bonus(ty, favored_flank, attacks_right) * 20.0
+        # GK back-passes routinely travel 20-30m; keep his window at the
+        # phase engine's 45m reachability instead of the 22m outfield one.
+        window = 45.0 if is_gk else 22.0
+        if 1.0 < d < window and d < best_dist:
             best_dist = d
             best = t
     return best
@@ -414,7 +736,8 @@ def _deepest_teammate(x, y, teammates, position_engine, attacks_right):
     return best
 
 
-def _best_forward(x, y, teammates, defenders, position_engine, attacks_right):
+def _best_forward(x, y, teammates, defenders, position_engine, attacks_right,
+                  favored_flank: Optional[str] = None):
     best, best_val = None, -1.0
     for t in teammates or []:
         if getattr(t, "position", "") == "GK":
@@ -432,6 +755,7 @@ def _best_forward(x, y, teammates, defenders, position_engine, attacks_right):
             dist = math.hypot(dx - tx, dy - ty)
             open_val = min(open_val, _clamp((dist - 1.5) / 8.5))
         val = _clamp(progress / 35.0) * 0.55 + open_val * 0.45
+        val += _flank_bonus(ty, favored_flank, attacks_right)
         if val > best_val:
             best_val = val
             best = t

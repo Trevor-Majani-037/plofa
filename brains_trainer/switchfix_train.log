@@ -1,0 +1,14 @@
+Evolving 11 positions with 4 workers (surrogate=brains_trainer/surrogate_switchfix.json)
+[OK ] CB: 350.8s  CB: fitness=0.7785 (349.5s) -> brains_switchfix\CB.json
+[OK ] LB: 362.3s  LB: fitness=0.7375 (361.1s) -> brains_switchfix\LB.json
+[OK ] RB: 363.2s  RB: fitness=0.9386 (362.0s) -> brains_switchfix\RB.json
+[OK ] GK: 371.9s  GK: fitness=0.6948 (370.7s) -> brains_switchfix\GK.json
+[OK ] LW: 417.1s  LW: fitness=0.8187 (416.3s) -> brains_switchfix\LW.json
+[OK ] CAM: 430.7s  CAM: fitness=0.8728 (429.7s) -> brains_switchfix\CAM.json
+[OK ] CDM: 446.8s  CDM: fitness=0.7166 (445.2s) -> brains_switchfix\CDM.json
+[OK ] CM: 437.6s  CM: fitness=0.7541 (436.7s) -> brains_switchfix\CM.json
+[OK ] ST: 301.5s  ST: fitness=0.7862 (300.5s) -> brains_switchfix\ST.json
+[OK ] CF: 303.4s  CF: fitness=0.7294 (302.3s) -> brains_switchfix\CF.json
+[OK ] RW: 324.3s  RW: fitness=0.8211 (323.2s) -> brains_switchfix\RW.json
+
+Done in 18.6 min. Manifest: brains_switchfix\_manifest_all.json
