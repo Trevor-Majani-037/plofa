@@ -23,6 +23,7 @@ import sys
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Any, Optional, List, Dict, Tuple
+from types import SimpleNamespace
 from enum import Enum, auto
 from datetime import date
 
@@ -34,6 +35,7 @@ from weather_physics import WeatherCondition, WeatherPhysics
 from tactical_shapes import FormationStance
 from attack_patterns import AttackPattern
 from set_piece_routines import SetPieceRoutine
+from ball_vision import movement_ball
 
 # The match narrative prints emoji/unicode; on legacy consoles (cp1252 etc.)
 # that raises UnicodeEncodeError mid-simulation. Reconfigure the streams to
@@ -44,6 +46,61 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(errors="replace")  # type: ignore
     except Exception:
         pass
+
+
+# ─────────────────────────────────────────────────────────────
+# MANAGER BRAINS — MASTER SWITCH (Phase 6 → default since Phase 10)
+# ─────────────────────────────────────────────────────────────
+# Since 2026-09-20 the live brain-manager (manager_profile.Manager with
+# .decide) is the DEFAULT: when a real Manager is injected via set_managers
+# its decision drives the tactical dials, coach instructions, possession
+# target, formation stance and sub urgency.  Every engine hook guards on
+# isinstance(., Manager), so runners that inject NO manager (custom gates,
+# probes, validate harnesses) are byte-identical to the pre-Phase-6 static
+# logic — this flag only changes behaviour for managers that are wired.
+USE_MANAGER_BRAIN = True
+
+# Phase 10 — position off-ball press-gate brains (brains_offball/*.json).
+# True by default; a per-player Bernoulli uses the LW/RW/CM evolved brains
+# when present and falls back to the static role rate otherwise.
+_OFFBALL_POS_BRAIN_WIRED = True
+
+
+def _brain_possession_profiles(home_prof, away_prof, home_mgr, away_mgr):
+    """Phase 8 — coach's say on ball share (opt-in, flag-gated).
+
+    When the brain path is on and a live Manager is wired, wrap each raw
+    profile in a proxy carrying the coach's CURRENT possession target
+    (stored posture/pressing — no decide() poll). ``style`` and
+    ``has_identity`` pass through untouched so the philosophy feedback
+    (Lever A) and style premiums behave exactly as before. Flag OFF (or
+    static managers) returns the raw profiles unchanged.
+    """
+    if not USE_MANAGER_BRAIN:
+        return home_prof, away_prof
+    from tactical_ai import brain_stored_possession_target as _brain_poss
+    out_h, out_a = home_prof, away_prof
+    _ht = _brain_poss(home_prof, home_mgr)
+    if _ht is not None:
+        out_h = SimpleNamespace(
+            possession_target=_ht, style=home_prof.style,
+            has_identity=getattr(home_prof, "has_identity", False))
+    _at = _brain_poss(away_prof, away_mgr)
+    if _at is not None:
+        out_a = SimpleNamespace(
+            possession_target=_at, style=away_prof.style,
+            has_identity=getattr(away_prof, "has_identity", False))
+    return out_h, out_a
+
+
+# ─────────────────────────────────────────────────────────────
+# MANAGER COLLECTION CHECKPOINT HOOK (Phase 7, opt-in)
+# ─────────────────────────────────────────────────────────────
+# Set by manager_collection.collect_manager_samples() to sample the
+# static manager's sensor view every 5 minutes EVEN when no tactical
+# decision fired that minute. None (default) = zero engine impact.
+# Callable(engine, minute).
+_collection_checkpoint_hook = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -125,6 +182,33 @@ def _team_press_g(engine: Any, team: str, ball_x: float, ball_y: float,
             engine, team, ball_x, ball_y, danger_t)))
     except Exception:
         return 1.0
+
+
+# ─────────────────────────────────────────────────────────────
+# COGNITION OBSERVER (episodic-memory feed)
+# ─────────────────────────────────────────────────────────────
+# The TOLAND merge's memory tap.  When engaged, every absorbed match event
+# is handed to the PlayerMinds of the players involved (cognition_brain
+# installs its dispatcher here) so episodic memory fills from real match
+# facts with no parallel simulation.  Disabled by default — zero cost and
+# zero behaviour change until engaged.
+_COGNITION_OBSERVER = None
+
+
+def set_cognition_observer(fn) -> None:
+    """Engage a per-event cognition observer (None disables)."""
+    global _COGNITION_OBSERVER
+    _COGNITION_OBSERVER = fn
+
+
+def _cognition_observe(event) -> None:
+    obs = _COGNITION_OBSERVER
+    if obs is None:
+        return
+    try:
+        obs(event)
+    except Exception:
+        return
 
 
 # ─────────────────────────────────────────────
@@ -589,8 +673,30 @@ class TeamProfile:
     big_chance_ratio: float = 0.35      # % of chances that are "big"
     press_success_rate: float = 0.25    # % of presses that win ball
 
+    # ── Club Philosophy layer (Checkpoint 30) ───────────────────────
+    # When a ClubPhilosophy is attached, _apply_philosophy() pulls the
+    # style DNA knobs toward the philosophy's targets (weighted by
+    # identity_strength = magnitude × adherence).  None-safe: when
+    # philosophy is None every new field stays neutral and no existing
+    # behaviour changes.
+    philosophy: Optional[Any] = None     # ClubPhilosophy or None
+    hunger: float     = 0.0             # Cruyff dial (0..1)
+    patience: float   = 0.0             # circulate-don't-force (0..1)
+    starve: float     = 0.0             # opponent-squeeze intensity (0..1)
+    has_identity: bool = False           # True when a philosophy was applied
+
     def __post_init__(self):
         self._apply_style_dna()
+        self._apply_philosophy()
+        # CALIBRATION (2026-09-17): funnel shot volume calibrated AFTER the
+        # punchy per-style profiles: the style DNA + philosophy mix already
+        # scale shotgun intent by style, and the AttackChain range-settle +
+        # geometry selector now land the REAL mix mix. A ×0.82 trim brings
+        # the volume (14.7 shots/team measured) down to the real band
+        # (12.1) without touching per-style differentiation. Distance
+        # discipline lives in the chain, so the trim sheds mostly
+        # box-perimeter volume.
+        self.shots_per_sequence = round(max(0.04, self.shots_per_sequence), 4)
 
     def _apply_style_dna(self):
         """Map style enum to tactical DNA values."""
@@ -703,6 +809,61 @@ class TeamProfile:
         self.tempo = min(1.0, self.tempo * intensity_mult)
         self.press_success_rate = min(0.55, self.press_success_rate * intensity_mult)
 
+    def _apply_philosophy(self):
+        """Blend the attached ClubPhilosophy into the style DNA (Checkpoint 30).
+
+        Pulls every tactical knob toward the philosophy's target by a weight
+        of ``identity_strength = magnitude × adherence``.  Completely inert
+        when ``philosophy`` is None — the profile is byte-for-byte the
+        style-default it would have been before this layer existed.
+
+        The mapped knobs (README of what a philosophy "owns"):
+          * hunger      → possession_target (Cruyff: we must have the ball)
+          * patience    → shots_per_sequence, recovery willingness
+          * starve      → opponent sequence-length squeeze (Lever B)
+        """
+        phi = self.philosophy
+        if phi is None:
+            self.hunger = 0.0
+            self.patience = 0.0
+            self.starve = 0.0
+            self.has_identity = False
+            return
+
+        w = max(0.0, min(1.0, getattr(phi, "identity_strength", 0.0)))
+        if w <= 0.0:
+            self.hunger = 0.0
+            self.patience = 0.0
+            self.starve = 0.0
+            self.has_identity = False
+            return
+
+        def _mix(base: float, target: float) -> float:
+            return base * (1.0 - w) + target * w
+
+        self.hunger = round(min(1.0, max(0.0, getattr(phi, "hunger", 0.0))), 4)
+        self.patience = round(min(1.0, max(0.0, getattr(phi, "patience", 0.0))), 4)
+        self.starve = round(min(1.0, max(0.0, getattr(phi, "starve", 0.0))), 4)
+
+        self.press_intensity = round(min(1.0, max(0.05, _mix(
+            self.press_intensity, getattr(phi, "press_target", 0.5)))), 4)
+        self.defensive_line = round(min(1.0, max(0.05, _mix(
+            self.defensive_line, getattr(phi, "line_target", 0.5)))), 4)
+        self.width = round(min(1.0, max(0.05, _mix(
+            self.width, getattr(phi, "width_target", 0.5)))), 4)
+        self.tempo = round(min(1.0, max(0.05, _mix(
+            self.tempo, getattr(phi, "tempo_target", 0.5)))), 4)
+        self.directness = round(min(1.0, max(0.05, _mix(
+            self.directness, getattr(phi, "directness_target", 0.5)))), 4)
+
+        # Cruyff conversion: hunger → possession_target (18 at 0 → ~75 at 1)
+        hunger_target = min(76.0, 18.0 + self.hunger * 58.0)
+        self.possession_target = round(_mix(self.possession_target, hunger_target), 1)
+        self.shots_per_sequence = round(max(0.03, _mix(
+            self.shots_per_sequence, getattr(phi, "shots_target", 0.12))), 4)
+
+        self.has_identity = True
+
 
 @dataclass
 class MatchConfig:
@@ -743,6 +904,13 @@ class MatchState:
 
     # Momentum (−100 to +100: negative=away dominant, positive=home dominant)
     momentum: float = 0.0
+
+    # Manager Brains (Phase 6): the team credited with the MOST RECENT goal
+    # (goal_team, NOT the own-goal-scoring defender's side). Stamped by
+    # _absorb_chain when a goal chain lands, read by Manager.on_event to tell
+    # on_goal_scored from on_goal_conceded. None when no goal has happened
+    # (or a VAR-disallowed one was just cancelled).
+    last_goal_team: Optional[str] = None
 
     # Who has the ball right now
     possession_team: str = ""
@@ -1178,11 +1346,11 @@ class XGEngine:
 
     # Base xG by shot origin zone
     ZONE_XG = {
-        "six_yard_box":    0.45,
+        "six_yard_box":    0.48,
         "penalty_spot":    0.65,
-        "inside_box":      0.16,
-        "edge_of_box":     0.06,
-        "outside_box":     0.022,
+        "inside_box":      0.13,
+        "edge_of_box":     0.04,
+        "outside_box":     0.02,
         "long_range":      0.008,
     }
 
@@ -1315,6 +1483,24 @@ class XGEngine:
                 angle_penalty = max(0.15, np.cos(angle_from_center))
                 base *= angle_penalty
 
+        # ── DISTANCE SHARPENING (CALIBRATION 2026-09-17) ──────────────
+        # PLOFA's zone bands are coarse — "inside_box" spans 6-22m and
+        # "edge_of_box" 22-35m — so the SAME zone price is applied to a
+        # 9m tap-in and a 21m pile-driver. Real conversion decays steadily
+        # with distance, so once the exact anchor is known we re-sharpen:
+        #   >27m  → ×0.22    22-27m → ×0.41
+        #   17-22m→ ×0.57     ≤17m   → unchanged
+        if shot_x is not None and shot_y is not None:
+            sx = abs(goal_x - shot_x)
+            sy = abs(shot_y - 34.0)
+            sdist = (sx * sx + sy * sy) ** 0.5
+            if sdist >= 27.0:
+                base *= 0.22
+            elif sdist >= 22.0:
+                base *= 0.41
+            elif sdist >= 17.0:
+                base *= 0.57
+
         # Small random variation (±5% instead of ±10%) — keeps xG realistic
         noise = random.uniform(0.95, 1.05)
         base *= noise
@@ -1375,6 +1561,24 @@ class PossessionEngine:
         home_base /= total
         away_base /= total
 
+        # ── LEVER A — CLOSED-LOOP OWNERSHIP (Checkpoint 30) ─────────
+        # When at least one side carries a club philosophy, the split is no
+        # longer an open-loop starter prior: it feeds the ACTUAL measured
+        # possession time back in, so a team that genuinely holds the ball
+        # longer gets reinforced — real possession is a feedback loop
+        # ("we have it → we keep it").  trust ramps up as the match wears
+        # on (more measured samples), so the early game leans on the prior
+        # and the identity converges the measured outcome onto its target.
+        # Fully inert when no philosophy is present (byte-compatible).
+        if (getattr(home_profile, "has_identity", False)
+                or getattr(away_profile, "has_identity", False)):
+            meas_total = state.home_possession_s + state.away_possession_s
+            if meas_total >= 30.0:
+                meas_home = state.home_possession_s / meas_total
+                _trust = max(0.30, 0.55 - 0.00014 * meas_total)
+                home_base = (1.0 - _trust) * home_base + _trust * meas_home
+                away_base = 1.0 - home_base
+
         # Game state modifier
         gd = state.goal_difference
         late_game = state.minute >= 70
@@ -1407,18 +1611,32 @@ class PossessionEngine:
         return round(home_base, 4), round(away_base, 4)
 
     @staticmethod
-    def sequence_length(team_profile: TeamProfile | EffectiveTactics, state: MatchState) -> int:
+    def sequence_length(team_profile: TeamProfile | EffectiveTactics,
+                        state: MatchState,
+                        oppressor_starve: float = 0.0) -> int:
         """
         How many passes in a typical possession sequence for this team.
         Tiki-taka teams have long sequences, route one teams have short ones.
         Accepts both TeamProfile and EffectiveTactics (which has a .style attr).
+
+        Checkpoint 30 — two philosophy levers ride on top of the style roll:
+          * Lever C (patience): a patient identity keeps the ball longer,
+            stretching its own sequences (up to ~+45%).
+          * Lever B (starve): the OPPONENT's hunger squeezes our retention
+            (up to −35% from a maximal-starve defender, e.g. Gegenpressing).
+        Both are inert when the profiles carry no philosophy (0.0 knobs).
         """
         # Resolve style from profile — TeamProfile has .style, EffectiveTactics
         # stores it as an attribute if created from adjust().
         style = getattr(team_profile, "style", None)
+        # Owner-side patience + opponent-side starve (None-safe)
+        patience = max(0.0, min(1.0, getattr(team_profile, "patience", 0.0) or 0.0))
+        starve = max(0.0, min(1.0, oppressor_starve or 0.0))
+        scale = (1.0 + 0.45 * patience) * (1.0 - 0.35 * starve)
+
         if style is None:
             # Fallback for EffectiveTactics: use possession_target as proxy
-            return random.randint(3, 8)
+            return max(1, int(round(random.randint(3, 8) * scale)))
         # Checkpoint 23: ranges for possession-capable styles sit slightly
         # higher than they historically did. That is only realistic NOW —
         # the tempo-circulation directive lets a long sequence hover in the
@@ -1426,23 +1644,30 @@ class PossessionEngine:
         # looks like City circulating rather than a conveyor belt to a shot.
         # Direct/defensive styles are untouched: their short sequences ARE
         # their identity.
+        #
+        # CALIBRATION (2026-09-17): build-up ranges raised ~40% for the
+        # possession-capable styles so per-team pass volume climbs toward
+        # the real La Liga band (~530-550). Real teams cycle the ball far
+        # more than PLOFA did (398 vs 538 passes/team). Tempo-circulation
+        # keeps the extra touches in build-up rather than turning them into
+        # shots.
         base_length = {
-            TeamStyle.TIKI_TAKA:           random.randint(9, 20),
-            TeamStyle.STRUCTURED_POSSESSION: random.randint(7, 16),
-            TeamStyle.VERTICAL_TIKI_TAKA:  random.randint(6, 13),
-            TeamStyle.ATTACKING:           random.randint(5, 12),
-            TeamStyle.BALANCED:            random.randint(4, 10),
-            TeamStyle.GEGENPRESSING:       random.randint(4, 8),
-            TeamStyle.FLUID_COUNTER:       random.randint(3, 7),
-            TeamStyle.DEFENSIVE:           random.randint(2, 6),
-            TeamStyle.WING_PLAY:           random.randint(4, 10),
-            TeamStyle.ULTRA_ATTACKING:     random.randint(5, 11),
+            TeamStyle.TIKI_TAKA:           random.randint(13, 28),
+            TeamStyle.STRUCTURED_POSSESSION: random.randint(11, 22),
+            TeamStyle.VERTICAL_TIKI_TAKA:  random.randint(9, 18),
+            TeamStyle.ATTACKING:           random.randint(9, 18),
+            TeamStyle.BALANCED:            random.randint(8, 16),
+            TeamStyle.GEGENPRESSING:       random.randint(6, 12),
+            TeamStyle.FLUID_COUNTER:       random.randint(5, 11),
+            TeamStyle.DEFENSIVE:           random.randint(4, 9),
+            TeamStyle.WING_PLAY:           random.randint(8, 16),
+            TeamStyle.ULTRA_ATTACKING:     random.randint(8, 16),
             TeamStyle.ROUTE_ONE:           random.randint(1, 4),
             TeamStyle.PARK_THE_BUS:        random.randint(1, 4),
             TeamStyle.ULTRA_DEFENSIVE:     random.randint(1, 3),
         }.get(team_profile.style, random.randint(4, 10))
 
-        return base_length
+        return max(1, int(round(base_length * scale)))
 
 
 # ─────────────────────────────────────────────
@@ -1481,6 +1706,18 @@ class MatchEngine:
         self.config = config
         self.home_profile = home_profile
         self.away_profile = away_profile
+
+        # Reseed the cosmetic RNG per match. _COSMETIC_RNG is a module-level
+        # singleton seeded only at import, and celebration_s (line ~4382) is
+        # ADDED to match_clock_s — so without a per-match reseed, celebration
+        # lengths drawn during match N leak into match N+1's clock inside the
+        # same process and break deterministic replay for any harness that
+        # runs several matches in one process (gate_xl, validate_neural_xl,
+        # compare_striker, brain_self_trainer, ...). Reseeding to the same
+        # fixed constant means every match starts from the same imported
+        # state: byte-identical to a fresh process, and byte-identical across
+        # in-process repeats.
+        _COSMETIC_RNG.seed(0x5EEDC05)
 
         self.state = MatchState(
             possession_team=config.home_team  # Home team kicks off
@@ -1568,6 +1805,8 @@ class MatchEngine:
         # Team-press engagement cache: {(team, tick_key) -> g} so the shared
         # controller's forward pass runs once per team per off-ball tick.
         self._team_press_g_cache: Dict[Tuple[str, float], float] = {}
+        self._offball_press_cache: Dict[Tuple[str, float, float, float],
+                                        Optional[float]] = {}
 
         # Virtual GPS recorder — a 10 Hz per-tick position log that the
         # off-ball integrator feeds for verification/visualisation. Disabled
@@ -1703,9 +1942,17 @@ class MatchEngine:
                 controller.register_player(p, starting_stamina=starting)
 
     def set_managers(self, home_manager=None, away_manager=None):
-        """Wire in ManagerProfile objects (optional bias layer). These duck-type
-        the small surface TacticalAI/SubstitutionController need: stubbornness(),
-        risk_tolerance, chase_shift(), protect_shift(), man_management."""
+        """Wire in a manager for the bias / brain layer.
+
+        Phase 0–5 behaviour: ``ManagerProfile`` objects (duck-typing
+        ``stubbornness()``, ``risk_tolerance``, ``chase_shift()``,
+        ``protect_shift()``, ``man_management``).
+
+        Phase 6 behaviour: real ``Manager`` objects (brain + mind +
+        memory).  When ``USE_MANAGER_BRAIN`` is True the engine delegates
+        to ``Manager.decide`` / ``on_event`` / ``end_of_match`` instead of
+        the static TacticalAI posture thresholds.
+        """
         self.home_manager = home_manager
         self.away_manager = away_manager
 
@@ -2183,6 +2430,16 @@ class MatchEngine:
             return
         ax, ay = self._minute_start_snapshot.get(pname, (st.current_x, st.current_y))
         pos = getattr(st, "position", "")
+        # OFF-BALL MOVEMENT HONESTY (2026-09-20): this player's INDIVIDUAL
+        # physic-y read — the chase trigger + involvement gate — acts on
+        # where HE believes the ball is, not the omniscient truth.  The
+        # team's SHAPE compaction below keeps the true ball (a real team
+        # shifts shape by voice, but the player who THINKS the ball is
+        # elsewhere genuinely wastes the sprint / misses the close-down).
+        _attacks_right = self.position_engine.team_attacks_right.get(team, True)
+        bx, by = movement_ball(
+            self, pname, pos, _attacks_right, ball_x, ball_y,
+            float(self.state.minute))
         # Feature #1/#2 — RESHAPE WINDOW: when a formation stance or attack
         # pattern was just applied to this team, the off-ball anchor migrates
         # onto the player's NEW home post over ~90 s of match clock instead of
@@ -2233,6 +2490,18 @@ class MatchEngine:
             if p_tri > 0.0:
                 tx += (trix - tx) * p_tri
                 ty += (triy - ty) * p_tri
+        # Checkpoint 37 — BACK-LINE BUILD-UP DROP: while the team builds from
+        # the back, the ball-side CB sags toward a goal-side socket so the
+        # pressed midfield has a short 8-15m reset instead of the 25-40m
+        # heave to the keeper. TARGET steer only (jog integrator pace-caps).
+        bld = self.position_engine.backline_build_up_support(
+            team, ball_x, ball_y, has_ball,
+            self.position_engine.team_attacks_right.get(team, True))
+        if bld and pname in bld:
+            p_bl, blx, bly = bld[pname]
+            if p_bl > 0.0:
+                tx += (blx - tx) * p_bl
+                ty += (bly - ty) * p_bl
         tx = max(0.0, min(105.0, tx))
         ty = max(0.0, min(68.0, ty))
         cx, cy = st.current_x, st.current_y
@@ -2240,14 +2509,18 @@ class MatchEngine:
         dist = math.hypot(dx, dy)
         tgt = self._top_speed_cache.get(pname, 7.0)
         jog = self._JOG_SPEED.get(pos, 1.8)
-        ball_dist = math.hypot(ball_x - cx, ball_y - cy)
+        ball_dist = math.hypot(bx - cx, by - cy)
         # Involvement gate: when the play is on the FAR side of the pitch a
         # player holds his shape at a light trot rather than tracking the
         # ball across it (real wingers/full-backs don't chase diagonally);
         # full jog / chase bursts only engage when the ball swings into his
         # zone. This is what keeps wide roles' totals around the real
         # ~11.5-12.5 km/90 instead of 16+.
-        involved = abs(ball_x - self._minute_start_snapshot.get(pname, (cx, cy))[0]) < 30.0
+        # OFF-BALL MOVEMENT HONESTY (2026-09-20): both this gate and the
+        # chase trigger/resustain act on the PHYSICAL perceived ball (bx,
+        # by) — honest effort: a player who believes the ball is far holds
+        # his trot, a wrong belief wastes (or forfeits) the sprint.
+        involved = abs(bx - self._minute_start_snapshot.get(pname, (cx, cy))[0]) < 30.0
         if not involved:
             jog = jog * 0.30
         chasing = (not has_ball) and ball_dist < self._CHASE_TRIGGER
@@ -2260,6 +2533,16 @@ class MatchEngine:
                     g = _team_press_g(self, team, ball_x, ball_y, danger_t)
                     self._team_press_g_cache[_g_key] = g
                 prob = self._PRESS_PROB.get(pos, 0.60) * g
+                # Phase 10 — position off-ball brain: a LW/RW/CM runner with
+                # an evolved press-gate brain replaces the static role rate
+                # with its own p(press) over the same off-ball vector it was
+                # trained on, still scaled by the team commitment.  Missing
+                # position brain / any error => None => keep today's formula.
+                if _OFFBALL_POS_BRAIN_WIRED:
+                    _ob = self._offball_press_prob(
+                        pname, pos, team, ball_x, ball_y, danger_t)
+                    if _ob is not None:
+                        prob = _ob * g
                 cst["allow"] = 1.0 if random.random() < prob else -1.0
             cst["t"] += DT
             if cst["allow"] > 0:
@@ -2302,6 +2585,29 @@ class MatchEngine:
         self._record_offball_distance(pname, moved, spd, tgt, DT)
         st.minute_drift_distance += moved
 
+    def _offball_press_prob(self, pname, position, team, ball_x, ball_y,
+                            danger_t) -> Optional[float]:
+        """p(press) for this runner from the evolved position off-ball brain.
+
+        Wraps offball_brain_wiring.offball_press_prob; any missing brain,
+        malformed state or exception yields None (engine keeps the static
+        Bernoulli).  Memoized per press window (reset when allow clears)."""
+        try:
+            import offball_brain_wiring as _obw
+            cache = self._offball_press_cache
+            key = (pname, round(ball_x), round(ball_y), round(danger_t, 1))
+            hit = cache.get(key)
+            if hit is None:
+                hit = _obw.offball_press_prob(
+                    self, pname, position, team, ball_x, ball_y, danger_t,
+                    minute=self.state.minute,
+                    score_diff=self.state.home_goals - self.state.away_goals,
+                )
+                cache[key] = hit
+            return hit
+        except Exception:
+            return None
+
     def _offball_run(self, duration_s: float, home_has_ball: bool) -> None:
         """Jog every off-ball player for ``duration_s`` of LIVE play (during an
         episode), without advancing the global clock — the episode already did.
@@ -2337,6 +2643,23 @@ class MatchEngine:
                     self._offball_move_player(
                         pname, team, ball_x, ball_y, has_ball,
                         danger.get(team, 0.0), cross_team, DT)
+                # Checkpoint 37 — SWEEPER-KEEPER BUILD-OUT: while this team
+                # possesses inside its own two-thirds the keeper slides to a
+                # ~24m socket so the CB/CDM/FB always has a genuinely SHORT
+                # back bump (the 30m gate keeps feeding healthy and short).
+                if has_ball:
+                    _pert = self.position_engine.team_attacks_right.get(team, True)
+                    _gk_t = self.position_engine.gk_build_up_advance(
+                        team, ball_x, ball_y, True, _pert)
+                    if _gk_t is not None:
+                        for _gn in self.position_engine.team_rosters.get(team, []):
+                            _gs = self.position_engine.states.get(_gn)
+                            if _gs is None or getattr(_gs, "position", "") != "GK":
+                                continue
+                            _gxp = self.position_engine.GK_BUILD_UP_PULL
+                            _gs.current_x += (_gk_t[0] - _gs.current_x) * _gxp
+                            _gs.current_y += (_gk_t[1] - _gs.current_y) * _gxp
+                            break
             if i % 2 == 0:
                 self._record_player_tick(t0 + (i + 1) * DT, home, away)
             if self.gps is not None:
@@ -2463,6 +2786,10 @@ class MatchEngine:
             self.state.minute = minute
             self.state.phase  = PhaseEngine.get_phase(minute)
 
+            # ── MANAGER COLLECTION CHECKPOINT (Phase 7, opt-in) ──
+            if _collection_checkpoint_hook is not None and minute % 5 == 0:
+                _collection_checkpoint_hook(self, minute)
+
             # ── KICKOFF TRIGGERS ────────────────────────────────────────
             if minute == 1 and not self.state.pending_kickoff_for:
                 self.state.pending_kickoff_for = self.state.first_half_kickoff_team
@@ -2476,6 +2803,22 @@ class MatchEngine:
 
             # ── SUBSTITUTION CHECK (before the minute plays out) ──
             if self.sub_controller is not None:
+                # Phase 6 — push brain-manager sub urgency into the controller
+                # so check_stamina_sub can modulate. At flag-off or when no
+                # brain-manager is wired the dict stays empty → urgency_for
+                # returns the neutral 0.5 (factor 1.0) so the base sub
+                # probability is unchanged.
+                if USE_MANAGER_BRAIN:
+                    from manager_profile import Manager as _BrainManager
+                    for _team, _mgr in (
+                        (self.config.home_team, self.home_manager),
+                        (self.config.away_team, self.away_manager),
+                    ):
+                        if _mgr is not None and isinstance(_mgr, _BrainManager) \
+                                and hasattr(_mgr, "_current_urgency"):
+                            self.sub_controller.set_manager_urgency(
+                                _team, _mgr._current_urgency
+                            )
                 gd_home = self.state.home_goals - self.state.away_goals
                 gd_away = -gd_home
                 subs = self.sub_controller.process_minute(
@@ -2553,7 +2896,10 @@ class MatchEngine:
             from tactical_shapes import formation_stance_for
             from attack_patterns import pattern_for
             _poss_h, _poss_a = PossessionEngine.calculate_possession_split(
-                self.home_profile, self.away_profile, self.state,
+                *_brain_possession_profiles(
+                    self.home_profile, self.away_profile,
+                    self.home_manager, self.away_manager),
+                self.state,
                 self.config.home_team,
             )
             _gd_h = self.state.home_goals - self.state.away_goals
@@ -2592,12 +2938,23 @@ class MatchEngine:
                     getattr(getattr(_prof, "style", None), "value", "balanced"),
                     self.state, _team, self.config.home_team, minute,
                     chasing=_chasing, protecting=_protecting,
+                    manager=_mgr,
                 )
                 if _team != _likely_carrier:
                     _pattern = AttackPattern.NONE
                 if self.position_engine.apply_attack_pattern(_team, _pattern):
                     self._shape_apply_clock[_team] = self.state.match_clock_s
                 self.state.team_patterns[_team] = _pattern
+
+                # Phase 8 v1 — coach width instruction ("stay wide" /
+                # "tuck in", stored-posture read). Static / BALANCED /
+                # flag OFF yields width 0 → apply_coach_width is a no-op.
+                if USE_MANAGER_BRAIN:
+                    from coach_instructions import instructions_for_manager as _instr_for
+                    _ci = _instr_for(_mgr, _pattern)
+                    if self.position_engine.apply_coach_width(
+                            _team, _ci.width_cmd if _ci is not None else 0.0):
+                        self._shape_apply_clock[_team] = self.state.match_clock_s
 
             # ── SIMULATE MINUTE ────────────────────────────────────
             # Single-clock bookkeeping: anchor the minute's start so the
@@ -2609,6 +2966,7 @@ class MatchEngine:
             self._patrol = {}
             self._chase_state = {}
             self._team_press_g_cache = {}
+            self._offball_press_cache = {}
             self._minute_start_snapshot = {}
             for _t in (self.config.home_team, self.config.away_team):
                 self._minute_start_snapshot.update(
@@ -2802,7 +3160,7 @@ class MatchEngine:
                         and getattr(p, "sub_in_minute", None) is not None):
                     p.dna.minutes_played = total_mins - p.sub_in_minute
 
-        return MatchResult(
+        result = MatchResult(
             config=self.config,
             state=self.state,
             timeline=self.timeline,
@@ -2816,6 +3174,21 @@ class MatchEngine:
             gps=self.gps,
             chronology=self.chronograph(),
         )
+
+        # Phase 6 — Manager Brains end-of-match callback (opt-in): each wired
+        # brain-manager closes its loop here — the mind updates composure/
+        # stress from the final result and the episodic memory records the
+        # conviction it committed to (see manager_profile.Manager.end_of_match).
+        if USE_MANAGER_BRAIN:
+            from manager_profile import Manager as _BrainManager
+            for _team, _mgr in (
+                (self.config.home_team, self.home_manager),
+                (self.config.away_team, self.away_manager),
+            ):
+                if _mgr is not None and isinstance(_mgr, _BrainManager):
+                    _mgr.end_of_match(result, _team)
+
+        return result
 
     def chronograph(self) -> MatchChronology:
         """Stamp every chain event with its TRUE match-second on the single
@@ -3130,7 +3503,10 @@ class MatchEngine:
 
         # ── POSSESSION SPLIT ──────────────────────────────────────────
         home_poss, away_poss = PossessionEngine.calculate_possession_split(
-            self.home_profile, self.away_profile, self.state, home_team
+            *_brain_possession_profiles(
+                self.home_profile, self.away_profile,
+                self.home_manager, self.away_manager),
+            self.state, home_team
         )
 
         # ── SEQUENCES PER MINUTE ──────────────────────────────────────
@@ -3416,6 +3792,7 @@ class MatchEngine:
                 avg_stamina=att_avg_stamina,
                 manager=(self.home_manager if attacking_team == home_team
                          else self.away_manager),
+                engine=self,
             )
             def_profile = TacticalAI.adjust(
                 def_raw_profile, self.state, defending_team, home_team,
@@ -3424,6 +3801,7 @@ class MatchEngine:
                 avg_stamina=def_avg_stamina,
                 manager=(self.home_manager if defending_team == home_team
                          else self.away_manager),
+                engine=self,
             )
 
             att_players = self.active_players.get(attacking_team, [])
@@ -3484,7 +3862,10 @@ class MatchEngine:
 
             # ── POSSESSION SEQUENCE ──────────────────────────────────
             # Sequence length varies by style and game state
-            seq_length = PossessionEngine.sequence_length(att_profile, self.state)
+            seq_length = PossessionEngine.sequence_length(
+                att_profile, self.state,
+                oppressor_starve=getattr(def_profile, "starve", 0.0),
+            )
 
             # Pass defending players into possession chain so it can
             # generate realistic pressure events at the right locations.
@@ -3500,7 +3881,18 @@ class MatchEngine:
             if self.state.counterpress_active(defending_team):
                 poss_cp = {"active": True,
                            "x": self.state.counterpress_x,
-                           "y": self.state.counterpress_y}
+                           "y": self.state.last_ball_y}
+            # Phase 8 v1 — coach-to-player instructions (opt-in): the
+            # attacking team's live manager speaks to this sequence's
+            # carriers (stored posture read — no decide() poll). Static /
+            # BALANCED / flag OFF yields None → chain byte-identical.
+            _coach_instr = None
+            if USE_MANAGER_BRAIN:
+                from coach_instructions import instructions_for_manager as _instr_for
+                _att_mgr = (self.home_manager if attacking_team == home_team
+                            else self.away_manager)
+                _coach_instr = _instr_for(
+                    _att_mgr, self.state.team_patterns.get(attacking_team))
             poss_result = ChainDispatcher.possession(
                 minute, attacking_team, att_players,
                 att_profile, self.state, seq_length,
@@ -3513,6 +3905,7 @@ class MatchEngine:
                 def_style_key=def_raw_profile.style.value,
                 att_style_key=att_raw_profile.style.value,
                 counterpress=poss_cp,
+                coach_instructions=_coach_instr,
             )
             self._credit_possession(
                 attacking_team, poss_result.sequence_duration_s,
@@ -3770,7 +4163,22 @@ class MatchEngine:
             # sequence if the attacking matrix already resolved one (it would
             # normally be skipped via the continue above — this is belt and
             # braces).
-            if random.random() < shot_prob and not poss_result.shot_taken:
+            #
+            # CALIBRATION (real-football shot origination): the per-minute
+            # shot_prob funnel may only dispatch a shot when the ball is
+            # INSIDE the attacking third (within ~42m of the goal it attacks).
+            # Previously a team in midfield possession would fire the attack
+            # chain from its own half and release 35-68m pot-shots at volume —
+            # real teams take ~95% of their shots from the final third. The
+            # distance propensity AT the contact point is then handled by the
+            # AttackChain geometry selector (_select_action_from_position).
+            ball_x = self.state.last_ball_x
+            in_final_third = (
+                (attacks_right and ball_x >= 63.0)
+                or (not attacks_right and ball_x <= 42.0)
+            )
+            if random.random() < shot_prob and not poss_result.shot_taken \
+                    and in_final_third:
                 situation = self._determine_situation(att_profile, phase, style)
 
                 if situation in (SituationType.CORNER, SituationType.DIRECT_FREEKICK,
@@ -4083,6 +4491,15 @@ class MatchEngine:
         Also drains stamina from every player involved in each event.
         """
         from squad_manager import get_stamina_action
+        # Phase 6 — Manager Brains: reset the "most recent goal" stamp, then
+        # credit it from this chain BEFORE the event feed below so managers
+        # can attribute GOAL/PENALTY_SCORED/OWN_GOAL events to the right
+        # side (goal_team is the CREDITED team — for an own goal that is the
+        # attacker, not the defender whose error put it in). A VAR-disallowed
+        # goal (delayed_offside) is cancelled: no stamp.
+        self.state.last_goal_team = None
+        if chain_result.goal_scored and not getattr(chain_result, "delayed_offside", False):
+            self.state.last_goal_team = chain_result.goal_team
         # Chronography: the global clock at the moment this chain starts being
         # absorbed. _absorb_motion (folded at the tail) will advance it by the
         # chain's physics duration; goal chains that early-return keep start==end.
@@ -4102,6 +4519,9 @@ class MatchEngine:
         # Add all events to the timeline + drain stamina
         for event in chain_result.events:
             self.timeline.append(event)
+            # Cognition tap: feed the event into the involved players' minds
+            # (no-op unless engage_mind_observer() has been called).
+            _cognition_observe(event)
 
             # ── STAMINA DRAIN ──────────────────────────────────────
             # Checkpoint 15: pressing-profile fatigue tax. PRESS events
@@ -4249,6 +4669,21 @@ class MatchEngine:
                 event, minute,
                 near_counts=self._near_ball_counts(bx, by),
             )
+
+            # Phase 6 — Manager Brains event feed (opt-in). After EACH event
+            # the wired brain-managers (if any) are told what happened. The
+            # mind ignores everything except goal outcomes, which it uses to
+            # update composure/stress via Manager.on_event. Cheap no-op for
+            # other event types.
+            if USE_MANAGER_BRAIN:
+                from manager_profile import Manager as _BrainManager
+                _etype_name = getattr(event.event_type, "name", "")
+                for _team, _mgr in (
+                    (self.config.home_team, self.home_manager),
+                    (self.config.away_team, self.away_manager),
+                ):
+                    if _mgr is not None and isinstance(_mgr, _BrainManager):
+                        _mgr.on_event(_etype_name, self, _team)
 
 
         # Checkpoint 6 — corner causality: a chain reporting corner_won is

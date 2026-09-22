@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
-from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_Y, CENTER_Y
+from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_X, PITCH_Y, CENTER_Y
 from tactical_shapes import (
     FormationStance,
     stance_delta_roles,
@@ -166,6 +166,20 @@ TRI_PIVOT_ALPHA: float = 0.25       # CDM slides toward the ball side on wide pl
 TRI_CENTRAL_ALPHA: float = 0.22     # central-ball triangle spread strength
 TRI_SUPPORT_BACK: float = 0.12      # support node sits 12% behind the play
 TRI_CENTRAL_CM_OFFSET: float = 8.0  # CM pair split metres around the ball
+
+# Checkpoint 37 — BACK-LINE BUILD-UP DROP (the "third-man" drop-in).
+# In-possession between own goal and midfield, the ball-side CB sags toward
+# the ball to offer the SHORT back option (a real team's build-out CB steps
+# off the line to give the CM a 8-15m receive — otherwise the only reset is
+# the 25-40m heave to the keeper). The socket is a TRI-style target steer:
+# pace-capped movement, gated to possession + own/middle third, never into
+# the six-yard wall.
+BACKLINE_DROP_MAX_NX: float = 50.0   # drop engages only inside ~the halfway mark
+BACKLINE_DROP_PEAK_NX: float = 30.0  # full strength through the own third
+BACKLINE_DROP_MIN_NX: float = 18.0   # socket floor so a CB never hugs the goal line
+BACKLINE_DROP_DEPTH: float = 0.30    # sag ~30% of the way back from ball to goal
+BACKLINE_DROP_ALPHA: float = 0.55    # steer weight when the drop is fully engaged
+BACKLINE_DROP_CENTER: float = 0.30   # socket pulls slightly toward the spine
 
 
 def pitch_spine_weight(y: float) -> float:
@@ -555,8 +569,10 @@ class PositionEngine:
         self._formation_base_homes: Dict[str, Dict[str, Tuple[float, float]]] = {}
         self._stance_deltas: Dict[str, Dict[str, Tuple[float, float]]] = {}
         self._pattern_deltas: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        self._coach_deltas: Dict[str, Dict[str, Tuple[float, float]]] = {}
         self._applied_stance_key: Dict[str, tuple] = {}
         self._applied_pattern: Dict[str, Optional[AttackPattern]] = {}
+        self._applied_coach_width: Dict[str, float] = {}
 
     def set_block_context(self, home_block, away_block) -> None:
         """Refresh the per-minute block shapes used by drift_minute's magnet."""
@@ -605,6 +621,8 @@ class PositionEngine:
         self._capture_base_homes(team_name)
         self._applied_stance_key.pop(team_name, None)
         self._applied_pattern[team_name] = AttackPattern.NONE
+        self._coach_deltas[team_name] = {}
+        self._applied_coach_width[team_name] = 0.0
 
         # Checkpoint 18 — register all wingers' spatial profiles (touchline
         # anchor, flank commitment, byline instinct, isolation thirst).
@@ -705,23 +723,49 @@ class PositionEngine:
         self._recompute_homes(team_name)
         return True
 
+    # ── COACH WIDTH INSTRUCTIONS (Phase 8 v1: "stay wide" / "tuck in") ──
+    # Per-role home deltas in attacking-right normalised space, applied
+    # BESIDE stance + pattern deltas. Idempotent on the command value.
+    _COACH_WIDTH_DELTAS: Dict[float, Dict[str, Tuple[float, float]]] = {
+        1.0: {"LW": (0.0, -2.5), "LB": (0.0, -2.5),
+              "RW": (0.0, 2.5), "RB": (0.0, 2.5)},
+        -1.0: {"LW": (0.0, 1.5), "LB": (0.0, 1.5),
+               "RW": (0.0, -1.5), "RB": (0.0, -1.5)},
+        0.0: {},
+    }
+
+    def apply_coach_width(self, team_name: str, width_cmd: float) -> bool:
+        """Apply the coach's width instruction for a team.
+
+        width_cmd: +1 stay wide, -1 tuck in, 0 none. Idempotent; returns
+        True only when the command actually changed."""
+        cmd = 1.0 if width_cmd > 0.5 else (-1.0 if width_cmd < -0.5 else 0.0)
+        if self._applied_coach_width.get(team_name) == cmd:
+            return False
+        self._coach_deltas[team_name] = dict(self._COACH_WIDTH_DELTAS[cmd])
+        self._applied_coach_width[team_name] = cmd
+        self._recompute_homes(team_name)
+        return True
+
     def _recompute_homes(self, team_name: str) -> None:
-        """home = base + stance_delta + pattern_delta, mirrored for left-
-        attacking teams, clamped to the pitch. Both delta tables map by ROLE
-        in attacking-right normalised space, so the away-mirror is just a
-        sign flip (dx on the x-axis, dy on the y-axis)."""
+        """home = base + stance_delta + pattern_delta + coach_delta, mirrored
+        for left-attacking teams, clamped to the pitch. All delta tables map
+        by ROLE in attacking-right normalised space, so the away-mirror is
+        just a sign flip (dx on the x-axis, dy on the y-axis)."""
         base = self._formation_base_homes.get(team_name, {})
         sgn = 1.0 if self.team_attacks_right.get(team_name, True) else -1.0
         sd = self._stance_deltas.get(team_name, {})
         pd = self._pattern_deltas.get(team_name, {})
+        cd = self._coach_deltas.get(team_name, {})
         for name, st in self.states.items():
             if st.team != team_name:
                 continue
             bx, by = base.get(name, (st.home_x, st.home_y))
             sdx = sd.get(st.position, (0.0, 0.0))
             pdx = pd.get(st.position, (0.0, 0.0))
-            dx = (sdx[0] + pdx[0]) * sgn
-            dy = (sdx[1] + pdx[1]) * sgn
+            cdx = cd.get(st.position, (0.0, 0.0))
+            dx = (sdx[0] + pdx[0] + cdx[0]) * sgn
+            dy = (sdx[1] + pdx[1] + cdx[1]) * sgn
             st.home_x = max(4.0, min(101.0, bx + dx))
             st.home_y = max(2.0, min(66.0, by + dy))
 
@@ -1594,6 +1638,118 @@ class PositionEngine:
             out[n] = (alpha, sx, sy)
         return out
 
+    def backline_build_up_support(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """Checkpoint 37 — BACK-LINE BUILD-UP DROP: the off-ball TARGET steer
+        that makes the back line offer a SHORT outlet under our own build-up.
+
+        Returns ``{name: (alpha, tx, ty)}`` — same contract as
+        ``midfielder_triangle_support`` (alpha in 0..1, applied by
+        match_engine._offball_move_player as a target steer) — or empty when:
+          - the team is out of possession (defensive block owns the back line),
+          - the ball is past the halfway mark (progression owns the shape), or
+          - no centre-back is alive in the spatial state.
+
+        Geometry: the BALL-SIDE CB (nearest in y to the ball) drops toward a
+        goal-side socket ~30% of the way back from ball to goal, nudged toward
+        the spine — leaving one CB holding the line and the far side wide. The
+        strength ramps up through the own third and fades to zero by midfield,
+        and the socket is floored at BACKLINE_DROP_MIN_NX so the dropper never
+        piles onto the goal line. Steering the TARGET (not the position) keeps
+        the actual travel pace-capped by the jog integrator.
+        """
+        if not has_ball or ball_x is None or ball_y is None:
+            return {}
+        own_goal_x = 0.0 if attacks_right else 105.0
+        nx = ball_x if attacks_right else 105.0 - ball_x
+        if nx <= 1.0 or nx >= BACKLINE_DROP_MAX_NX:
+            return {}
+        strength = 1.0
+        if nx > BACKLINE_DROP_PEAK_NX:
+            denom = (BACKLINE_DROP_MAX_NX - BACKLINE_DROP_PEAK_NX) or 1.0
+            strength = max(0.0, (BACKLINE_DROP_MAX_NX - nx) / denom)
+        if strength <= 0.05:
+            return {}
+        cbs = [
+            n for n in self.team_rosters.get(team_name, [])
+            if (st := self.states.get(n)) is not None
+            and st.position == "CB" and st.current_x is not None
+        ]
+        if not cbs:
+            return {}
+        ball_side = 1.0 if ball_y >= 34.0 else -1.0
+        dropper, best = None, 1e9
+        for n in cbs:
+            sto = self.states[n]
+            d = abs(sto.current_y - ball_y)
+            if d < best:
+                best, dropper = d, n
+        if dropper is None:
+            return {}
+        sx = ball_x + (own_goal_x - ball_x) * BACKLINE_DROP_DEPTH
+        sx_rel = sx if attacks_right else 105.0 - sx
+        if sx_rel < BACKLINE_DROP_MIN_NX:
+            sx = own_goal_x + BACKLINE_DROP_MIN_NX * (1.0 if attacks_right else -1.0)
+            sx = max(0.0, min(105.0, sx))
+        sy = ball_y + (34.0 - ball_y) * BACKLINE_DROP_CENTER
+        alpha = BACKLINE_DROP_ALPHA * strength
+        return {dropper: (alpha, sx, sy)}
+
+    GK_BUILD_UP_LOW_NX: float = 22.0    # below this the ball is in the keeper's
+                                        # dead-zone — hold near the line
+    GK_BUILD_UP_ADVANCE_NX: float = 55.0  # beyond this the attacking-crash
+                                          # GK step-up (opponent half) owns the shape
+    GK_BUILD_UP_SOCKET: float = 24.0    # sweeper-keeper build-out post off his line
+    GK_BUILD_UP_PULL: float = 0.25      # per-tick steer weight (pace-capped jog)
+
+    def gk_build_up_advance(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Optional[Tuple[float, float]]:
+        """Checkpoint 37 — SWEEPER-KEEPER BUILD-OUT ADVANCE.
+
+        The keeper is the free-man release for the back line, but only when he
+        OFFERS HIMSELF. The old keeper read was purely reactive: he sat on his
+        line until a midfield reset planted him at x≈28 (the record_touch clamp),
+        at which point the carrier was already 30-40m gone — the "back-pass"
+        became a 35m+ diagonally-risky heave, so the 30m back-bump gate (new in
+        Checkpoint 37) starved him of feeds entirely.
+
+        Modern GK-as-sweeper build-out (Ederson/Neuer/ter Stegen): while the
+        team builds from inside its own two-thirds, the keeper slides OUT to a
+        ~24m socket so the CB/CDM/FB always has a genuine SHORT back bump (a
+        10-30m ball to the keeper is a routine high-%, low-risk pass). He holds
+        near the line when the ball is in his own six-yard dead zone, stands off
+        when the opponent has the ball (defensive_block owns him there), and
+        hands over to the existing opponent-half attack step-up beyond midfield.
+        Returns (tx, ty) to steer toward, or None when no build-out is on.
+        """
+        if not has_ball or ball_x is None or ball_y is None:
+            return None
+        gk = next(
+            (self.states[n] for n in self.team_rosters.get(team_name, [])
+             if (st := self.states.get(n)) is not None
+             and st.position == "GK"),
+            None,
+        )
+        if gk is None:
+            return None
+        own_goal_x = 0.0 if attacks_right else 105.0
+        sign = 1.0 if attacks_right else -1.0
+        nx = ball_x if attacks_right else 105.0 - ball_x
+        if nx < self.GK_BUILD_UP_LOW_NX:
+            gx = own_goal_x + 12.0 * sign            # near the line, dead zone
+        elif nx <= self.GK_BUILD_UP_ADVANCE_NX:
+            gx = own_goal_x + self.GK_BUILD_UP_SOCKET * sign
+        else:
+            return None                              # opponent half — crash owns GK
+        gy = 34.0 + (ball_y - 34.0) * 0.30           # slide light toward ball side
+        gx = max(0.0, min(105.0, gx))
+        gy = max(0.0, min(68.0, gy))
+        return (gx, gy)
+
     def _opponent_pressure_at(
         self, x: float, y: float,
         opponents: Optional[List], ball_x: float, ball_y: float,
@@ -1958,7 +2114,7 @@ class PositionEngine:
         relative third. Radial scaling preserves the existing line/channel
         direction; only ball proximity changes.
         """
-        attacking_x = ball_x if attacks_right else self.PITCH_X - ball_x
+        attacking_x = ball_x if attacks_right else PITCH_X - ball_x
         if attacking_x < 35.0:
             third = "defensive"
         elif attacking_x <= 70.0:

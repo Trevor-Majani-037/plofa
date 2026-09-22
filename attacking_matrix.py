@@ -66,7 +66,7 @@ CLOSE_NETWORK_M = 15.0
 # `_reachable` cap (45m) so a carrier in the opponent's third cannot ping a
 # 90m diagonal all the way back to his own box — that is not a release, it is
 # a surrendered turnover.
-GK_RELEASE_MAX_DIST = 45.0
+GK_RELEASE_MAX_DIST = 28.0
 
 
 def _goal_x(attacks_right: bool) -> float:

@@ -106,6 +106,18 @@ CIRCULATION_MIN_RANGE_M: float = 3.0
 # runner half a step ahead is still a lateral pass.
 CIRCULATION_AHEAD_TOLERANCE_M: float = 8.0
 
+# Checkpoint 37 — SHORT RESET BEFORE THE KEEPER. A pressed carrier's regress
+# outlet is the nearest UNMARKED goal-side anchor first (the 8-15m CB/FB/CDM
+# drop-in the back-line build-up drop manufactures); the keeper bomb is the
+# escape when every near man is smothered. These fence the geometry:
+RESET_SHORT_RANGE_M: float = 22.0   # <= this = a routine short back bump
+RESET_FAR_RANGE_M: float = 35.0     # > this = a heave — circulate instead
+RELEASE_GK_BUMP_M: float = 30.0     # the keeper only receives when he is at
+                                    # short-bump range: back-line build-up
+                                    # release AND every emergency/structural
+                                    # reset closes on this cap. Beyond it the
+                                    # carrier resolves with the outfield cycle.
+
 # Role appetite for receiving a circulation pass. Midfielders and the back
 # line ARE the circulation network; wingers hold width (their ball is the
 # WING_SWITCH) and strikers pinning the backline are not tempo outlets.
@@ -252,20 +264,34 @@ class PossessionPhaseEngine:
 
         # ── RULE 1: FORCED EMERGENCY REGRESSION (danger valve) ────────
         # A deep carrier bottled up with zero forward lanes MUST hand the
-        # ball to the safety node. The keeper is the permanent overload
-        # anchor of build-up — passing to him makes it a 3v2 (GK+2CB) against
-        # the press rather than a hopeless 2v2.
+        # ball to a safety node. Football-order: the NEAREST unmarked
+        # goal-side anchor first (the CB/FB/CDM drop-in socket, 8-15m), and
+        # only when every near man is smothered does the valve go all the
+        # way to the keeper — he is the permanent overload anchor (GK+2CB =
+        # 3v2 against the press), not the default first touch. Checkpoint 37
+        # flipped this ordering: previously the GK lane was consulted BEFORE
+        # the reset anchor, so a pressed midfielder with a CB sitting 8m
+        # behind him still launched a 30-40m ball to his own keeper.
         if (under_pressure and lanes_open == 0 and carrier_role in DEEP_CARRIER_ROLES
                 and carrier_role != "GK"):
-            if self.gk.lane_open and self._reachable(ball_x, ball_y, self.gk.x, self.gk.y):
+            reset = self._pick_reset_anchor(backward_options, ball_x, ball_y)
+            if reset is not None and math.hypot(reset.x - ball_x, reset.y - ball_y) <= RESET_SHORT_RANGE_M:
+                return PossessionDecision(
+                    PossessionPhase.REGROUP_BUILD_UP,
+                    TacticalDirective.RECYCLE_BACKWARD,
+                    target=reset.name,
+                    reason="emergency_recycle_backward",
+                )
+            if (self.gk.lane_open
+                    and self._reachable(ball_x, ball_y, self.gk.x, self.gk.y)
+                    and math.hypot(ball_x - self.gk.x, ball_y - self.gk.y) <= RELEASE_GK_BUMP_M):
                 return PossessionDecision(
                     current_phase,
                     TacticalDirective.EMERGENCY_DROP_TO_GK,
                     target=self.gk.name, regress_to_gk=True,
                     reason="emergency_drop_to_gk",
                 )
-            reset = self._pick_reset_anchor(backward_options, ball_x, ball_y)
-            if reset is not None:
+            if reset is not None and math.hypot(reset.x - ball_x, reset.y - ball_y) <= RESET_FAR_RANGE_M:
                 return PossessionDecision(
                     PossessionPhase.REGROUP_BUILD_UP,
                     TacticalDirective.RECYCLE_BACKWARD,
@@ -281,16 +307,24 @@ class PossessionPhaseEngine:
         # 15-30 touch keeper lines seen against pressing sides. Frequency
         # scales with the team's possession identity (tiki-taka sides lean
         # on the keeper constantly, route-one sides almost never).
-        # The gate is GEOMETRIC (where the ball physically is), not the
-        # carried narrative phase — a dropped-back recycle to the own third
-        # must count as build-up even if the last directive was PROGRESS.
+        #
+        # Checkpoint 37 — the keeper bump comes from the BACK LINE only, and
+        # only when he is within a "short bump" reach. A central midfielder
+        # does not skip a free pivot/CB 5m behind him to launch a 20-40m
+        # diagonal to the keeper (Modric/Rodri maps show midfielders bypass
+        # the GK entirely; the keeper's feed is the CB/FB short bump). This
+        # was the dominant source of the CM→GK heave-backs: a style-gated
+        # roll that let ANY deep carrier (CM included) lazily drop 30m+ to
+        # the keeper with a free teammate standing on the drop-in socket.
         geo_phase = possession_phase_for(ball_x, ball_y, attacks_right)
         if (geo_phase == PossessionPhase.REGROUP_BUILD_UP
-                and carrier_role in DEEP_CARRIER_ROLES
+                and carrier_role in RESET_ANCHOR_ROLES
                 and carrier_role != "GK"):
+            gk_d = math.hypot(ball_x - self.gk.x, ball_y - self.gk.y)
             if (random.random() < self._gk_recycle_rate()
                     and self.gk.lane_open
-                    and self._reachable(ball_x, ball_y, self.gk.x, self.gk.y)):
+                    and self._reachable(ball_x, ball_y, self.gk.x, self.gk.y)
+                    and gk_d <= RELEASE_GK_BUMP_M):
                 return PossessionDecision(
                     geo_phase,
                     TacticalDirective.RELEASE_TO_GK,
@@ -308,6 +342,7 @@ class PossessionPhaseEngine:
                 gk_reset = (
                     self.gk.lane_open
                     and self._reachable(ball_x, ball_y, self.gk.x, self.gk.y)
+                    and math.hypot(ball_x - self.gk.x, ball_y - self.gk.y) <= RELEASE_GK_BUMP_M
                     and carrier_role != "GK"
                 )
                 reset = self._pick_reset_anchor(backward_options, ball_x, ball_y)
@@ -316,15 +351,37 @@ class PossessionPhaseEngine:
                 # recycle the whole structure back to the keeper (rather than
                 # stopping at the nearest anchor) so the build-up can re-form
                 # with a free man. The diagonal is short enough to be safe
-                # (GK ≤ ~45m) and this is the sequence that produces the
-                # 15-30 touch keeper lines against pressing sides. Under
-                # pressure the reset to the keeper is forced outright.
+                # (GK ≤ ~30m — the keeper only receives when he is at
+                # short-bump range) and this is the sequence that produces
+                # the 15-30 touch keeper lines against pressing sides.
                 #
-                # Checkpoint 24 — wingers are exempt: a winger launching a
-                # 40-60m diagonal back to his own keeper is not a pattern of
-                # play, it's a giveaway. The shut-down winger's reset is the
-                # SHORT ball to his overlapping fullback or the nearest
-                # midfielder (the anchor pick below), or patience.
+                # Checkpoint 37 — the GK is NOT the first call. A real team
+                # first plays the SHORT reset to the nearest unmarked back-
+                # line/mid anchor when one is within "routine" range (the
+                # drop-in socket), and only escalates toward the keeper when
+                # the near men are smothered. Previously the keeper branch
+                # ran before the anchor, so any congested touch in the middle
+                # third went 25-40m to the keeper with a CB standing free 8m
+                # behind the ball.
+                if reset is not None:
+                    _rd = math.hypot(reset.x - ball_x, reset.y - ball_y)
+                    if _rd <= RESET_SHORT_RANGE_M:
+                        return PossessionDecision(
+                            PossessionPhase.REGROUP_BUILD_UP,
+                            TacticalDirective.RECYCLE_BACKWARD,
+                            target=reset.name,
+                            reason="tactical_recycle_backward",
+                        )
+                    # Checkpoint 24 — a winger's "nearest backward anchor"
+                    # can be a CB 50-70m away when the whole structure has
+                    # pushed up around him: launching that bomb back is not
+                    # football. Beyond ~30m the shut-down winger recirculates
+                    # instead (short support pass via the circulation web).
+                    if (carrier_role in ("LW", "RW") and _rd > 30.0):
+                        return PossessionDecision(
+                            current_phase, TacticalDirective.SUSTAIN_CIRCULATION,
+                            reason="wing_blocked_no_near_anchor",
+                        )
                 if (gk_reset and carrier_role not in ("LW", "RW")
                         and (under_pressure or nx < 55.0)):
                     if under_pressure or random.random() < self._gk_recycle_rate():
@@ -334,18 +391,7 @@ class PossessionPhaseEngine:
                             target=self.gk.name, regress_to_gk=True,
                             reason="wing_blocked_structural_reset",
                         )
-                if reset is not None:
-                    # Checkpoint 24 — a winger's "nearest backward anchor"
-                    # can be a CB 50-70m away when the whole structure has
-                    # pushed up around him: launching that bomb back is not
-                    # football. Beyond ~30m the shut-down winger recirculates
-                    # instead (short support pass via the circulation web).
-                    if (carrier_role in ("LW", "RW")
-                            and math.hypot(reset.x - ball_x, reset.y - ball_y) > 30.0):
-                        return PossessionDecision(
-                            current_phase, TacticalDirective.SUSTAIN_CIRCULATION,
-                            reason="wing_blocked_no_near_anchor",
-                        )
+                if reset is not None and math.hypot(reset.x - ball_x, reset.y - ball_y) <= RESET_FAR_RANGE_M:
                     return PossessionDecision(
                         PossessionPhase.REGROUP_BUILD_UP,
                         TacticalDirective.RECYCLE_BACKWARD,
