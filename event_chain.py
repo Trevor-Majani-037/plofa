@@ -31,7 +31,7 @@ import random
 import math
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Dict, Any, TYPE_CHECKING
+from typing import List, Optional, Tuple, Dict, Any, TYPE_CHECKING, NamedTuple
 
 from match_engine import (
     MatchEvent, EventType, SituationType, MatchPhase,
@@ -179,6 +179,20 @@ OFFSIDE_CALL_FLOOR    = 0.02  # flag probability when barely past the line
 OFFSIDE_CALL_PEAK     = 0.06  # flag probability when decisively beyond
 
 
+class OffsideVerdict(NamedTuple):
+    """Outcome of a Law 11 check on a completed pass.
+
+    called   — (x, y) when the flag rose: the pass is penalised at once.
+    uncalled — (x, y) when the receiver WAS in an offside position but the
+               flag stayed down (delayed flag / linesman missed it): play
+               continues, and the receiver is stamped on the ChainResult so
+               a later goal by the same player can go to VAR review.
+    Either may be None; both are None when no offside position existed.
+    """
+    called:   Optional[Tuple[float, float]] = None
+    uncalled: Optional[Tuple[float, float]] = None
+
+
 # ─────────────────────────────────────────────
 # SHOT-SPEED STAMPING — Opta-style launch velocity
 # ─────────────────────────────────────────────
@@ -256,8 +270,15 @@ class ChainResult:
     restart_x: float         = 0.0   # restart location x
     restart_y: float         = 0.0   # restart location y
     
-    # Delayed offside flag (set by ChainDispatcher for VAR-style checks)
+    # Delayed offside flag (set when VAR rules a goal out for offside)
     delayed_offside: bool    = False
+
+    # VAR review stamp — a pass found this receiver in an offside position
+    # but the flag stayed down. If the SAME player scores later in this
+    # possession, MatchEngine._maybe_var_overturn reviews the goal.
+    unflagged_offside_player: str = ""
+    unflagged_offside_x: float    = 0.0
+    unflagged_offside_y: float    = 0.0
 
     # Checkpoint 19 — Offside detection: offside location for free kick placement
     offside_detected: bool   = False
@@ -298,6 +319,36 @@ class ChainResult:
     def add(self, event: MatchEvent):
         self.events.append(event)
         return self
+
+
+def mark_var_disallowed(result: ChainResult, minute: int, team: str,
+                        phase: MatchPhase, game_state: GameState,
+                        player: str, offside_x: float, offside_y: float) -> None:
+    """Rule out a goal for offside — the VAR overturn.
+
+    Keeps goal_scored=True so MatchEngine._absorb_chain emits the
+    VAR_DISALLOWED_GOAL event and skips the score/momentum/kickoff updates;
+    strips GOAL from the timeline (the ball never legally crossed the line);
+    records the OFFSIDE for stats; and arms offside_* so the free kick is
+    queued at the position of the offence by the existing offside path.
+    """
+    if not result.goal_scored or result.delayed_offside:
+        return
+    result.delayed_offside = True
+    result.offside_detected = True
+    result.offside_x = offside_x
+    result.offside_y = offside_y
+    result.offside_player = player
+    result.offside_team = team
+    result.possession_lost = True
+    result.events = [e for e in result.events if e.event_type != EventType.GOAL]
+    result.add(MatchEvent(
+        minute=minute, second=0, event_type=EventType.OFFSIDE,
+        team=team, player=player, phase=phase, game_state=game_state,
+        location_x=offside_x, location_y=offside_y, outcome=False,
+        metadata={"var_disallow": True, "offside_x": offside_x,
+                  "offside_y": offside_y},
+    ))
 
 
 # ─────────────────────────────────────────────
@@ -2571,7 +2622,7 @@ class PossessionChain(BaseChain):
                     # (in opponent's half, ahead of second-last defender,
                     # ahead of the ball) is penalised. The free kick is
                     # placed at the offside location, not a random zone.
-                    offside_loc = cls._check_offside(
+                    offside_loc, offside_missed = cls._check_offside(
                         last_player, receiver, x, y, end_px, end_py,
                         def_players, position_engine, attacks_right,
                     )
@@ -2595,6 +2646,14 @@ class PossessionChain(BaseChain):
                         result.offside_team = attacking_team
                         result.possession_lost = True
                         break
+
+                    if offside_missed is not None:
+                        # Delayed offside: the receiver stood in an offside
+                        # position but the flag stayed down — play continues.
+                        # Stamped so a later goal by THIS player in this
+                        # possession goes to VAR (MatchEngine._maybe_var_overturn).
+                        result.unflagged_offside_player = receiver.name
+                        result.unflagged_offside_x, result.unflagged_offside_y = offside_missed
 
                     # ── BALL RECEIPT ─────────────────────────────
                     # StatsBomb logs a BALL_RECEIPT event for every
@@ -4627,7 +4686,7 @@ class PossessionChain(BaseChain):
         def_players: List[PlayerProfile],
         position_engine: Optional[PositionEngine],
         attacks_right: bool,
-    ) -> Optional[Tuple[float, float]]:
+    ) -> OffsideVerdict:
         """
         Check if a completed pass leaves the receiver in an offside position.
 
@@ -4641,38 +4700,40 @@ class PossessionChain(BaseChain):
         pass destination ends up — a runner starting onside and chasing a
         through ball beyond the line is onside, exactly as in real football.
 
-        Returns (offside_x, offside_y) if offside, else None.
-        The offside location is the receiver's position at the moment of the pass.
+        Returns an OffsideVerdict: called=(x, y) when the flag rose,
+        uncalled=(x, y) when the receiver was beyond the line but the flag
+        stayed down (delayed offside — VAR material), both None otherwise.
+        The location is the receiver's position at the moment of the pass.
         """
         if position_engine is None:
-            return None
+            return OffsideVerdict()
 
         # Law 11 is judged at the moment the ball is played, on the
         # receiver's LIVE position — not on where the pass destination
         # ends up. A striker starting onside and running onto a through
-        # ball is onside, even when the ball lands beyond the line.
+        # ball beyond the line is onside, even when the ball lands beyond the line.
         rx, ry = position_engine.get_position(receiver.name)
 
-        # Condition 1: receiver must be in opponent's half
+        # Condition 1: receiver must be in the opponent's half
         opp_half = rx > 52.5 if attacks_right else rx < 52.5
         if not opp_half:
-            return None
+            return OffsideVerdict()
 
         # Condition 3: receiver must be ahead of the ball
         ball_ahead = (rx > x) if attacks_right else (rx < x)
         if not ball_ahead:
-            return None
+            return OffsideVerdict()
 
         second_last_x = cls._second_last_defender_x(
             def_players, position_engine, attacks_right
         )
         if second_last_x is None:
-            return None
+            return OffsideVerdict()
 
         # Condition 2: receiver must be ahead of second-last defender
         receiver_ahead = (rx > second_last_x) if attacks_right else (rx < second_last_x)
         if not receiver_ahead:
-            return None
+            return OffsideVerdict()
 
         # ── CALIBRATED OFF-SIDE DECISION (see OFFSIDE_* constants) ──
         # Margin in metres by which the receiver is beyond the offside line.
@@ -4682,7 +4743,7 @@ class PossessionChain(BaseChain):
         # small "benefit of the doubt" tolerance keeps a receiver level with
         # (or a centimetre past) the line onside, exactly as referees call it.
         if margin <= OFFSIDE_LEVEL_TOL_M:
-            return None
+            return OffsideVerdict()
 
         # Run-timing / flag discipline: the flag rises with how decisively the
         # receiver is beyond the line, but it is not a certainty even then —
@@ -4695,9 +4756,11 @@ class PossessionChain(BaseChain):
         p_offside = OFFSIDE_CALL_FLOOR + (
             OFFSIDE_CALL_PEAK - OFFSIDE_CALL_FLOOR) * decisiveness
         if random.random() > p_offside:
-            return None   # the run was timed onside / the flag stayed down
+            # The flag stayed down — a clear offside position left uncalled.
+            # Play continues; stamp for a possible VAR review if he scores.
+            return OffsideVerdict(uncalled=(rx, ry))
 
-        return (rx, ry)
+        return OffsideVerdict(called=(rx, ry))
 
     @classmethod
     def _generate_through_ball(
@@ -6406,7 +6469,9 @@ class SetPieceChain(BaseChain):
     def _corner_chain(cls, minute, att_team, def_team,
                        att_players, def_players, state,
                        attacks_right=True, position_engine=None,
-                       routine: Optional[SetPieceRoutine] = None) -> ChainResult:
+                       routine: Optional[SetPieceRoutine] = None,
+                       delivery_origin: Optional[Tuple[float, float]] = None,
+                       ) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
         episode = None
@@ -6420,6 +6485,21 @@ class SetPieceChain(BaseChain):
         corner_x = 105.0 if attacks_right else 0.0
         corner_y  = random.choice([1.0, 67.0])
         corner_side = "right" if corner_y > 34 else "left"
+        # Law 11 judgement origin: WHERE the ball is struck from. Defaults to
+        # the corner arc; a crossed free kick passes its own spot instead.
+        delivery_x, delivery_y = (
+            delivery_origin if delivery_origin is not None else (corner_x, corner_y)
+        )
+        # Snapshot every player's position at the instant the ball is played
+        # (the Law 11 judgement moment) — captured before any chain movement
+        # or record_touch overwrites a position.
+        delivery_pos: Dict[str, Tuple[float, float]] = {}
+        if position_engine is not None:
+            delivery_pos = {
+                p.name: position_engine.get_position(p.name)
+                for p in (att_players + def_players)
+                if getattr(p, "name", None)
+            }
         taker    = cls._pick_sp_taker(att_players, situation="corner", corner_side=corner_side)
         # Feature #3 — committed attacking routine: the scheme decides WHO
         # attacks the delivery and WHERE it is aimed. Baseline (routine=None)
@@ -6893,6 +6973,35 @@ class SetPieceChain(BaseChain):
                     max(0.1, abs(_goal_line_x - _ev.location_x) / _spd),
                 )
 
+        # ── VAR / LAW 11 — offside at the moment the ball was played ──
+        # A goal by a player who stood in an offside position when the
+        # delivery was struck is ruled out (positions come from the entry
+        # snapshot, not live — judgement happens at the kick, not the header).
+        # For a CORNER the ball sits ON the goal line so nobody can be ahead
+        # of it — the geometry itself encodes Law 11's direct-corner
+        # exemption. Crossed free kicks (delivery_origin = the foul spot) are
+        # the real case this catches: a marker caught creeping beyond the
+        # line when the cross was whipped in.
+        if result.goal_scored and delivery_pos and result.goal_scorer in delivery_pos:
+            _scorer_del_x, _scorer_del_y = delivery_pos[result.goal_scorer]
+            _def_xs = [
+                delivery_pos[d.name][0] for d in def_players
+                if getattr(d, "position", None) != "GK"
+                and getattr(d, "name", None) in delivery_pos
+            ]
+            if len(_def_xs) >= 2:
+                _def_xs.sort() if attacks_right else _def_xs.sort(reverse=True)
+                _second_last = _def_xs[1]
+                if PossessionChain._in_offside_position(
+                        _scorer_del_x, delivery_x, _second_last, attacks_right):
+                    _margin = ((_scorer_del_x - _second_last) if attacks_right
+                               else (_second_last - _scorer_del_x))
+                    if _margin > OFFSIDE_LEVEL_TOL_M:
+                        mark_var_disallowed(
+                            result, minute, att_team, phase, gs,
+                            result.goal_scorer, _scorer_del_x, _scorer_del_y,
+                        )
+
         return result
 
     @classmethod
@@ -7005,7 +7114,8 @@ class SetPieceChain(BaseChain):
             sub = cls._corner_chain(minute, att_team, def_team, att_players,
                                     def_players, state, attacks_right,
                                     position_engine=position_engine,
-                                    routine=routine)
+                                    routine=routine,
+                                    delivery_origin=(fk_x, fk_y))
             # Inherit events (minus the duplicate corner taken)
             result.events.extend(sub.events[1:])
             result.goal_scored    = sub.goal_scored
@@ -7015,6 +7125,18 @@ class SetPieceChain(BaseChain):
             result.xg_generated   = sub.xg_generated
             result.xa_generated   = sub.xa_generated
             result.shot_on_target = sub.shot_on_target
+            # VAR review may have ruled the sub-goal out inside _corner_chain
+            # — the offside flags must survive the hand-off or the engine
+            # would credit a goal whose GOAL event was already stripped.
+            result.delayed_offside = sub.delayed_offside
+            result.offside_detected = sub.offside_detected
+            result.offside_x        = sub.offside_x
+            result.offside_y        = sub.offside_y
+            result.offside_player   = sub.offside_player
+            result.offside_team     = sub.offside_team
+            result.unflagged_offside_player = sub.unflagged_offside_player
+            result.unflagged_offside_x      = sub.unflagged_offside_x
+            result.unflagged_offside_y      = sub.unflagged_offside_y
 
         # ── SHOT-SPEED STAMP (Opta-style) ─────────────────────────
         # Direct free-kick attempts: fired at pace — base shot velocity lifted
@@ -8376,7 +8498,6 @@ class ChainDispatcher:
         delayed_offside=False,
         attacks_right: bool = True,
     ) -> ChainResult:
-        print(f"DEBUG ChainDispatcher.attack: att_team={att_team} attacks_right={attacks_right}")
         res = AttackChain.generate(
             minute, att_team, def_team,
             att_players, def_players,

@@ -4011,6 +4011,7 @@ class MatchEngine:
                     context_y=poss_result.shoot_y,
                     attacks_right=attacks_right,
                 )
+                self._maybe_var_overturn(att_result, poss_result, minute, attacking_team)
                 if self._absorb_chain(att_result, minute): break
                 self._maybe_loose_ball(
                     minute, att_result, attacking_team, defending_team,
@@ -4275,6 +4276,7 @@ class MatchEngine:
                         context_y=self.state.last_ball_y,
                         attacks_right=attacks_right,
                     )
+                    self._maybe_var_overturn(att_result, poss_result, minute, attacking_team)
                     if self._absorb_chain(att_result, minute): break
 
 
@@ -4541,6 +4543,37 @@ class MatchEngine:
             if best is None or d < best:
                 best = d
         return round(best, 2) if best is not None else None
+
+    def _maybe_var_overturn(self, att_result, poss_result, minute: int,
+                            attacking_team: str) -> None:
+        """VAR review for an open-play goal (delayed-offside overturn).
+
+        If PossessionChain found the eventual scorer in an offside position
+        earlier in THIS possession but the flag stayed down (the
+        unflagged_offside_* stamp), the goal is reviewed and ruled out.
+        Penalties and own goals are offside-exempt. Uses the shared
+        event_chain.mark_var_disallowed so the timeline gets OFFSIDE (stats),
+        GOAL is stripped, and the offside free kick is armed via the existing
+        offside_detected path in _absorb_chain.
+        """
+        if att_result is None or not getattr(att_result, "goal_scored", False):
+            return
+        if getattr(att_result, "delayed_offside", False):
+            return
+        if getattr(att_result, "own_goal", False):
+            return
+        if not any(e.event_type == EventType.GOAL for e in att_result.events):
+            return  # penalties / non-open-play goals are offside-exempt
+        stamp = getattr(poss_result, "unflagged_offside_player", "") if poss_result else ""
+        if not stamp or att_result.goal_scorer != stamp:
+            return
+        from event_chain import mark_var_disallowed
+        mark_var_disallowed(
+            att_result, minute, attacking_team,
+            self.state.phase, self.state.game_state, stamp,
+            getattr(poss_result, "unflagged_offside_x", 0.0),
+            getattr(poss_result, "unflagged_offside_y", 0.0),
+        )
 
     def _absorb_chain(self, chain_result, minute: int) -> bool:
         """
@@ -4824,7 +4857,9 @@ class MatchEngine:
                     player=chain_result.goal_scorer,
                     phase=self.state.phase, game_state=self.state.game_state
                 ))
-                # Free kick to opposing team (no goal)
+                # The restart is the offside free kick queued by the
+                # offside_detected block above — clear any kickoff so that
+                # free kick is the only restart on the ball.
                 self.state.pending_kickoff_for = ""
             else:
                 # Find the goal event already in timeline (including an
