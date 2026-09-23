@@ -41,16 +41,23 @@
 # For agent-controlled test simulations (scratch, non-canonical) use run_match.py. 
 
 from __future__ import annotations
+import json
 import os
 import sys
 from datetime import date
-from typing import TypedDict, cast
+from pathlib import Path
+from typing import Any, Callable, Dict, TypedDict, cast
 
 from match_engine import MatchEngine, MatchConfig, TeamProfile, TeamStyle, PlayingStyle, Intensity
 from player_dna import SquadBuilder
 from player_soul import PlayerSoul, SoulArchetype, GreatnessPillars
 from exporter import PLOFAExporter
-from squad_manager import SubstitutionController, AvailabilityChecker, AvailabilityStatus
+from squad_manager import (
+    SubstitutionController,
+    AvailabilityChecker,
+    AvailabilityStatus,
+    PlayerAvailability,
+)
 from roster_loader import RosterLoader, get_loader, auto_team_style
 from season_manager import SeasonState
 from referee_pool import RefereeManager
@@ -64,23 +71,33 @@ class _TeamEntry(TypedDict):
     intensity: Intensity | None
 
 
+class _SquadResult(TypedDict, total=False):
+    starters: list[Any]
+    notes: list[str]
+
+
+class _BuiltSquad(TypedDict):
+    starters: list[Any]
+    substitutes: list[Any]
+
+
 # ══════════════════════════════════════════════════════════════════════
 # ▌ USER CONFIG — EDIT THIS BLOCK EVERY MATCHDAY
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 9, 6) # Year, Month, Day
-MATCHDAY     = 3 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 9, 20) # Year, Month, Day
+MATCHDAY     = 5 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "Natrican"
-AWAY_TEAM  = "Tryox City"
+HOME_TEAM  = "  "
+AWAY_TEAM  = "  "
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = "Natrican Stadium"
-CAPACITY  = 45_000
+VENUE     = "   "
+CAPACITY  = 87_000
 
 # ── Referee (auto-assigned by default) ──────────────────────────────
 # Set FORCE_REF to a referee name to override rotation (e.g. for a derby).
@@ -108,6 +125,16 @@ MAX_SUBS  = 3
 #   After Matchday 1 this file accumulates injuries, suspensions and
 #   fatigue.  It is read at the start of every match and updated after.
 SEASON_STATE_FILE = "season_state.json"
+
+# ── Cognition (TOLAND mind layer) ─────────────────────────────────────
+#   When ON, every player is given a PlayerMind hydrated from the season
+#   store (so temperament/memory carry across matchdays), the engine
+#   decision path routes through the mind (FOV gate + temperament sampling
+#   + consequence reasoning merge since 2026-09-20), and the match event
+#   stream feeds episodic memory live.  When OFF, the engine is the plain
+#   reasoned-neural path (no minds).
+#   ON BY DEFAULT since 2026-09-20. Override: PLOFA_COGNITION=0 python ...
+COGNITION = os.environ.get("PLOFA_COGNITION", "1") == "1"
 
 # ── Outputs ────────────────────────────────────────────────────────────
 OUTPUTS_DIR = "plofa_output"
@@ -350,27 +377,76 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
 # ▌ ENGINE — do not edit below this line
 # ══════════════════════════════════════════════════════════════════════
 
-def _resolve_team_profile(club: str, formation: str, is_home: bool) -> TeamProfile:
+def _resolve_team_profile(club: str, formation: str, is_home: bool,
+                         club_override: dict | None = None,
+                         manager_label: str | None = None) -> TeamProfile:
     """
     Build a TeamProfile for `club`.
     Uses manual overrides from TEAM_CATALOG when present,
     otherwise calls auto_team_style() which maps formation → sensible defaults.
+    Checkpoint 30 — resolves the ClubPhilosophy from (1) per-club catalog
+    override, (2) persisted season_state override, (3) manager label string.
     """
-    catalog = TEAM_CATALOG.get(club, {})
-    if "style" in catalog and "playing_style" in catalog and "intensity" in catalog:
-        return TeamProfile(
+    catalog = TEAM_CATALOG.get(club)
+    if catalog is not None:
+        style = catalog.get("style")
+        if style is None:
+            return auto_team_style(club, formation, is_home=is_home)
+
+        playing_style = catalog.get("playing_style")
+        if playing_style is None:
+            playing_style = PlayingStyle.MIXED
+
+        intensity = catalog.get("intensity")
+        if intensity is None:
+            intensity = Intensity.MEDIUM
+
+        profile = TeamProfile(
             name=club,
-            style=catalog["style"],
-            playing_style=catalog["playing_style"],
-            intensity=catalog["intensity"],
+            style=style,
+            playing_style=playing_style,
+            intensity=intensity,
         )
-    return auto_team_style(club, formation, is_home=is_home)
+        # ── Philosophy resolution (Checkpoint 30) ──
+        # Priority: catalog explicit "philosophy" key > club_override >
+        #           manager_label (fallback to balanced)
+        cat_phi = catalog.get("philosophy")
+        if cat_phi is None and club_override is not None:
+            cat_phi = club_override
+        if cat_phi is None and manager_label is not None:
+            from philosophy import resolve_philosophy
+            resolved = resolve_philosophy(club, manager_label=manager_label)
+            if resolved is not None:
+                profile.philosophy = resolved
+                profile._apply_philosophy()
+        elif isinstance(cat_phi, dict):
+            from philosophy import resolve_philosophy
+            resolved = resolve_philosophy(club, club_override=cat_phi)
+            if resolved is not None:
+                profile.philosophy = resolved
+                profile._apply_philosophy()
+        elif cat_phi is not None and isinstance(cat_phi, str):
+            from philosophy import resolve_philosophy
+            resolved = resolve_philosophy(club, club_override={"archetype": cat_phi})
+            if resolved is not None:
+                profile.philosophy = resolved
+                profile._apply_philosophy()
+        return profile
+    profile = auto_team_style(club, formation, is_home=is_home)
+    if manager_label is not None:
+        from philosophy import resolve_philosophy
+        resolved = resolve_philosophy(club, manager_label=manager_label)
+        if resolved is not None:
+            profile.philosophy = resolved
+            profile._apply_philosophy()
+    return profile
 
 
 def _resolve_color(club: str, is_home: bool) -> str:
-    catalog = TEAM_CATALOG.get(club, {})
-    key = "home_color" if is_home else "away_color"
-    return catalog.get(key, "#003087" if is_home else "#C8102E")
+    catalog = TEAM_CATALOG.get(club)
+    if catalog is None:
+        return "#003087" if is_home else "#C8102E"
+    return catalog["home_color"] if is_home else catalog["away_color"]
 
 
 def _build_availability(
@@ -378,8 +454,8 @@ def _build_availability(
     matchday: int,
     season_state: SeasonState,
     outputs_dir: str,
-    match_date=None,
-) -> dict:
+    match_date: date | None = None,
+) -> dict[str, PlayerAvailability]:
     """
     Merge availability from two sources:
       1. SeasonState (JSON — persistent across matchdays, most authoritative)
@@ -389,8 +465,6 @@ def _build_availability(
     Returns {player_name: PlayerAvailability-like object} understood by
     RosterLoader._filter_eligible().
     """
-    from squad_manager import PlayerAvailability
-
     merged: dict[str, PlayerAvailability] = {}
 
     # ── Source 1: AvailabilityChecker (file-based) ──────────────────
@@ -402,9 +476,11 @@ def _build_availability(
     # ── Source 2: SeasonState (JSON — cross-matchday persistence) ───
     for name, state in season_state.players.items():
         # Only care about players on this team — we can't filter by team
-        # in SeasonState directly (it's flat), so we apply all and let
+        # in SeasonState directly, so we apply all and let
         # RosterLoader ignore unknowns naturally.
         ok, reason = season_state.is_available(name, match_date)
+        # Date-based recovery projected onto this fixture's date
+        st, fat = season_state.project_stamina(state, match_date)
         if not ok:
             status_map = {
                 "suspended (red card)":  AvailabilityStatus.SUSPENDED_RED,
@@ -415,30 +491,45 @@ def _build_availability(
                 name=name,
                 status=status,
                 reason=reason,
-                starting_stamina=float(state.get("starting_stamina", 100.0)),
+                starting_stamina=st,
             )
-        elif state.get("fatigue_level", 0) > 65 or state.get("starting_stamina", 100) < 75:
-            existing = merged.get(name)
-            # Only downgrade to FATIGUE_WARNING if not already harder status
-            if existing is None or existing.status == AvailabilityStatus.FIT:
-                merged[name] = PlayerAvailability(
-                    name=name,
-                    status=AvailabilityStatus.FATIGUE_WARNING,
-                    reason=(
-                        f"Fatigue carryover: {state.get('fatigue_level', 0):.0f}% drain, "
-                        f"starting stamina ~{state.get('starting_stamina', 100):.0f}%"
-                    ),
-                    fatigue_level=float(state.get("fatigue_level", 0)),
-                    starting_stamina=float(state.get("starting_stamina", 100.0)),
-                )
+            continue
+
+        existing = merged.get(name)
+        if existing is not None and existing.status.value in (
+            "suspended_red", "suspended_yel", "injured"
+        ):
+            continue  # keep a harder status from the file checker
+
+        if fat > 65 or st < 75:
+            merged[name] = PlayerAvailability(
+                name=name,
+                status=AvailabilityStatus.FATIGUE_WARNING,
+                reason=(
+                    f"Fatigue carryover: {fat:.0f}% fatigue, "
+                    f"starting stamina ~{st:.0f}%"
+                ),
+                fatigue_level=fat,
+                starting_stamina=st,
+            )
+        else:
+            # SeasonState is authoritative for stamina once it has data
+            merged[name] = PlayerAvailability(
+                name=name,
+                status=AvailabilityStatus.FIT,
+                reason="Fit to play",
+                fatigue_level=fat,
+                starting_stamina=st,
+            )
 
     return merged
 
 
+
 def _print_availability_report(
     team: str,
-    availability: dict,
-    squad_result: dict,
+    availability: dict[str, PlayerAvailability],
+    squad_result: _SquadResult,
 ) -> None:
     """
     Print a clear pre-match availability summary for a team:
@@ -476,9 +567,9 @@ def _print_availability_report(
             print(f"  ℹ️   {note}")
 
 
-def _attach_souls(all_players: list) -> list[str]:
+def _attach_souls(all_players: list[Any]) -> list[str]:
     """Attach soul profiles to any player whose name is in SOUL_PLAYERS."""
-    attached = []
+    attached: list[str] = []
     for player in all_players:
         if player.name in SOUL_PLAYERS:
             player.dna.soul = SOUL_PLAYERS[player.name]
@@ -487,31 +578,44 @@ def _attach_souls(all_players: list) -> list[str]:
 
 
 def _apply_starting_stamina(
-    all_players: list,
-    availability: dict,
+    all_players: list[Any],
+    availability: dict[str, PlayerAvailability],
     season_state: SeasonState,
-    match_date=None,
+    match_date: date | None = None,
 ) -> None:
     """
     Hydrate each player's starting stamina from persisted season state
     or their availability record, whichever is more precise.
+
+    SeasonState projects date-based recovery (days since last match × 10%)
+    inside apply_pre_match, so the returned value is kickoff-day stamina.
     """
     for player in all_players:
-        # SeasonState is most authoritative
-        p_state = season_state.get_player_state(player.name)
-        starting = float(p_state.get("starting_stamina", 100.0))
+        # SeasonState hydrations FIRST (confidence, recent form, injuries,
+        # date-based stamina projection). Also auto-clears injuries if the
+        # return date has passed.
+        projected = 100.0
+        if hasattr(player, "dna"):
+            apply_pre_match = cast(
+                Callable[[Any, str, date | None], Any],
+                getattr(season_state, "apply_pre_match"),
+            )
+            projected = float(apply_pre_match(player.dna, player.name, match_date) or 100.0)
+        else:
+            st_fat = season_state.project_stamina(
+                season_state.get_player_state(player.name), match_date
+            )
+            projected = float(st_fat[0])
 
-        # Fall back to availability checker's stamina reading
+        starting = projected
+
+        # Fall back to availability checker's stamina reading when the
+        # season state has nothing (player never recorded a match)
         if starting == 100.0 and player.name in availability:
             starting = float(availability[player.name].starting_stamina or 100.0)
 
         # Clamp so no one starts below 70%
         starting = max(70.0, min(100.0, starting))
-
-        # Apply season state hydrations FIRST (confidence, recent form, injuries)
-        # Also auto-clears injuries if return date has passed
-        if hasattr(player, "dna"):
-            season_state.apply_pre_match(player.dna, player.name, match_date)
 
         # THEN override stamina/fatigue with the clamped starting values
         if hasattr(player, "dna") and hasattr(player.dna, "form"):
@@ -519,14 +623,14 @@ def _apply_starting_stamina(
 
 
 def _persist_post_match(
-    result,
+    result: Any,
     exporter: PLOFAExporter,
     sub_controller: SubstitutionController,
-    home_squad: dict,
-    away_squad: dict,
+    home_squad: _BuiltSquad,
+    away_squad: _BuiltSquad,
     season_state: SeasonState,
     loader: RosterLoader,
-    match_date=None,
+    match_date: date | None = None,
 ) -> None:
     """
     After the final whistle: update SeasonState for every player in
@@ -545,6 +649,21 @@ def _persist_post_match(
 
     # Record the fixture into the league standings so attendance reflects
     # each team's season performance (position + recent form).
+    matchday = getattr(result.config, "matchday", 0) or MATCHDAY
+    # Full roster of BOTH clubs (players + bench) — the ledger snapshot
+    # must capture every name the post-match loop can touch so a re-run
+    # restores a clean pre-match baseline.
+    ledger_names: list[str] = []
+    for club in [result.config.home_team, result.config.away_team]:
+        for rec in loader.get_club_players(club):
+            ledger_names.append(rec.name)
+    if season_state.begin_fixture(
+        matchday, result.config.home_team, result.config.away_team,
+        sorted(set(ledger_names)),
+    ):
+        print(f"\n  🔁 Re-run detected for MD{matchday} — previous recording "
+              f"rolled back; new result replaces it (roles stay at "
+              f"{matchday} played).")
     season_state.record_team_result(
         result.config.home_team,
         result.config.away_team,
@@ -555,9 +674,15 @@ def _persist_post_match(
     played_names: set[str] = set()
     try:
         for player in all_players:
-            s = acc.stats.get(player.name)
-            if not s:
+            # ``acc.stats`` is exposed with loose, unparameterized dictionary
+            # types at runtime; coerce it to a plain mapping before reading a
+            # player's stat payload so static analysis stops flagging the
+            # partially-unknown dict entries.
+            stats_map = cast(dict[str, Any], getattr(acc, "stats", {}))
+            raw_stats = stats_map.get(player.name)
+            if not isinstance(raw_stats, dict):
                 continue
+            s: dict[str, Any] = {str(k): v for k, v in raw_stats.items()}
             minutes_played = int(s.get("minutes_played", 0) or 0)
             actually_entered = (
                 player.name in starter_names
@@ -593,12 +718,19 @@ def _persist_post_match(
             for rec in loader.get_club_players(club):
                 all_club_names.append(rec.name)
 
-        season_state.advance_matchday(all_club_names, played_names, match_date)
+        # `SeasonState.advance_matchday()` is typed loosely in the runtime module,
+        # so force the call through `Any` to keep static analysis happy while
+        # preserving the real runtime behavior.
+        cast(Any, season_state).advance_matchday(
+            all_club_names,
+            played_names,
+            match_date,
+        )
     finally:
         season_state.save()
 
 
-def _resolve_fixture_info(loader: RosterLoader) -> dict:
+def _resolve_fixture_info(loader: RosterLoader) -> dict[str, Any]:
     """
     Pull fixture metadata (Start Time, Venue, Capacity) for this matchday's
     fixture from the Excel FIXTURES sheet. Returns a dict with keys
@@ -619,7 +751,9 @@ def _resolve_fixture_info(loader: RosterLoader) -> dict:
         return {"start_time": None, "venue": None, "capacity": None}
 
 
-def _activate_weather(fixture_info: dict, weather_str: str, enabled: bool) -> dict:
+def _activate_weather(
+    fixture_info: dict[str, Any], weather_str: str, enabled: bool
+) -> dict[str, Any]:
     """
     Resolve the WeatherCondition to use for this match.
       - disabled: return {"condition": None, "enabled": False} (zero regression).
@@ -652,8 +786,119 @@ def _activate_weather(fixture_info: dict, weather_str: str, enabled: bool) -> di
 
 # ── MAIN ─────────────────────────────────────────────────────────────
 
-def run():
-    sys.stdout.reconfigure(encoding="utf-8")
+def _fixture_already_played() -> list[str]:
+    """Return evidence that the configured fixture was already played.
+
+    Checks four independent sources (any single hit blocks the run):
+      1. fixture_ledger key in season_state.json (replace-semantics record)
+      2. raw match package in plofa_output (engine export)
+      3. match row in alltime.db (warehouse)
+      4. matches_processed entry in season_stats.json (accumulator)
+    Read-only: never mutates state. A missing/unreadable source abstains
+    (counts as "not played") — only positive evidence blocks.
+    """
+    hits: list[str] = []
+    pair = {HOME_TEAM, AWAY_TEAM}
+
+    # 1. fixture ledger
+    try:
+        with open(SEASON_STATE_FILE, encoding="utf-8") as f:
+            ledger = json.load(f).get("fixture_ledger", {}) or {}
+        key = f"{MATCHDAY}|{HOME_TEAM}|{AWAY_TEAM}"
+        if key in ledger:
+            hits.append(f"fixture_ledger key {key!r} in {SEASON_STATE_FILE}")
+    except Exception:
+        pass
+
+    # 2. raw match packages
+    try:
+        root = Path(OUTPUTS_DIR)
+        if root.is_dir():
+            for jp in sorted(root.rglob("*.json")):
+                try:
+                    doc = json.loads(jp.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                m = doc.get("match", {}) or {}
+                try:
+                    md = int(m.get("matchday"))
+                except (TypeError, ValueError):
+                    continue
+                if (str(m.get("season")) == SEASON and md == MATCHDAY
+                        and {str(m.get("home_team")), str(m.get("away_team"))} == pair):
+                    hits.append(f"match package {jp.name}")
+                    break
+    except Exception:
+        pass
+
+    # 3. warehouse DB row
+    try:
+        import sqlite3
+        conn = sqlite3.connect("alltime.db")
+        try:
+            row = conn.execute(
+                """SELECT m.match_id FROM matches m
+                   JOIN teams h ON h.team_id = m.home_team_id
+                   JOIN teams a ON a.team_id = m.away_team_id
+                   WHERE m.season = ? AND m.matchday = ?
+                     AND ((h.name = ? AND a.name = ?)
+                       OR (h.name = ? AND a.name = ?))""",
+                (SEASON, MATCHDAY, HOME_TEAM, AWAY_TEAM, AWAY_TEAM, HOME_TEAM),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            hits.append(f"alltime.db match row (id {row[0]})")
+    except Exception:
+        pass
+
+    # 4. season_stats accumulator record
+    try:
+        with open("season_stats.json", encoding="utf-8") as f:
+            processed = json.load(f).get("matches_processed", []) or []
+        for e in processed:
+            if (isinstance(e, dict) and e.get("matchday") == MATCHDAY
+                    and {e.get("home"), e.get("away")} == pair):
+                hits.append(
+                    f"season_stats.json matches_processed MD{MATCHDAY} "
+                    f"{e.get('home')} vs {e.get('away')} ({e.get('score')})"
+                )
+                break
+    except Exception:
+        pass
+
+    return hits
+
+
+def _enforce_single_play(force_replay: bool) -> None:
+    """Refuse to re-simulate an already-played fixture.
+
+    Must be called first in run(), before any state is read for mutation.
+    Exits with code 3 unless force_replay is set (deliberate replay keeps
+    the ledger's replace-instead-of-append semantics).
+    """
+    hits = _fixture_already_played()
+    if not hits:
+        return
+    print(f"\n  ⛔ Fixture already played: {HOME_TEAM} vs {AWAY_TEAM} "
+          f"(MD{MATCHDAY}, {SEASON}). Refusing to re-simulate.")
+    for h in hits:
+        print(f"     • {h}")
+    if force_replay:
+        print("     ⚠️  --force-replay given: proceeding; "
+              "ledger replace-semantics apply.")
+        return
+    print("     Pass --play --force-replay to deliberately replay it.")
+    sys.exit(3)
+
+
+def run(force_replay: bool = False):
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8")
+
+    # ── Already-played guard: runs before ANY state is touched ──
+    _enforce_single_play(force_replay)
 
     # ── Fixture metadata (Start Time / Venue / Capacity) from Excel ──
     _fixture_info = _resolve_fixture_info(get_loader())
@@ -695,13 +940,26 @@ def run():
 
     # ── Managers (assigned from pool; auto-generated for promoted) ──
     from manager_profile import ManagerPool
-    style_lookup = {
-        name: entry.get("style").value if entry.get("style") else ""
-        for name, entry in TEAM_CATALOG.items()
-    }
+    style_lookup: dict[str, str] = {}
+    for name, entry in TEAM_CATALOG.items():
+        style_obj = entry.get("style")
+        if style_obj is not None and hasattr(style_obj, "value"):
+            style_lookup[name] = style_obj.value
+        elif isinstance(style_obj, str):
+            style_lookup[name] = style_obj
+        else:
+            style_lookup[name] = ""
     mgr_pool = ManagerPool(clubs=clubs, style_lookup=style_lookup)
     home_mgr = mgr_pool.manager_for(HOME_TEAM)
     away_mgr = mgr_pool.manager_for(AWAY_TEAM)
+    if home_mgr is None or away_mgr is None:
+        missing_managers = [
+            team for team, manager in ((HOME_TEAM, home_mgr), (AWAY_TEAM, away_mgr))
+            if manager is None
+        ]
+        raise RuntimeError(
+            f"No manager assigned for: {', '.join(missing_managers)}"
+        )
     print(f"  🧑‍💼 {HOME_TEAM}: {home_mgr.name}  ({home_mgr.tactical_philosophy})  "
           f"[{home_mgr.job_status()}]")
     print(f"  🧑‍💼 {AWAY_TEAM}: {away_mgr.name}  ({away_mgr.tactical_philosophy})  "
@@ -724,30 +982,46 @@ def run():
     away_formation = away_raw["formation"]
 
     # ── Availability reports ──────────────────────────────────
-    _print_availability_report(HOME_TEAM, home_avail, home_raw)
-    _print_availability_report(AWAY_TEAM, away_avail, away_raw)
+    _print_availability_report(HOME_TEAM, home_avail, cast(_SquadResult, home_raw))
+    _print_availability_report(AWAY_TEAM, away_avail, cast(_SquadResult, away_raw))
 
     # ── Team profiles (styles) ────────────────────────────────
-    HOME_STYLE = _resolve_team_profile(HOME_TEAM, home_formation, is_home=True)
-    AWAY_STYLE = _resolve_team_profile(AWAY_TEAM, away_formation, is_home=False)
+    HOME_STYLE = _resolve_team_profile(
+        HOME_TEAM, home_formation, is_home=True,
+        club_override=season_state.philosophies.get(HOME_TEAM),
+        manager_label=home_mgr.tactical_philosophy,
+    )
+    AWAY_STYLE = _resolve_team_profile(
+        AWAY_TEAM, away_formation, is_home=False,
+        club_override=season_state.philosophies.get(AWAY_TEAM),
+        manager_label=away_mgr.tactical_philosophy,
+    )
 
     print(f"\n  🏟️  {HOME_TEAM} [{home_formation}] — {HOME_STYLE.style.value} / {HOME_STYLE.playing_style.value}")
     print(f"  ✈️  {AWAY_TEAM} [{away_formation}] — {AWAY_STYLE.style.value} / {AWAY_STYLE.playing_style.value}")
 
     # ── Build PlayerProfile squads via SquadBuilder ───────────
-    home_squad = SquadBuilder.build(
-        team_name=HOME_TEAM,
-        starters=home_raw["starters"],
-        substitutes=home_raw["substitutes"],
-        team_superstars=home_raw["superstars"],
-        set_piece_takers=home_raw["sp_takers"],
+    # The imported builder exposes a partially-typed signature in the IDE, so
+    # we normalize the call to avoid false-positive unknown-member diagnostics.
+    home_squad = cast(
+        _BuiltSquad,
+        cast(Any, SquadBuilder).build(
+            team_name=HOME_TEAM,
+            starters=cast(list[Any], home_raw["starters"]),
+            substitutes=cast(list[Any], home_raw["substitutes"]),
+            team_superstars=cast(list[str], home_raw["superstars"]),
+            set_piece_takers=cast(list[str], home_raw["sp_takers"]),
+        ),
     )
-    away_squad = SquadBuilder.build(
-        team_name=AWAY_TEAM,
-        starters=away_raw["starters"],
-        substitutes=away_raw["substitutes"],
-        team_superstars=away_raw["superstars"],
-        set_piece_takers=away_raw["sp_takers"],
+    away_squad = cast(
+        _BuiltSquad,
+        cast(Any, SquadBuilder).build(
+            team_name=AWAY_TEAM,
+            starters=cast(list[Any], away_raw["starters"]),
+            substitutes=cast(list[Any], away_raw["substitutes"]),
+            team_superstars=cast(list[str], away_raw["superstars"]),
+            set_piece_takers=cast(list[str], away_raw["sp_takers"]),
+        ),
     )
 
     # ── Print selected lineups ────────────────────────────────
@@ -879,21 +1153,76 @@ def run():
 
     # ── Simulate ──────────────────────────────────────────────
     print(f"\n  ⚽ Simulating...\n")
+    # ── Cognition (TOLAND mind layer) ─────────────────────────
+    # Hydrate every player's mind from the season store (carrying last
+    # matchday's temperament), register them, and point the event stream
+    # at the observer live, before kickoff.
+    if COGNITION:
+        from brain_integration import set_cognition
+        from cognition_brain import engage_mind_observer
+        from cognition.mind import clear_minds, register_mind, PlayerMind
+        clear_minds()
+        for p in all_players_flat:
+            saved = season_state.get_player_cognition(p.name)
+            mind = (PlayerMind.from_state(saved) if saved else PlayerMind())
+            register_mind(p.name, mind)
+        set_cognition(True)
+        engage_mind_observer()
     engine = MatchEngine(config, HOME_STYLE, AWAY_STYLE)
-    engine.set_squad(HOME_TEAM, home_squad["starters"], home_squad["substitutes"])
-    engine.set_squad(AWAY_TEAM, away_squad["starters"], away_squad["substitutes"])
-    engine.set_stamina_controller(sub_controller)
-    engine.set_managers(home_manager=home_mgr, away_manager=away_mgr)
+    # Live brain-manager (since 2026-09-20 wired by default): the club's
+    # persisted mind/memory drives posture/pressing/urgency via the engine's
+    # USE_MANAGER_BRAIN hooks.  ManagerProfile pool managers (home_mgr /
+    # away_mgr) keep handling club lifecycle (records/sack risk) separately.
+    from manager_profile import brain_manager_for, save_live_manager
+    home_brain_mgr = brain_manager_for(HOME_TEAM)
+    away_brain_mgr = brain_manager_for(AWAY_TEAM)
+    # MatchEngine's external type hints leave the player list element type
+    # unresolved; the squads have already been normalized to PlayerProfiles.
+    cast(Any, engine).set_squad(
+        HOME_TEAM,
+        home_squad["starters"],
+        home_squad["substitutes"],
+    )
+    cast(Any, engine).set_squad(
+        AWAY_TEAM,
+        away_squad["starters"],
+        away_squad["substitutes"],
+    )
+    cast(Any, engine).set_stamina_controller(sub_controller)
+    cast(Any, engine).set_managers(home_manager=home_brain_mgr,
+                               away_manager=away_brain_mgr)
 
     result = engine.simulate()
     print(result.summary())
 
+    # ── Harvest cognition back into the season store ──────────
+    # Persist each mind's accumulated memory weights + temperament so the
+    # next matchday can re-hydrate them.  Runs BEFORE _persist_post_match
+    # so its final save() also writes the cognition section.
+    if COGNITION:
+        from brain_integration import set_cognition
+        from cognition_brain import disengage_mind_observer
+        from cognition.mind import get_mind, clear_minds
+        for p in all_players_flat:
+            mind = get_mind(p.name)
+            if mind is not None:
+                season_state.set_player_cognition(p.name, mind.to_state())
+        disengage_mind_observer()
+        clear_minds()
+        set_cognition(False)
+
+    # Persist each club's live brain-manager mind/memory for the next
+    # matchday (standalone match or season — the state save below also
+    # writes the manager dir via save_live_manager).
+    save_live_manager(home_brain_mgr, HOME_TEAM)
+    save_live_manager(away_brain_mgr, AWAY_TEAM)
+
     # ── Big 6 teams (clubs with highest market values) ─────────
     # These draw bigger crowds and command higher ticket prices.
     # Auto-detected from actual squad market values in the DB.
-    BIG6_TEAMS: set[str] = set()
+    big6_teams: set[str] = set()
     try:
-        all_club_values = []
+        all_club_values: list[tuple[str, float]] = []
         for club in loader.get_all_clubs():
             players = loader.get_club_players(club)
             if players:
@@ -904,10 +1233,10 @@ def run():
                 if values:
                     all_club_values.append((club, sum(values)))
         all_club_values.sort(key=lambda x: x[1], reverse=True)
-        BIG6_TEAMS = {c[0] for c in all_club_values[:6]}
-        print(f"\n  🏆 Big 6 teams (by market value): {', '.join(sorted(BIG6_TEAMS))}")
+        big6_teams = {c[0] for c in all_club_values[:6]}
+        print(f"\n  🏆 Big 6 teams (by market value): {', '.join(sorted(big6_teams))}")
     except Exception:
-        BIG6_TEAMS = {"Pearls", "Claw", "Uditon", "Lige-8", "Triumpher", "Natrican"}
+        big6_teams = {"Pearls", "Claw", "Uditon", "Lige-8", "Triumpher", "Natrican"}
         pass
 
     # ── Export ────────────────────────────────────────────────
@@ -938,11 +1267,13 @@ def run():
 
     exporter = PLOFAExporter(
         result=result,
-        all_players={HOME_TEAM: home_squad, AWAY_TEAM: away_squad},
+        # Exporter expects each team value to be a player list; the squad
+        # builder's mapping also contains starters/substitutes metadata.
+        all_players=cast(Any, {HOME_TEAM: home_squad, AWAY_TEAM: away_squad}),
         home_color=home_color,
         away_color=away_color,
         sub_controller=sub_controller,
-        big6_teams=BIG6_TEAMS,
+        big6_teams=big6_teams,
         standings=season_state.standings_info(),
     )
 
@@ -972,8 +1303,9 @@ def run():
         print(f"\n  🔮 SOUL PLAYER MATCH REPORT")
         print(f"  {'─' * 40}")
         acc = exporter.accumulator
+        stats = cast(Dict[str, Dict[str, Any]], cast(Any, acc).stats)
         for name in souls_attached:
-            s = acc.stats.get(name)
+            s = stats.get(name)
             if s:
                 soul = SOUL_PLAYERS[name]
                 print(f"  {name} ({soul.profile.label})")
@@ -1013,5 +1345,46 @@ def run():
           f"({away_mgr.job_status()})")
 
 
+# ── Entry guard ─────────────────────────────────────────────────────
+# This runner OVERWRITES season_state.json / referee_state.json /
+# manager_state.json — a stray or unintended invocation corrupts the
+# season ledger (a fixture may only be played once). By design it does
+# nothing with bare args, `-h`, or `--help`; ONLY `--play` executes a
+# fixture. No agent/assistant should ever pass `--play`.
+_USAGE = """
+  PLOFA AUTOMATED MATCH RUNNER — Trevor only.
+
+  Usage:
+    python auto_run_match.py            print this help (no match is run)
+    python auto_run_match.py --help     print this help (no match is run)
+    python auto_run_match.py --play     RUN THE CONFIGURED FIXTURE
+
+  A fixture may only be played once. This script overwrites
+  season_state.json, referee_state.json and manager_state.json.
+  If any of (fixture_ledger, plofa_output package, alltime.db row,
+  season_stats record) shows the fixture as played, the run is REFUSED
+  unless --force-replay is also passed:
+    python auto_run_match.py --play --force-replay
+  A forced replay replaces (never appends) via the fixture ledger.
+  Use run_match.py for non-canonical/test simulations.
+"""
+
+
+def _main() -> None:
+    args = [a for a in sys.argv[1:] if a]
+    wants_help = (not args) or any(a in ("-h", "--help") for a in args)
+    if wants_help:
+        print(_USAGE)
+        sys.exit(0)
+    if args == ["--play"] or args == ["--play", "--force-replay"]:
+        run(force_replay="--force-replay" in args)
+        return
+    print("✋ Unexpected argument(s):", " ".join(args), file=sys.stderr)
+    print("   To actually run the configured fixture, use exactly: --play", file=sys.stderr)
+    print("   To deliberately replay a played fixture: --play --force-replay", file=sys.stderr)
+    print("   See --help for details.", file=sys.stderr)
+    sys.exit(2)
+
+
 if __name__ == "__main__":
-    run()
+    _main()

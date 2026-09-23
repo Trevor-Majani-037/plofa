@@ -4,11 +4,13 @@ PLOFA 26/27 — ROSTER LOADER
 roster_loader.py
 
 Reads PLOFA-2026-2027.xlsx and automatically selects:
-  • Starting XI  (First-Team players fill positions first; Second-Team fill gaps)
+  • Starting XI  (First-Team players fill positions first; Second-Team fill gaps;
+                  starters below MIN_START_STAMINA only start as last resort)
   • Bench        (remaining eligible players, max 7)
   • Superstars   (top-value players per club)
-  • Set-piece takers (captain + high-value attackers/both-footed)
+  • Set-piece takers (captain + high-value feet/both-footed)
   • Formation    (auto-detected from First-Team position roster)
+
 
 Squad tuple format fed to SquadBuilder.build():
     (name, position, [specialties], age, nationality, preferred_foot)
@@ -81,6 +83,11 @@ FORMATION_SLOTS = {
     "5-4-1":   ["GK", "CB", "CB", "CB", "LB", "RB", "CM", "CM", "LW", "RW", "ST"],
     "4-5-1":   ["GK", "CB", "CB", "LB", "RB", "CM", "CM", "CM", "CM", "CAM", "ST"],
 }
+
+# Minimum starting stamina for XI selection: anyone below this only starts
+# when no fresher alternative can fill their slot (injury-risk / rotation gate).
+# Matches the hydration floor in auto_run_match._apply_starting_stamina.
+MIN_START_STAMINA = 70.0
 
 
 # ─────────────────────────────────────────────
@@ -171,6 +178,26 @@ class PlayerRecord:
         return universal
 
 
+def _conversion_ok(p: "PlayerRecord", slot: str) -> bool:
+    """Occasional foot/position-based cover (used only as a last tier).
+
+    Rules (never override a natural OTHER POS option):
+      • CAM of either foot → LW or RW
+      • left-footed ST → RW, right-footed ST → LW (inverted cover)
+      • CB → LB or RB (either foot)
+    """
+    pos = p.engine_pos
+    foot = p.foot_lower
+    if slot in ("RW", "LW"):
+        if pos == "CAM":
+            return True
+        if pos == "ST":
+            return foot == "both" or foot == ("left" if slot == "RW" else "right")
+    if slot in ("LB", "RB"):
+        return pos == "CB"
+    return False
+
+
 # ─────────────────────────────────────────────
 # ROSTER LOADER
 # ─────────────────────────────────────────────
@@ -217,6 +244,7 @@ class RosterLoader:
         club: str,
         availability: Optional[Dict[str, Any]] = None,
         formation: Optional[str] = None,
+        min_start_stamina: float = MIN_START_STAMINA,
     ) -> Dict[str, Any]:
         """
         Build a complete matchday squad for a club.
@@ -228,10 +256,13 @@ class RosterLoader:
         availability : dict, optional
             {player_name: PlayerAvailability} from AvailabilityChecker.
             Players marked SUSPENDED, INJURED are excluded.
-            FATIGUE_WARNING players may still start if no better option.
+            FATIGUE_WARNING players (starting_stamina < min_start_stamina)
+            are only selected when no fresher alternative fills the slot.
         formation : str, optional
             Force a specific formation string (e.g. "4-3-3").
             If None, auto-detected from roster positions.
+        min_start_stamina : float
+            Hard XI gate: starters below this stamina are last-resort only.
 
         Returns
         -------
@@ -253,6 +284,14 @@ class RosterLoader:
         # Filter out Third-Team and unavailable players
         eligible = self._filter_eligible(players, availability, notes)
 
+        # {name: starting_stamina} — absent names treated as fully fresh
+        stamina_map: Dict[str, float] = {}
+        if availability:
+            for pname, avail in availability.items():
+                st = getattr(avail, "starting_stamina", None)
+                if st is not None:
+                    stamina_map[pname] = float(st)
+
         # Detect formation
         if formation is None:
             formation = self._detect_formation(eligible)
@@ -265,8 +304,11 @@ class RosterLoader:
         second_team = [p for p in eligible if p.is_second_team]
         third_team  = [p for p in eligible if not p.is_first_team and not p.is_second_team]
 
-        # Select starting XI
-        starters, used = self._fill_starting_xi(slots, first_team, second_team, third_team, eligible, notes)
+        # Select starting XI (fresh-first, drained only as last resort)
+        starters, used = self._fill_starting_xi(
+            slots, first_team, second_team, third_team, eligible, notes,
+            stamina=stamina_map, min_start_stamina=min_start_stamina,
+        )
 
         # Build bench
         used_names = {p.name for p in used}
@@ -498,10 +540,17 @@ class RosterLoader:
         third_team: List[PlayerRecord],
         all_eligible: List[PlayerRecord],
         notes: List[str],
+        stamina: Optional[Dict[str, float]] = None,
+        min_start_stamina: float = MIN_START_STAMINA,
     ) -> Tuple[List[PlayerRecord], List[PlayerRecord]]:
         """
         Fill the 11 starting positions using formation slots.
-        Priority: First-Team → Second-Team → Third-Team (last resort).
+
+        Two passes:
+          1. Fresh players only (stamina >= min_start_stamina),
+             priority First-Team → Second-Team → Third-Team.
+          2. Drained players, only for slots no fresh player can fill.
+
         Returns (starters_list, all_used_list).
         """
         # Deduplicate input pools by name to prevent the same player being
@@ -531,12 +580,20 @@ class RosterLoader:
         second_team = [p for p in combined if p in second_team]
         third_team  = [p for p in combined if p in third_team]
 
+        stamina = stamina or {}
+
+        def stamina_of(name: str) -> float:
+            return float(stamina.get(name, 100.0))
+
+        def is_fresh(p: PlayerRecord) -> bool:
+            return stamina_of(p.name) >= min_start_stamina
+
         starters   = []
         used       = []
         used_names = set()
         filled_indices = set()
 
-        # Build pools grouped by engine position
+        # Build pools grouped by engine position (+ occasional conversions)
         def make_pool(players: List[PlayerRecord]) -> Dict[str, List[PlayerRecord]]:
             pool: Dict[str, List[PlayerRecord]] = {}
             for p in players:
@@ -545,31 +602,80 @@ class RosterLoader:
                 # Also list under other_pos
                 if p.engine_other_pos and p.engine_other_pos != ep:
                     pool.setdefault(p.engine_other_pos, []).append(p)
+                # Occasional foot/position cover (last-tier only)
+                for conv_slot in ("LW", "RW", "LB", "RB"):
+                    if (
+                        ep != conv_slot
+                        and p.engine_other_pos != conv_slot
+                        and _conversion_ok(p, conv_slot)
+                    ):
+                        pool.setdefault(conv_slot, []).append(p)
             return pool
 
-        ft_pool = make_pool(first_team)
-        st_pool = make_pool(second_team)
-        tt_pool = make_pool(third_team)
+        def take_slot(
+            slot: str,
+            pools: List[Dict[str, List[PlayerRecord]]],
+        ) -> Optional[PlayerRecord]:
+            for pool in pools:
+                chosen = self._pick_from_pool(pool, slot, used_names)
+                if chosen:
+                    return chosen
+            return None
 
+        def note_pick(chosen: PlayerRecord, slot: str) -> None:
+            if chosen.is_second_team:
+                notes.append(
+                    f"⚠️  {chosen.name} (2nd team) starts at {slot} — no First-Team option"
+                )
+            elif not chosen.is_first_team and not chosen.is_second_team:
+                notes.append(
+                    f"❗ {chosen.name} (3rd team) starts at {slot} — squad depth issue"
+                )
+            if (
+                chosen.engine_pos != slot
+                and chosen.engine_other_pos != slot
+            ):
+                notes.append(
+                    f"⚠️  {chosen.name} ({chosen.engine_pos}) fills {slot} "
+                    f"via positional cover"
+                )
+
+        def record(chosen: PlayerRecord, i: int, slot: str) -> None:
+            starters.append(chosen)
+            used.append(chosen)
+            used_names.add(chosen.name)
+            filled_indices.add(i)
+            note_pick(chosen, slot)
+
+        fresh_pools = [
+            make_pool([p for p in first_team if is_fresh(p)]),
+            make_pool([p for p in second_team if is_fresh(p)]),
+            make_pool([p for p in third_team if is_fresh(p)]),
+        ]
+        drained_pools = [
+            make_pool([p for p in first_team if not is_fresh(p)]),
+            make_pool([p for p in second_team if not is_fresh(p)]),
+            make_pool([p for p in third_team if not is_fresh(p)]),
+        ]
+
+        # ── Pass 1: fresh players only (min-stamina gate) ──────
         for i, slot in enumerate(slots):
-            # Try First-Team first
-            chosen = self._pick_from_pool(ft_pool, slot, used_names)
-            if not chosen:
-                # Try Second-Team
-                chosen = self._pick_from_pool(st_pool, slot, used_names)
-                if chosen:
-                    notes.append(f"⚠️  {chosen.name} (2nd team) starts at {slot} — no First-Team option")
-            if not chosen:
-                # Last resort: Third-Team
-                chosen = self._pick_from_pool(tt_pool, slot, used_names)
-                if chosen:
-                    notes.append(f"❗ {chosen.name} (3rd team) starts at {slot} — squad depth issue")
-
+            chosen = take_slot(slot, fresh_pools)
             if chosen:
-                starters.append(chosen)
-                used.append(chosen)
-                used_names.add(chosen.name)
-                filled_indices.add(i)
+                record(chosen, i, slot)
+            # unfilled slots continue to pass 2
+
+        # ── Pass 2: drained players, last resort per slot ──────
+        for i, slot in enumerate(slots):
+            if i in filled_indices:
+                continue
+            chosen = take_slot(slot, drained_pools)
+            if chosen:
+                notes.append(
+                    f"⚠️  {chosen.name} starts at {slot} despite low stamina "
+                    f"({stamina_of(chosen.name):.0f}%) — no fresh alternative"
+                )
+                record(chosen, i, slot)
             else:
                 notes.append(f"❗ No player available for slot {slot}")
 
@@ -585,7 +691,8 @@ class RosterLoader:
                               and (not slot == "GK" or "GK" == p.engine_pos)]
                 eligible = [p for p in compatible
                             if slot == "GK" or p.engine_pos != "GK"]
-                pool = eligible or compatible
+                fresh_eligible = [p for p in eligible if is_fresh(p)]
+                pool = fresh_eligible or eligible or compatible
 
                 # Pass 2: if no unique player left, recycle an already-used
                 # non-GK to fill the slot (last resort)
@@ -678,7 +785,7 @@ class RosterLoader:
         # Resolve duplicate flank positions (LW, RW, LB, RB) using
         # OTHER POS and foot preference
         starters = self._resolve_flank_duplicates(
-            starters, slots, all_eligible, notes
+            starters, slots, all_eligible, notes, stamina=stamina
         )
         used = list(starters)
 
@@ -689,26 +796,58 @@ class RosterLoader:
         all_eligible: List[PlayerRecord],
         needed_slot: str,
         used_names: set,
+        stamina: Optional[Dict[str, float]] = None,
     ) -> Optional[PlayerRecord]:
-        """Find a bench player who can play the needed slot."""
+        """Find a bench player who can play the needed slot.
+
+        Tiers: natural > OTHER POS > occasional conversion; prefer fresh;
+        within tier: foot fit then market value.
+        """
+        stamina = stamina or {}
+
+        def is_fresh(p: PlayerRecord) -> bool:
+            return float(stamina.get(p.name, 100.0)) >= MIN_START_STAMINA
+
         candidates = [
             p for p in all_eligible
             if p.name not in used_names
-            and (p.engine_pos == needed_slot or p.engine_other_pos == needed_slot)
+            and (
+                p.engine_pos == needed_slot
+                or p.engine_other_pos == needed_slot
+                or _conversion_ok(p, needed_slot)
+            )
         ]
         if not candidates:
             return None
 
-        if needed_slot in ("LW", "LB"):
-            left_footed = [p for p in candidates if p.foot_lower == "left"]
-            both_footed = [p for p in candidates if p.foot_lower == "both"]
-            candidates = left_footed + both_footed + [p for p in candidates if p.foot_lower == "right"]
-        elif needed_slot in ("RW", "RB"):
-            right_footed = [p for p in candidates if p.foot_lower == "right"]
-            both_footed = [p for p in candidates if p.foot_lower == "both"]
-            candidates = right_footed + both_footed + [p for p in candidates if p.foot_lower == "left"]
+        fresh = [p for p in candidates if is_fresh(p)]
+        if fresh:
+            candidates = fresh
 
-        candidates.sort(key=lambda p: p.market_value, reverse=True)
+        def tier(p: PlayerRecord) -> int:
+            if p.engine_pos == needed_slot:
+                return 0
+            if p.engine_other_pos == needed_slot:
+                return 1
+            return 2
+
+        if needed_slot in ("LW", "LB"):
+            pref_foot = "left"
+        elif needed_slot in ("RW", "RB"):
+            pref_foot = "right"
+        else:
+            pref_foot = None
+
+        def foot_rank(p: PlayerRecord) -> int:
+            if p.foot_lower == "both":
+                return 0
+            if pref_foot and p.foot_lower == pref_foot:
+                return 1
+            return 2
+
+        candidates.sort(
+            key=lambda p: (tier(p), foot_rank(p), -p.market_value)
+        )
         return candidates[0]
 
     def _resolve_flank_duplicates(
@@ -717,6 +856,7 @@ class RosterLoader:
         slots: List[str],
         all_eligible: List[PlayerRecord],
         notes: List[str],
+        stamina: Optional[Dict[str, float]] = None,
     ) -> List[PlayerRecord]:
         """Ensure starting XI has at most 1 LW, 1 RW, 1 LB, 1 RB.
 
@@ -763,7 +903,7 @@ class RosterLoader:
                     continue
 
                 replacement = self._find_bench_flank_replacement(
-                    all_eligible, actual_slot, used_names
+                    all_eligible, actual_slot, used_names, stamina=stamina
                 )
                 if replacement:
                     idx = starters.index(oop_player)
@@ -785,13 +925,14 @@ class RosterLoader:
         used_names: set,
     ) -> Optional[PlayerRecord]:
         """Pick the best available player for a slot from a pool.
-        
+
         Preference order:
         1. Primary-position match (engine_pos == slot)
         2. Secondary-position match (engine_other_pos == slot)
-        3. For flank positions: foot preference (left-footed for LB/LW,
-           right-footed for RB/RW, both-footed always preferred)
-        4. Market value (highest first)
+        3. Occasional conversion (foot-based cover: CAM→wing, ST inverted
+           wing, CB→fullback) — only used when nobody natural is left
+        4. For flank positions: foot preference (both > preferred side >
+           opposite foot), then market value (highest first)
         """
         candidates = [
             p for p in pool.get(slot, [])
@@ -801,25 +942,40 @@ class RosterLoader:
             return None
 
         primary = [p for p in candidates if p.engine_pos == slot]
-        secondary = [p for p in candidates if p.engine_pos != slot]
-        pool_candidates = primary if primary else candidates
+        secondary = [
+            p for p in candidates
+            if p.engine_pos != slot and p.engine_other_pos == slot
+        ]
+        conversions = [
+            p for p in candidates
+            if p.engine_pos != slot and p.engine_other_pos != slot
+        ]
+        if primary:
+            pool_candidates = primary
+        elif secondary:
+            pool_candidates = secondary
+        else:
+            pool_candidates = conversions
 
-        if len(pool_candidates) > 1 and slot in ("LW", "RW", "LB", "RB"):
-            left_side = slot in ("LW", "LB")
-            preferred_foot = "left" if left_side else "right"
-            foot_best = []
-            foot_good = []
-            foot_rest = []
-            for p in pool_candidates:
+        if len(pool_candidates) == 1:
+            return pool_candidates[0]
+
+        if slot in ("LW", "RW", "LB", "RB"):
+            preferred_foot = "left" if slot in ("LW", "LB") else "right"
+
+            def foot_rank(p: PlayerRecord) -> int:
                 if p.foot_lower == "both":
-                    foot_best.append(p)
-                elif p.foot_lower == preferred_foot:
-                    foot_good.append(p)
-                else:
-                    foot_rest.append(p)
-            pool_candidates = foot_best + foot_good + foot_rest
+                    return 0
+                return 1 if p.foot_lower == preferred_foot else 2
 
-        pool_candidates.sort(key=lambda p: p.market_value, reverse=True)
+            pool_candidates = sorted(
+                pool_candidates,
+                key=lambda p: (foot_rank(p), -p.market_value),
+            )
+        else:
+            pool_candidates = sorted(
+                pool_candidates, key=lambda p: p.market_value, reverse=True
+            )
         return pool_candidates[0]
 
     def _build_bench(

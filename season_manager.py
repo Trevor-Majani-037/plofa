@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 import json
 import random
+import copy
 from dataclasses import dataclass, field, asdict
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple, Any
@@ -283,6 +284,23 @@ class SeasonState:
         # performance modifier (see exporter.MatchFinancials).
         # {team: {"w":, "d":, "l":, "gf":, "ga":, "pts":, "form": [W/D/L...]}}
         self.standings: Dict[str, Dict[str, Any]] = {}
+        # Cognition store: player name -> minds.to_state() (memory weights,
+        # temperament, perception config).  The TOLAND mind layer carries
+        # across matchdays so a player's scars accumulate over the season.
+        self.cognition: Dict[str, Dict[str, Any]] = {}
+        # Club philosophy overrides (Checkpoint 30): club -> override dict
+        # {"archetype": str, "magnitude": float, "adherence": float}.
+        # The archetype library is the default; THIS file lets a specific
+        # club deviate from its archetype -- the owners' vision, the DNA of
+        # the badge.  Stored per season so a takeover can change it.
+        self.philosophies: Dict[str, Dict[str, Any]] = {}
+        # Fixture ledger: keyed by f"{matchday}|{home}|{away}", stores a deep
+        # copy of the pre-match player states (both full rosters) + standings
+        # rows for the two teams, so that IF the same fixture is ever re-run
+        # the previous recording can be unwound BEFORE the new result is
+        # applied. A fixture may only ever contribute ONE matchday to the
+        # ledger — replay replaces, never appends.
+        self.fixture_ledger: Dict[str, Dict[str, Any]] = {}
         self.load()
 
     def load(self):
@@ -294,6 +312,9 @@ class SeasonState:
             self.players = data.get("players", {})
             self.chemistry = data.get("chemistry", {})
             self.standings = data.get("standings", {})
+            self.cognition = data.get("cognition", {})
+            self.philosophies = data.get("philosophies", {})
+            self.fixture_ledger = data.get("fixture_ledger", {})
         except (json.JSONDecodeError, OSError) as e:
             # Corrupt/truncated state file (e.g. from a crash before the
             # atomic-save fix). Back it up so nothing is silently lost, then
@@ -309,6 +330,9 @@ class SeasonState:
             self.players = {}
             self.chemistry = {}
             self.standings = {}
+            self.cognition = {}
+            self.philosophies = {}
+            self.fixture_ledger = {}
 
     def save(self):
         """Atomically persist season state.
@@ -318,7 +342,9 @@ class SeasonState:
         truncated or corrupt (the old in-place 'w' mode could and did).
         """
         data = {"season": self.season, "players": self.players,
-                "chemistry": self.chemistry, "standings": self.standings}
+                "chemistry": self.chemistry, "standings": self.standings,
+                "cognition": self.cognition, "philosophies": self.philosophies,
+                "fixture_ledger": self.fixture_ledger}
         tmp_path = f"{self.path}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -332,6 +358,63 @@ class SeasonState:
             {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0, "form": []},
         )
         return row
+
+    # ── Fixture ledger — idempotent by (matchday, home, away) ──
+    def begin_fixture(self, matchday: int, home: str, away: str,
+                      player_names: List[str]) -> bool:
+        """Call BEFORE recording a fixture's result.
+
+        If the exact fixture (matchday, home, away) was ALREADY recorded, its
+        previous player-state + standings contribution is unwound first so the
+        incoming result REPLACES it (see `restore_fixture`). A fresh
+        pre-match snapshot is then captured keyed to the fixture.
+
+        Returns True when this was a re-run (previous recording undone).
+        """
+        key = f"{matchday}|{home}|{away}"
+        replayed = key in self.fixture_ledger
+        if replayed:
+            self.restore_fixture(matchday, home, away)
+        # Snapshot CURRENT (pre-match) player state so a future replay can
+        # restore exactly this baseline before re-applying a new result.
+        self.fixture_ledger[key] = {
+            "players": {
+                name: copy.deepcopy(self.players.get(name))
+                for name in player_names
+            },
+            "standings": {
+                team: copy.deepcopy(self.standings.get(team))
+                for team in (home, away)
+            },
+        }
+        return replayed
+
+    def restore_fixture(self, matchday: int, home: str, away: str) -> bool:
+        """Unwind a previously-recorded fixture: put player states and the
+        two teams' standings rows back to the pre-match snapshot, then drop
+        the snapshot so a fresh one is captured on the next recording.
+
+        Returns True if a snapshot existed and was restored."""
+        key = f"{matchday}|{home}|{away}"
+        snap = self.fixture_ledger.get(key)
+        if not snap:
+            return False
+        for name, state in snap.get("players", {}).items():
+            if state is None:
+                self.players.pop(name, None)
+            else:
+                self.players[name] = copy.deepcopy(state)
+        for team, row in snap.get("standings", {}).items():
+            if row is None:
+                self.standings.pop(team, None)
+            else:
+                self.standings[team] = copy.deepcopy(row)
+        self.fixture_ledger.pop(key, None)
+        return True
+
+    def fixture_was_played(self, matchday: int, home: str, away: str) -> bool:
+        """True if this exact fixture contributed to the ledger already."""
+        return f"{matchday}|{home}|{away}" in self.fixture_ledger
 
     def record_team_result(self, home: str, away: str, hg: int, ag: int):
         """Record a played fixture into the league standings."""
@@ -379,6 +462,15 @@ class SeasonState:
         row = self.standings.get(team)
         return "".join(row["form"][-5:]) if row else ""
 
+    # ── Cognition (TOLAND mind layer persistence) ──
+    def get_player_cognition(self, name: str) -> Optional[Dict[str, Any]]:
+        """A mind's persisted state (memory weights + temperament), or None."""
+        return self.cognition.get(name)
+
+    def set_player_cognition(self, name: str, state: Dict[str, Any]) -> None:
+        """Persist a player's mind state after a match."""
+        self.cognition[name] = state
+
     def standings_info(self) -> Dict[str, Dict[str, Any]]:
         """Compact {team: {position, points, form}} for the attendance layer."""
         out: Dict[str, Dict[str, Any]] = {}
@@ -417,6 +509,7 @@ class SeasonState:
     def get_player_state(self, name: str) -> Dict[str, Any]:
         return self.players.get(name, {
             "confidence": 50.0, "fatigue_level": 0.0, "starting_stamina": 100.0,
+            "ending_stamina": 100.0, "last_match_date": None,
             "is_injured": False, "injury_type": "none", "matches_remaining_out": 0,
             "yellow_cards_last_6": [], "red_card_ban": 0,
             "season_minutes": 0, "season_matches": 0, "recent_ratings": [6.0] * 5,
@@ -426,6 +519,48 @@ class SeasonState:
             "recovery_days": 0,
             "expected_return_date": None,
         })
+
+    # Date-based stamina recovery: this many % regained per calendar day.
+    RECOVERY_PER_DAY = 10.0
+    # Assumed gap only when last_match_date or the next match_date is unknown.
+    DEFAULT_GAP_DAYS = 6.0
+
+    def project_stamina(
+        self, s: Dict[str, Any], match_date: Optional[date] = None
+    ) -> Tuple[float, float]:
+        """Project (starting_stamina, fatigue_level) for a given match date.
+
+        Date-based, like injury recovery: the player regains
+        RECOVERY_PER_DAY per calendar day since their last appearance, so
+        a 3-day midweek gap recovers less than a 14-day break. Falls back
+        to DEFAULT_GAP_DAYS when either date is unknown, and to the stored
+        legacy fields when the player has no raw ending_stamina
+        (season states written before date-based recovery existed).
+        """
+        ending = s.get("ending_stamina")
+        if ending is None:
+            st = float(s.get("starting_stamina", 100.0))
+            return (
+                round(st, 1),
+                round(float(s.get("fatigue_level", max(0.0, 100.0 - st))), 1),
+            )
+        ending = float(ending)
+        last = s.get("last_match_date")
+        if isinstance(last, str) and last:
+            try:
+                last = date.fromisoformat(last)
+            except ValueError:
+                last = None
+        if match_date is not None and last is not None:
+            gap = float(max(0, (match_date - last).days))
+        else:
+            gap = self.DEFAULT_GAP_DAYS
+        fatigue = max(0.0, 100.0 - ending)
+        recovered = min(fatigue, gap * self.RECOVERY_PER_DAY)
+        return (
+            round(min(100.0, ending + recovered), 1),
+            round(fatigue - recovered, 1),
+        )
 
     def apply_pre_match(self, dna, name: str, match_date: Optional[date] = None):
         """Called before kickoff: hydrate a fresh PlayerDNA with this
@@ -446,8 +581,14 @@ class SeasonState:
                 s["expected_return_date"] = None
                 self.players[name] = s
 
+        # Project date-based stamina recovery onto this fixture's date
+        st, fat = self.project_stamina(s, match_date)
+        s["starting_stamina"] = st
+        s["fatigue_level"] = fat
+        self.players[name] = s
+
         dna.form.confidence = s["confidence"]
-        dna.form.fatigue_level = s["fatigue_level"]
+        dna.form.fatigue_level = fat
         dna.form.recent_ratings = list(s["recent_ratings"])
         dna.form.recent_goals = list(s["recent_goals"])
         dna.form.is_injured = s["is_injured"]
@@ -455,7 +596,7 @@ class SeasonState:
         dna.form.matches_remaining_out = s.get("matches_remaining_out", 0)
         dna.season_minutes = s["season_minutes"]
         dna.season_matches = s["season_matches"]
-        return s.get("starting_stamina", 100.0)
+        return st
 
     def record_post_match(self, name: str, rating: float, goals: int,
                            minutes_played: int, ending_stamina: float,
@@ -505,11 +646,18 @@ class SeasonState:
         # Bonus for goals/assists (matches in-memory logic)
         s["confidence"] = min(100, s["confidence"] + goals * 3 + assists * 1.5)
 
-        # Recovery between matches (assume ~6 days til next match)
-        fatigue_now = 100.0 - ending_stamina
-        recovered = min(fatigue_now, 6 * 10.0)
-        s["fatigue_level"] = round(max(0.0, fatigue_now - recovered), 1)
-        s["starting_stamina"] = round(min(100.0, ending_stamina + recovered), 1)
+        # Date-based recovery between matches: persist the raw ending
+        # stamina + the calendar day this match happened. The next
+        # match's kickoff projects recovery as
+        # (match_date - last_match_date) * RECOVERY_PER_DAY — midweek
+        # 3-day gaps recover less than a 2-week break. The derived
+        # starting_stamina/fatigue_level written here assume a typical
+        # week (DEFAULT_GAP_DAYS) until that next date is known.
+        s["ending_stamina"] = round(float(ending_stamina), 1)
+        s["last_match_date"] = match_date.isoformat() if match_date else None
+        proj_stamina, proj_fatigue = self.project_stamina(s, None)
+        s["starting_stamina"] = proj_stamina
+        s["fatigue_level"] = proj_fatigue
 
         s["season_minutes"] = s["season_minutes"] + minutes_played
         s["season_matches"] = s["season_matches"] + 1
@@ -604,13 +752,15 @@ class SeasonState:
         return True, "fit"
 
     def rotation_flag(self, name: str, games_remaining_in_block: int = 4,
-                       minutes_threshold_per_game: float = 75.0) -> bool:
+                       minutes_threshold_per_game: float = 75.0,
+                       match_date: Optional[date] = None) -> bool:
         """True if a player's season load suggests they should be rested soon."""
         s = self.get_player_state(name)
         if s["season_matches"] == 0:
             return False
         avg = s["season_minutes"] / s["season_matches"]
-        return avg >= minutes_threshold_per_game and s["fatigue_level"] > 55.0
+        _, fatigue = self.project_stamina(s, match_date)
+        return avg >= minutes_threshold_per_game and fatigue > 55.0
 
 
     # ─────────────────────────────────────────────
@@ -637,17 +787,17 @@ class SeasonState:
         for p in players:
             s = self.get_player_state(p.name)
             fits, reason = self.is_available(p.name, match_date)
-            fatigue = float(s.get("fatigue_level", 0.0))
+            # Date-based projection to this fixture — not the cached value
+            stamina, fatigue = self.project_stamina(s, match_date)
             mins = int(s.get("season_minutes", 0))
             apps = int(s.get("season_matches", 0))
             load = mins / apps if apps else 0.0
 
-            # Show the TRUTH about this player's fatigue: the persisted
-            # projection of what they'll start with. The engine clamps this
-            # to a 70% floor in _apply_starting_stamina — that rubber-band
-            # hides real exhaustion, so when it kicks in we flag it in the
+            # Show the TRUTH about this player's fatigue: the projected
+            # stamina for kickoff. The engine clamps this to a 70% floor
+            # in _apply_starting_stamina — that rubber-band hides real
+            # exhaustion, so when it kicks in we flag it in the
             # status ("floored") instead of pretending the player is fine.
-            stamina = float(s.get("starting_stamina", 100.0))
 
             if not fits:
                 status = "❌ OUT"
@@ -699,7 +849,7 @@ class SeasonState:
 
             # Rotation suggestions from season load
             rot = [r["name"] for r in rows
-                   if not r["out"] and self.rotation_flag(r["name"])]
+                   if not r["out"] and self.rotation_flag(r["name"], match_date=match_date)]
             if rot:
                 lines.append("💡 Rotation candidates (heavy load + fatigue): "
                              + ", ".join(rot))
@@ -727,7 +877,9 @@ class SeasonState:
             return "  Bench: empty"
         rows = []
         for p in bench:
-            stamina = float(self.get_player_state(p.name).get("starting_stamina", 100.0))
+            stamina, _ = self.project_stamina(
+                self.get_player_state(p.name), match_date
+            )
             fits, _ = self.is_available(p.name, match_date)
             rows.append((stamina, fits))
         fit = [s for s, isfit in rows if isfit]
@@ -868,6 +1020,7 @@ class LeagueRunner:
         away_colors: Dict[str, str] = None,
         full_roster: Dict[str, List[str]] = None,
         training: bool = True,
+        cognition: bool = True,
     ) -> List[Dict]:
         """
         Run every fixture scheduled for `matchday`. `squads` must already
@@ -928,7 +1081,9 @@ class LeagueRunner:
                            away_squad["starters"] + away_squad["substitutes"])
             starting_stamina: Dict[str, float] = {}
             for p in all_players:
-                starting_stamina[p.name] = self.state.apply_pre_match(p.dna, p.name)
+                starting_stamina[p.name] = self.state.apply_pre_match(
+                    p.dna, p.name, fx.match_date
+                )
 
             # Pre-match fatigue briefing for BOTH benches — the manager reads
             # their fatigue here, before kickoff, to judge start-or-rest.
@@ -961,7 +1116,15 @@ class LeagueRunner:
             sub_controller.set_manager_stubbornness(home, home_mgr.stubbornness())
             sub_controller.set_manager_stubbornness(away, away_mgr.stubbornness())
             engine.set_stamina_controller(sub_controller)
-            engine.set_managers(home_manager=home_mgr, away_manager=away_mgr)
+            # Live brain-managers (wired by default since 2026-09-20): the
+            # club's persisted mind/memory drives posture/pressing/urgency
+            # through the engine's USE_MANAGER_BRAIN hooks.  ManagerProfile
+            # pool managers (home_mgr/away_mgr) keep club lifecycle.
+            from manager_profile import brain_manager_for, save_live_manager
+            home_brain_mgr = brain_manager_for(home)
+            away_brain_mgr = brain_manager_for(away)
+            engine.set_managers(home_manager=home_brain_mgr,
+                                away_manager=away_brain_mgr)
 
             # Chemistry: load each team's persisted SquadChemistry, apply the
             # manager fingerprint + leadership, and register it into the live
@@ -974,8 +1137,40 @@ class LeagueRunner:
             register_active(home, home_chem)
             register_active(away, away_chem)
 
+            # Cognition (TOLAND mind layer): hydrate every player's mind
+            # from the season store (carrying last matchday's temperament),
+            # register them, and point the engine's match-event stream at
+            # the observer before kickoff.
+            if cognition:
+                from brain_integration import set_cognition
+                from cognition_brain import engage_mind_observer
+                from cognition.mind import clear_minds, register_mind, PlayerMind
+                clear_minds()
+                for p in all_players:
+                    saved = self.state.get_player_cognition(p.name)
+                    mind = (PlayerMind.from_state(saved) if saved
+                            else PlayerMind())
+                    register_mind(p.name, mind)
+                set_cognition(True)
+                engage_mind_observer()
+
             result = engine.simulate()
             print(result.summary())
+
+            if cognition:
+                from brain_integration import set_cognition
+                from cognition_brain import disengage_mind_observer
+                from cognition.mind import get_mind, clear_minds
+                for p in all_players:
+                    mind = get_mind(p.name)
+                    if mind is not None:
+                        self.state.set_player_cognition(p.name, mind.to_state())
+                disengage_mind_observer()
+                clear_minds()
+                set_cognition(False)
+
+            save_live_manager(home_brain_mgr, home)
+            save_live_manager(away_brain_mgr, away)
 
             folder = f"{home.replace(' ','_')}_vs_{away.replace(' ','_')}_MD{matchday:02d}"
             out_path = os.path.join(self.outputs_dir, folder)
@@ -1018,6 +1213,7 @@ class LeagueRunner:
                     injured=stamina_state.is_injured if stamina_state else False,
                     injury_type=stamina_state.injury_type if stamina_state else "none",
                     matches_out=stamina_state.matches_out() if stamina_state else 0,
+                    match_date=fx.match_date,
                     assists=s.get("assists", 0),
                 )
                 played_names.add(p.name)

@@ -336,10 +336,14 @@ class PlayerStaminaState:
             return True
         return False
 
-    def check_stamina_sub(self, minute: int, manager_stubbornness: float = 0.3):
+    def check_stamina_sub(self, minute: int, manager_stubbornness: float = 0.3,
+                         urgency: float = 0.5):
         """
         Should the manager sub this player for stamina?
         manager_stubbornness: 0.0=immediate, 1.0=never subs for stamina
+        urgency: Phase 6 brain-manager sub urgency (0.5=neutral, 1.0=eager,
+                 0.0=very patient). The default of 0.5 gives factor
+                 (0.5 + 0.5) = 1.0 so flag-off base probs are unchanged.
 
         Real football: some players finish on fumes. Some managers leave
         them on because subs are used or they trust the player.
@@ -347,10 +351,15 @@ class PlayerStaminaState:
         if self.sub_requested or self.is_injured:
             return
 
+        # Phase 6 — urgency modulates the base sub probability from the
+        # brain-manager's personality. At default urgency (0.5) the factor
+        # is 1.0, so the probabilities below match the static path exactly.
+        _urgency_factor = 0.5 + float(urgency)
+
         if self.is_critical and minute >= 55:
             # Critical stamina — almost always subbed (unless manager is stubborn
             # or it's too early)
-            sub_prob = 0.85 * (1 - manager_stubbornness)
+            sub_prob = 0.85 * (1 - manager_stubbornness) * _urgency_factor
             if random.random() < sub_prob:
                 self.sub_requested = True
                 self.sub_reason = SubReason.STAMINA
@@ -358,7 +367,7 @@ class PlayerStaminaState:
 
         elif self.is_struggling and minute >= 70:
             # Struggling late — reasonable chance of sub
-            sub_prob = 0.45 * (1 - manager_stubbornness)
+            sub_prob = 0.45 * (1 - manager_stubbornness) * _urgency_factor
             if random.random() < sub_prob:
                 self.sub_requested = True
                 self.sub_reason = SubReason.STAMINA
@@ -429,6 +438,12 @@ class SubstitutionController:
         # Falls back to the flat `self.stubbornness` when a team isn't keyed.
         self.stubbornness_by_team: Dict[str, float] = {}
 
+        # Phase 6 — per-team sub urgency from the brain-manager's live
+        # decision (Manager._current_urgency, pushed each minute by the
+        # engine when USE_MANAGER_BRAIN is on). 0.5 is neutral (factor 1.0);
+        # >0.5 makes a team sub faster, <0.5 more cautiously.
+        self.urgency_by_team: Dict[str, float] = {}
+
         # Track subs made
         self.subs_made: Dict[str, int]       = {home_team: 0, away_team: 0}
         self.subs_log:  List[Dict]            = []
@@ -458,6 +473,24 @@ class SubstitutionController:
     def stubbornness_for(self, team: str) -> float:
         """Resolve which substitution-patience value applies to a team."""
         return self.stubbornness_by_team.get(team, self.stubbornness)
+
+    def set_manager_urgency(self, team: str, urgency: float):
+        """Phase 6 — push the brain-manager's live sub urgency for one team.
+
+        The engine calls this each minute when ``USE_MANAGER_BRAIN`` is on,
+        reading ``Manager._current_urgency`` (a 0..1 value filtered through
+        the mind's empathy/youth_trust in ManagerMind.filter_sub_urgency).
+        """
+        self.urgency_by_team[team] = float(max(0.0, min(1.0, urgency)))
+
+    def urgency_for(self, team: str) -> float:
+        """Resolve which urgency value applies to a team.
+
+        Returns the brain-manager urgency when the flag is on, 0.5 (neutral)
+        when no brain-manager is wired — factor (0.5 + 0.5) = 1.0 so the
+        base sub probability is unchanged.
+        """
+        return self.urgency_by_team.get(team, 0.5)
 
     def register_player(self, player, starting_stamina: float = 100.0):
         """Register a player's stamina state at kick-off."""
@@ -531,7 +564,9 @@ class SubstitutionController:
         
         # Check if stamina sub needed
         if not state.sub_requested:
-            state.check_stamina_sub(minute, self.stubbornness_for(team))
+            state.check_stamina_sub(
+                minute, self.stubbornness_for(team), self.urgency_for(team)
+            )
 
     def process_minute(self, minute: int, active_players: Dict[str, List],
                        game_state_home: int, game_state_away: int) -> List[Dict]:
@@ -1003,6 +1038,18 @@ class AvailabilityChecker:
         starting_stamina = 100.0
         fatigue_level = 0.0
 
+        # Date-based rest window: matchdays between this assessment and
+        # the player's last appearance, at the league's ~7-day cadence.
+        # (_find_match_files only returns matchdays strictly before
+        # current_md, so the gap is always >= 1 matchday when known.)
+        days_available = 6  # fallback when no _matchday column
+        if last_match is not None and "_matchday" in rows.columns:
+            try:
+                last_md = int(rows["_matchday"].iloc[0])
+                days_available = max(0, (current_md - last_md) * 7)
+            except (TypeError, ValueError):
+                days_available = 6
+
         if last_match is not None:
             # Read ending stamina or total drain from last match
             ending_stamina = get_col(rows.head(1), "ending_stamina", "Ending Stamina")
@@ -1012,15 +1059,13 @@ class AvailabilityChecker:
             if not ending_stamina.empty and ending_stamina.iloc[0] > 0:
                 last_ending = float(ending_stamina.iloc[0])
                 fatigue_level = 100.0 - last_ending
-                # Recovery: 1 day per 10% drain, matches typically 5–7 days apart
+                # Recovery: 10% per rest day (date-based via matchday gap)
                 days_to_recover = fatigue_level / 10.0
-                days_available  = 6   # Typical week-to-week gap
                 recovery_pct    = min(1.0, days_available / max(1, days_to_recover))
                 starting_stamina = min(100.0, last_ending + (fatigue_level * recovery_pct))
             elif not total_drain.empty and total_drain.iloc[0] > 0:
                 drain = float(total_drain.iloc[0])
                 fatigue_level = drain
-                days_available = 6
                 recovery = min(drain, days_available * 10)
                 starting_stamina = min(100.0, 100.0 - drain + recovery)
             else:
