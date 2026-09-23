@@ -383,6 +383,22 @@ class StatAccumulator:
             for p in squad["starters"] + squad.get("substitutes", []):
                 self.stats[p.name] = self._blank_stat(p, team)
 
+        # ── Opta duel pairing: a foul wipes the tackle (the duel is
+        # FOUL_WON vs FOUL_COMMITTED, not TACKLE_LOST). Mark wiped tackles
+        # so they don't also count as a ground duel.
+        self._tackle_wiped_by_foul: set = set()
+        tl = list(self.result.timeline)
+        for idx, ev in enumerate(tl):
+            if (ev.event_type == EventType.FOUL_COMMITTED
+                    and (ev.metadata or {}).get("from_failed_tackle", False)):
+                for j in range(max(0, idx - 5), idx):
+                    cand = tl[j]
+                    if (cand.event_type == EventType.TACKLE_LOST
+                            and cand.player == ev.player
+                            and cand.minute == ev.minute):
+                        self._tackle_wiped_by_foul.add(id(cand))
+                        break
+
         # Walk every event in the timeline
         for event in self.result.timeline:
             self._process_event(event)
@@ -596,6 +612,7 @@ class StatAccumulator:
             "tackles_att": 0, "tackles_won": 0,
             "tackles_sliding": 0, "tackles_standing": 0,
             "interceptions": 0, "clearances": 0, "blocks": 0,
+            "blocked_shots": 0, "blocked_passes": 0, "blocked_crosses": 0,
             "recoveries": 0, "ball_recoveries": 0,
             "pressures": 0, "press_success": 0,
             "aerial_duels_att": 0, "aerial_duels_won": 0,
@@ -701,6 +718,38 @@ class StatAccumulator:
                 actor["xg_setpiece"] += xg
             else:
                 actor["xg_open_play"] += xg
+
+    def _mirror_duel(self, secondary_name, duel_type: str, won: bool,
+                       dribbled_past: bool = False,
+                       possession_won: bool = False,
+                       possession_lost: bool = False):
+        """Credit the other side of a zero-sum duel.
+
+        Opta: for every duel won there is a corresponding duel lost.
+        Single-sided engine events (TACKLE_WON alone, standalone
+        DRIBBLE_*, GROUND/AERIAL_DUEL) carry the winner on `e.player`
+        and the loser on `e.secondary_player` — mirror att/won so team
+        won == opp lost. No draws.
+        """
+        if not secondary_name:
+            return
+        opp = self.stats.get(secondary_name)
+        if not opp:
+            return
+        if duel_type == "ground":
+            opp["ground_duels_att"] += 1
+            if won:
+                opp["ground_duels_won"] += 1
+        else:
+            opp["aerial_duels_att"] += 1
+            if won:
+                opp["aerial_duels_won"] += 1
+        if dribbled_past:
+            opp["dribbled_past"] += 1
+        if possession_won:
+            opp["possession_won"] += 1
+        if possession_lost:
+            opp["possession_lost"] += 1
 
     def _process_event(self, e: MatchEvent):
         """Route each event to its stat update."""
@@ -844,11 +893,12 @@ class StatAccumulator:
                 "outcome": "blocked", "xg": e.xg,
                 "body_part": e.body_part or "foot", "situation": e.situation.value if e.situation else "open_play"
             })
-            # Blocker
+            # Blocker — shot block (attempt on goal stopped by body)
             if e.secondary_player:
                 blocker = self.stats.get(e.secondary_player)
                 if blocker:
                     blocker["blocks"] += 1
+                    blocker["blocked_shots"] += 1
 
         elif e.event_type == EventType.HIT_WOODWORK:
             actor["hit_woodwork"] += 1
@@ -1158,12 +1208,26 @@ class StatAccumulator:
             actor["dribble_distance"] += dist
             if not e.outcome:
                 actor["possession_lost"] += 1
-                actor["dribbled_past"] += 1
 
-            # Every dribble attempt also counts as a ground duel
+            # Every dribble attempt also counts as a ground duel (Sofascore:
+            # 10 completed dribbles = 10 ground duels won). Zero-sum mirror
+            # to the beaten defender via secondary_player — except when this
+            # dribble is already the paired counterpart of a TACKLE_LOST
+            # (tackle chain emits both events for one contest).
             actor["ground_duels_att"] += 1
             if e.outcome:
                 actor["ground_duels_won"] += 1
+            paired_with_tackle = (e.metadata or {}).get("paired_with_tackle", False)
+            if not paired_with_tackle:
+                if e.outcome:
+                    # Attacker beats man: defender gets att + lost + dribbled past
+                    self._mirror_duel(e.secondary_player, "ground", won=False,
+                                      dribbled_past=True)
+                elif e.secondary_player:
+                    # Attacker tackled with no explicit TACKLE_WON logged:
+                    # defender wins the duel
+                    self._mirror_duel(e.secondary_player, "ground", won=True,
+                                      possession_won=True)
 
         # ── CROSSES ────────────────────────────────────────────
         elif e.event_type in (EventType.CROSS_ATTEMPT, EventType.CORNER_TAKEN):
@@ -1195,6 +1259,13 @@ class StatAccumulator:
                 actor["tackles_sliding"] += 1
             else:
                 actor["tackles_standing"] += 1
+            # Opta: tackle won = ground duel won. Mirror the loss to the
+            # tackled carrier (secondary_player) — success emits TACKLE_WON
+            # alone, so without this the duel is one-sided.
+            actor["ground_duels_att"] += 1
+            actor["ground_duels_won"] += 1
+            self._mirror_duel(e.secondary_player, "ground", won=False,
+                              possession_lost=True)
             # Tackle zone tracking (for last man tackles)
             if e.location_x is not None:
                 is_home = self._is_home_player(actor, e)
@@ -1212,6 +1283,11 @@ class StatAccumulator:
                 actor["tackles_sliding"] += 1
             else:
                 actor["tackles_standing"] += 1
+            # Opta: failed tackle = ground duel lost — unless a foul wiped
+            # the tackle (duel is then FOUL_WON vs FOUL_COMMITTED). No mirror:
+            # the attacker's side is the paired DRIBBLE_SUCCESS / FOUL_WON.
+            if id(e) not in getattr(self, "_tackle_wiped_by_foul", set()):
+                actor["ground_duels_att"] += 1
 
         elif e.event_type == EventType.INTERCEPTION:
             if not e.outcome:
@@ -1236,6 +1312,15 @@ class StatAccumulator:
 
         elif e.event_type == EventType.BLOCK:
             actor["blocks"] += 1
+            # Split by what was blocked. Legacy BLOCK events (pre-split)
+            # carry no blocked_type — they are shot blocks.
+            btype = (e.metadata or {}).get("blocked_type", "shot")
+            if btype == "pass":
+                actor["blocked_passes"] += 1
+            elif btype == "cross":
+                actor["blocked_crosses"] += 1
+            else:
+                actor["blocked_shots"] += 1
 
         elif e.event_type == EventType.RECOVERY:
             actor["recoveries"] += 1
@@ -1274,21 +1359,36 @@ class StatAccumulator:
             actor["aerial_duels_att"] += 1
             if e.outcome:
                 actor["aerial_duels_won"] += 1
-            else:
-                actor["dribbled_past"] += 1
+            # Zero-sum mirror to secondary (closest opponent per Opta).
+            # No dribbled_past here — losing an aerial is not being beaten
+            # on the dribble.
+            self._mirror_duel(e.secondary_player, "aerial",
+                              won=not e.outcome)
 
         # ── GROUND DUELS ───────────────────────────────────────
         elif e.event_type == EventType.GROUND_DUEL:
             actor["ground_duels_att"] += 1
             if e.outcome:
                 actor["ground_duels_won"] += 1
+            # Single physics contest (resolve_duel_contest) logged on the
+            # carrier — mirror att/loss-win to the presser. No draws.
+            if e.outcome:
+                self._mirror_duel(e.secondary_player, "ground", won=False)
+            else:
+                self._mirror_duel(e.secondary_player, "ground", won=True,
+                                  possession_won=True)
 
         # ── DISCIPLINE ─────────────────────────────────────────
         elif e.event_type == EventType.FOUL_COMMITTED:
             actor["fouls_committed"] += 1
+            # Opta: foul conceded = duel lost (non-aerial). Pair is FOUL_WON.
+            actor["ground_duels_att"] += 1
 
         elif e.event_type == EventType.FOUL_WON:
             actor["fouls_won"] += 1
+            # Opta: winning a foul = duel won. Pair is FOUL_COMMITTED.
+            actor["ground_duels_att"] += 1
+            actor["ground_duels_won"] += 1
 
         elif e.event_type == EventType.YELLOW_CARD:
             # A card always follows its own FOUL_COMMITTED event, so the
@@ -1330,6 +1430,11 @@ class StatAccumulator:
         elif e.event_type == EventType.DISPOSSESSED:
             actor["dispossessed"] += 1
             actor["possession_lost"] += 1
+            # Opta: dispossessed (not attempting to beat man) = duel lost.
+            actor["ground_duels_att"] += 1
+            if e.secondary_player:
+                self._mirror_duel(e.secondary_player, "ground", won=True,
+                                  possession_won=True)
 
         # ── MISC ───────────────────────────────────────────────
         elif e.event_type == EventType.OWN_GOAL:
@@ -2138,19 +2243,19 @@ class PLOFAExporter:
             print()
 
         # ── DATA EXPORTS ──────────────────────────────────────
-        self.export_excel(f"{base_path}/{name}.xlsx")
-        self.export_csv(f"{base_path}/{name}_players.csv")
-        self.export_json(f"{base_path}/{name}.json")
+        self.export_excel(os.path.join(base_path, f"{name}.xlsx"))
+        self.export_csv(os.path.join(base_path, f"{name}_players.csv"))
+        self.export_json(os.path.join(base_path, f"{name}.json"))
 
         # ── VISUALIZATIONS ────────────────────────────────────
-        self.plot_shot_map(f"{base_path}/{name}_shot_map.png")
-        self.plot_pass_network(f"{base_path}/{name}_pass_network.png")
-        self.plot_xg_timeline(f"{base_path}/{name}_xg_timeline.png")
-        self.plot_momentum(f"{base_path}/{name}_momentum.png")
-        self.plot_match_summary(f"{base_path}/{name}_summary.png")
-        self.plot_pressure_map(f"{base_path}/{name}_pressure_map.png")
-        self.plot_ball_motion(f"{base_path}/{name}_ball_motion.png")
-        self.plot_player_heatmap(f"{base_path}/{name}_player_heatmap.png")
+        self.plot_shot_map(os.path.join(base_path, f"{name}_shot_map.png"))
+        self.plot_pass_network(os.path.join(base_path, f"{name}_pass_network.png"))
+        self.plot_xg_timeline(os.path.join(base_path, f"{name}_xg_timeline.png"))
+        self.plot_momentum(os.path.join(base_path, f"{name}_momentum.png"))
+        self.plot_match_summary(os.path.join(base_path, f"{name}_summary.png"))
+        self.plot_pressure_map(os.path.join(base_path, f"{name}_pressure_map.png"))
+        self.plot_ball_motion(os.path.join(base_path, f"{name}_ball_motion.png"))
+        self.plot_player_heatmap(os.path.join(base_path, f"{name}_player_heatmap.png"))
         self.plot_soul_dashboards(base_path)
 
         print(f"\n✅ Export complete → {base_path}/")
@@ -2834,6 +2939,10 @@ class PLOFAExporter:
                 "Phase Regressions": pm.get("PHASE_REGRESSION", 0),
                 "Yellow Cards": tdf["yellow_cards"].sum(),
                 "Red Cards": tdf["red_cards"].sum(),
+                "Throw-ins": sum(
+                    1 for e in self.result.timeline
+                    if e.event_type == EventType.THROW_IN and e.team == team
+                ),
                 "Distance Covered (km)": round(tdf["distance_covered"].sum(), 1),
             }
             # Add financial data (only for home team — home team gets the revenue)
@@ -3281,6 +3390,19 @@ class PLOFAExporter:
                                         if (self.state.home_possession_s + self.state.away_possession_s) > 0 else 50.0),
                 "home_possession_s": round(self.state.home_possession_s, 1),
                 "away_possession_s": round(self.state.away_possession_s, 1),
+                # Throw-in restarts per team (one THROW_IN timeline event
+                # per restart — ThrowInChain's long/short branches are
+                # mutually exclusive, so no double counting).
+                "home_throw_ins": sum(
+                    1 for e in self.result.timeline
+                    if e.event_type == EventType.THROW_IN
+                    and e.team == self.config.home_team
+                ),
+                "away_throw_ins": sum(
+                    1 for e in self.result.timeline
+                    if e.event_type == EventType.THROW_IN
+                    and e.team == self.config.away_team
+                ),
             },
             "timeline": self._timeline_json(),
             "financials": {
@@ -3931,17 +4053,37 @@ class PLOFAExporter:
         home_yellow = int(df_h["yellow_cards"].sum())
         away_yellow = int(df_a["yellow_cards"].sum())
 
+        # Throw-ins & offsides from the timeline (one THROW_IN event per
+        # restart — ThrowInChain's long/short branches are exclusive).
+        home_throw_ins = sum(
+            1 for e in self.result.timeline
+            if e.event_type == EventType.THROW_IN and e.team == home
+        )
+        away_throw_ins = sum(
+            1 for e in self.result.timeline
+            if e.event_type == EventType.THROW_IN and e.team == away
+        )
+        home_offsides = sum(
+            1 for e in self.result.timeline
+            if e.event_type == EventType.OFFSIDE and e.team == home
+        )
+        away_offsides = sum(
+            1 for e in self.result.timeline
+            if e.event_type == EventType.OFFSIDE and e.team == away
+        )
+
         stats_y = 0.52
         stats = [
             ("Passes", f"{home_passes} vs {away_passes}"),
             ("Possession", f"{poss_h}% vs {poss_a}%"),
             ("Shots", f"{home_shots} vs {away_shots}"),
-
+            ("Offsides", f"{home_offsides} vs {away_offsides}"),
         ]
         stats_right = [
             ("Shots on Target", f"{home_sot} vs {away_sot}"),
             ("Corners", f"{home_corners} vs {away_corners}"),
             ("Yellow Cards", f"{home_yellow} vs {away_yellow}"),
+            ("Throw-ins", f"{home_throw_ins} vs {away_throw_ins}"),
         ]
 
         for i, ((lbl1, val1), (lbl2, val2)) in enumerate(zip(stats, stats_right)):

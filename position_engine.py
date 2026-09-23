@@ -1697,6 +1697,116 @@ class PositionEngine:
         alpha = BACKLINE_DROP_ALPHA * strength
         return {dropper: (alpha, sx, sy)}
 
+    # Checkpoint 38 — PRESSURE-AWARE BACK-LINE SPREAD. When the team owns the
+    # ball inside the build-up band AND the ball itself is being pressed, the
+    # back four should not compact toward the ball (the default 10Hz steer) —
+    # they should SPREAD: a counter-compaction push (each player's y away from
+    # the ball's y) plus the far-side CB deepening to split the CH pair, so
+    # the carrier always has a goal-side escape man that is ALSO a separate
+    # passing lane. Counter to ball-compaction clustering shown by the spread
+    # probe (15% of pressed build-up ticks had two back-line players <4m).
+    BACKLINE_SPREAD_MAX_NX: float = 55.0   # engage only inside ~the halfway mark
+    BACKLINE_SPREAD_MIN_NX: float = 18.0   # never spread into the six-yard wall
+    BACKLINE_SPREAD_PRESS_M: float = 7.0   # nearest opponent to the ball <= this
+    BACKLINE_SPREAD_ALPHA: float = 0.40    # steer weight at full pressure
+    BACKLINE_SPREAD_Y_PUSH: float = 0.18   # counter-compaction: y away from ball
+    BACKLINE_SPREAD_CB_FAR: float = 0.6    # far CB depth = n*0.6 (clamped 24-30)
+
+    def backline_spread_pressure(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """Checkpoint 38 — SPREAD THE PITCH UNDER PRESSURE.
+
+        Returns ``{name: (alpha, tx, ty)}`` (same contract as CK37's
+        backline_build_up_support) or {} when the situation is not on:
+          - team out of possession,
+          - ball beyond the build-up band (halfway mark),
+          - nearest opponent to the BALL further than BACKLINE_SPREAD_PRESS_M
+            (no live press ⇒ no forced spread).
+        Targets: every back-line player's y is pushed AWAY from the ball's y
+        (countering the default 10Hz ball-compaction steering that sucks the
+        line into the press) but staying within reach (no touchline-pinning);
+        the far-side CB additionally deepens to ~24-30m from his own goal so
+        the two CHs split into a short (ball-side drop-in) + deep/wide pair —
+        two separate escape lanes. TARGET steer only: the jog integrator keeps
+        the actual travel pace-capped.
+        """
+        if not has_ball or ball_x is None or ball_y is None:
+            return {}
+        own_goal_x = 0.0 if attacks_right else 105.0
+        nx = ball_x if attacks_right else 105.0 - ball_x
+        if nx < self.BACKLINE_SPREAD_MIN_NX or nx > self.BACKLINE_SPREAD_MAX_NX:
+            return {}
+        other = next((t for t in self.team_rosters if t != team_name), None)
+        if other is None:
+            return {}
+        press_d = None
+        for n in self.team_rosters.get(other, []):
+            st = self.states.get(n)
+            if st is None or st.position == "GK":
+                continue
+            d = math.hypot(st.current_x - ball_x, st.current_y - ball_y)
+            if press_d is None or d < press_d:
+                press_d = d
+        if press_d is None or press_d > self.BACKLINE_SPREAD_PRESS_M:
+            return {}
+        weight = (self.BACKLINE_SPREAD_PRESS_M - press_d) / self.BACKLINE_SPREAD_PRESS_M
+        nx_str = 0.5 + 0.5 * max(0.0, 1.0 - (nx - 18.0) / (55.0 - 18.0))
+        w = weight * nx_str
+        if w <= 0.05:
+            return {}
+        alpha = self.BACKLINE_SPREAD_ALPHA * w
+        sign = 1.0 if attacks_right else -1.0
+        nx_far = min(30.0, max(24.0, nx * self.BACKLINE_SPREAD_CB_FAR))
+        out = {}
+        for n in self.team_rosters.get(team_name, []):
+            st = self.states.get(n)
+            if st is None or st.position not in ("CB", "LB", "RB"):
+                continue
+            if abs(st.home_y - ball_y) < 2.5:
+                continue    # already on the ball's channel — nothing to pull him
+            gry = st.home_y + (st.home_y - ball_y) * self.BACKLINE_SPREAD_Y_PUSH
+            gry = max(1.0, min(67.0, gry))
+            gx = st.home_x
+            # far-side CB also deepens to ~24-30m so the CH pair SPLITS into a
+            # short (ball-side drop-in) + deep/wide second outlet.
+            if st.position == "CB" and (st.home_y - 34.0) * (ball_y - 34.0) < 0:
+                gx = own_goal_x + nx_far * sign
+                gx = max(0.0, min(105.0, gx))
+            out[n] = (alpha, gx, gry)
+        return out
+
+    # LIVE-TICK SPACING GUARD (Checkpoint 38): the per-minute graph-relaxation
+    # repel is too slow to stop two runners stacking at 10Hz inside one build-up
+    # sequence. This is a TARGET redirect applied in match_engine._offball_move_
+    # player right before the jog integrator: any same-team teammate currently
+    # within LIVE_SEP_MIN redirects the runner's TARGET away from him (his own
+    # target is untouched, so there is no oscillation).
+    LIVE_SEP_MIN: float = 4.5
+    LIVE_SEP_PUSH: float = 0.45
+
+    def live_spacing_redirect(
+        self, team_name: str, cx: float, cy: float, tx: float, ty: float,
+    ) -> Tuple[float, float]:
+        """Nudge a live off-ball target away from any teammate currently
+        clustering on the runner."""
+        best_d, p = self.LIVE_SEP_MIN, 1.0
+        newx, newy = tx, ty
+        for n in self.team_rosters.get(team_name, []):
+            st = self.states.get(n)
+            if st is None or (st.current_x is None or st.current_y is None):
+                continue
+            d = math.hypot(st.current_x - cx, st.current_y - cy)
+            if d < best_d:
+                if d < 1e-6:
+                    best_d, p = d, 1.0
+                    continue
+                push = (best_d - d) / d * self.LIVE_SEP_PUSH
+                newx += (cx - st.current_x) * push
+                newy += (cy - st.current_y) * push
+        return max(0.0, min(105.0, newx)), max(0.0, min(68.0, newy))
+
     GK_BUILD_UP_LOW_NX: float = 22.0    # below this the ball is in the keeper's
                                         # dead-zone — hold near the line
     GK_BUILD_UP_ADVANCE_NX: float = 55.0  # beyond this the attacking-crash

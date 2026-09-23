@@ -36,6 +36,7 @@ from tactical_shapes import FormationStance
 from attack_patterns import AttackPattern
 from set_piece_routines import SetPieceRoutine
 from ball_vision import movement_ball
+from run_tracking import RunTracker
 
 # The match narrative prints emoji/unicode; on legacy consoles (cp1252 etc.)
 # that raises UnicodeEncodeError mid-simulation. Reconfigure the streams to
@@ -1753,6 +1754,10 @@ class MatchEngine:
 
         # Accumulators (filled during simulation, read during export)
         self.event_counts: Dict[str, Dict] = {}
+        # Checkpoint 39 — off-ball run tracking (six Gradient-style types:
+        # advance/overlap/underlap/far_side/forward/support), sampled at the
+        # 10 Hz integrator from both live and dead possession windows.
+        self.run_tracker = RunTracker()
         self.goals: List[MatchEvent] = []
         self.cards: List[MatchEvent] = []
         self.subs: List[MatchEvent] = []
@@ -2502,9 +2507,28 @@ class MatchEngine:
             if p_bl > 0.0:
                 tx += (blx - tx) * p_bl
                 ty += (bly - ty) * p_bl
+        # Checkpoint 38 — PRESSURE-AWARE BACK-LINE SPREAD: when the ball is
+        # being pressed inside the build-up band, the back four SPREAD (FBs to
+        # their channels, far CB deep+wide) instead of compacting toward the
+        # ball — the counter to press-clustering. Near-side CB stays on the
+        # CK37 drop-in (short socket).
+        spr = self.position_engine.backline_spread_pressure(
+            team, ball_x, ball_y, has_ball,
+            self.position_engine.team_attacks_right.get(team, True))
+        if spr and pname in spr:
+            p_sp, spx, spy = spr[pname]
+            if p_sp > 0.0:
+                tx += (spx - tx) * p_sp
+                ty += (spy - ty) * p_sp
         tx = max(0.0, min(105.0, tx))
         ty = max(0.0, min(68.0, ty))
         cx, cy = st.current_x, st.current_y
+        # Checkpoint 38 — LIVE-TICK SPACING GUARD: redirect this runner's
+        # target away from any teammate currently inside LIVE_SEP_MIN of him,
+        # so two players never stack on the same socket during a build-up
+        # sequence (the per-minute graph repel is too slow at 10Hz).
+        tx, ty = self.position_engine.live_spacing_redirect(
+            team, cx, cy, tx, ty)
         dx, dy = tx - cx, ty - cy
         dist = math.hypot(dx, dy)
         tgt = self._top_speed_cache.get(pname, 7.0)
@@ -2608,6 +2632,33 @@ class MatchEngine:
         except Exception:
             return None
 
+    def _sample_run_tracking(self, t: float, home_has_ball: bool) -> None:
+        """Checkpoint 39 — feed the run tracker one 10 Hz sample of every
+        in-possession outfield player (the tracker itself resets segments
+        across possession flips and sample gaps)."""
+        if self.run_tracker is None or self.position_engine is None:
+            return
+        bx, by = self.state.last_ball_x, self.state.last_ball_y
+        if bx is None or by is None:
+            return
+        home = self.config.home_team
+        team = home if home_has_ball else self.config.away_team
+        attacks_right = self.position_engine.team_attacks_right.get(team, True)
+        for pname in self.position_engine.team_rosters.get(team, []):
+            st = self.position_engine.states.get(pname)
+            if st is None or getattr(st, "position", "") == "GK":
+                continue
+            if st.current_x is None or st.current_y is None:
+                continue
+            self.run_tracker.sample(
+                t, pname, st.current_x, st.current_y, bx, by,
+                attacks_right, team, True)
+
+    def get_run_profile(self) -> Dict[str, Dict[str, int]]:
+        """Checkpoint 39 — per-player off-ball run counts, six types:
+        advance / overlap / underlap / far_side / forward / support."""
+        return self.run_tracker.profile() if self.run_tracker else {}
+
     def _offball_run(self, duration_s: float, home_has_ball: bool) -> None:
         """Jog every off-ball player for ``duration_s`` of LIVE play (during an
         episode), without advancing the global clock — the episode already did.
@@ -2660,6 +2711,10 @@ class MatchEngine:
                             _gs.current_x += (_gk_t[0] - _gs.current_x) * _gxp
                             _gs.current_y += (_gk_t[1] - _gs.current_y) * _gxp
                             break
+            # Checkpoint 39 — OFF-BALL RUN TRACKING: sample the possessing
+            # team's outfield players once per tick (classification happens
+            # inside RunTracker against the previous sample).
+            self._sample_run_tracking(t0 + (i + 1) * DT, home_has_ball)
             if i % 2 == 0:
                 self._record_player_tick(t0 + (i + 1) * DT, home, away)
             if self.gps is not None:
@@ -2702,6 +2757,9 @@ class MatchEngine:
                     self._offball_move_player(
                         pname, team, ball_x, ball_y, has_ball,
                         danger.get(team, 0.0), cross_team, DT)
+            # Checkpoint 39 — keep run segments alive through dead-time
+            # possession too (the tracker's GAP_S guard bridges any break).
+            self._sample_run_tracking(self.state.match_clock_s, home_has_ball)
             self.state.match_clock_s += DT
             if ti % 10 == 0:
                 self.state.match_ball_path.append({
