@@ -9,24 +9,24 @@
   "states": 400,
   "results": {
     "LW": {
-      "best_fitness": 0.9305,
+      "best_fitness": 0.8503,
       "generations": 40,
-      "seed": 123,
-      "elapsed_s": 96.7,
+      "seed": 5,
+      "elapsed_s": 130.9,
       "saved_to": "brains_offball\\LW.json"
     },
     "RW": {
-      "best_fitness": 0.9297,
+      "best_fitness": 0.8479,
       "generations": 40,
-      "seed": 123,
-      "elapsed_s": 98.0,
+      "seed": 5,
+      "elapsed_s": 123.2,
       "saved_to": "brains_offball\\RW.json"
     },
     "CM": {
-      "best_fitness": 0.9221,
+      "best_fitness": 0.8333,
       "generations": 40,
-      "seed": 123,
-      "elapsed_s": 68.6,
+      "seed": 5,
+      "elapsed_s": 168.6,
       "saved_to": "brains_offball\\CM.json"
     }
   }

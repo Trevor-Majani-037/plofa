@@ -996,6 +996,142 @@ positively rather than argued away.
   (an invariant enforced by AST rather than by convention, because the default
   is `True` and one omission put every away-team corner at its own end).
 
+## ASSIST CAUSATION + A DEAD GOAL PIPELINE (2026-10-02, second pass)
+
+The user chose **true tracking** over leaving the fabricated assist, with the
+observation that he had believed key passes were real since matchday 1 and they
+were not. He was right about the symptom and wrong about the object, as before.
+
+- **THE ASSIST IS NOW THE REAL PASSER.** `ChainResult.shoot_assister` records who
+  passed to `shoot_player`, `""` if nobody did. It cost nothing to obtain: the
+  passer is the PREVIOUS value of `last_player` at every carrier change, and
+  `event_chain` has exactly FOUR assignments to `last_player` — three of them
+  pass-derived (completed pass 2832, through ball 3107, attacker winning a cross
+  ~3467) plus the sequence start. Crediting the **cross taker** on a headed goal
+  is what the Laws award, so the cross case is not a special case.
+  `_resolve_assister` requires the name to resolve to an outfielder in the squad
+  and forbids it equalling the shooter.
+- **`_resolve_assister` HAS NO FALLBACK, ON PURPOSE. DO NOT ADD ONE.** The old
+  behaviour was `creator.name if creator else ""`, a role- and distance-weighted
+  RANDOM DRAW over the whole squad. A goal by a man who received it from a
+  team-mate is assisted; a goal by a man who won the ball and dribbled it in from
+  40 yards is UNASSISTED, and that is common. **Expect FEWER assists than
+  before** — 4 of 5 measured goals now come out correctly unassisted. That is the
+  honest answer, not a regression, and it is the single most likely thing for a
+  future agent to "fix" by reintroducing a fallback.
+- **A FIXED FIELD IS NOT A FIXED FEATURE — I made this mistake myself.** I made
+  `result.goal_assistant` honest and stopped. The **GOAL event's own
+  `secondary_player`** — which is what the Goals sheet Assist column and
+  `alltime_db` ASSISTS actually read — was still `creator.name if creator else
+  None`. The feature the user asked for was still shipping the fabrication.
+  This is the identical trap as the shot origin (`CHANCE_CREATED`) and of
+  `world.ingest`'s `sub_controller`: **after changing a field, follow it to the
+  consumer before claiming the feature works.** A field nothing reads is not a
+  fix.
+- **`_pick_creator` STILL SHIPS** — it is no longer the assist, but it still
+  supplies `CHANCE_CREATED`'s `player` field (and `creation_type`). Removing the
+  assist draw did not remove the creator draw.
+- **THERE WAS A SECOND, ENTIRELY FABRICATED GOAL PIPELINE, AND IT WAS DEAD.**
+  `match_engine._simulate_shot_sequence` picked the shooter as a random member of
+  `['ST','CF','LW','RW','CAM']`, the creator as another random player, and the
+  location by SAMPLING A ZONE NAME (`_shot_location(zone, ...)`) with no reference
+  to any player or to the ball. `_register_goal` then called `_shot_location`
+  TWICE — once for `location_x`, once for `location_y` — so the GOAL event's
+  coordinate pair was a chimera of two independent draws. Measured over 2 real
+  matches (`_diag_shot_pipeline_split.py`): it fires **0 times**, and the repo has
+  **zero call sites**. So it was corrupting nothing — but it is the project's
+  standing pathology in its worst form: a mechanism that reads as authoritative,
+  is wired to nothing, and would fabricate goals the moment anyone routed to it.
+  **Removed (265 lines) with `_register_goal` and `MatchEngine._shot_location`.**
+  `event_chain._shot_location` is a SEPARATE, LIVE method (the no-position-engine
+  fallback) and is untouched. Do not re-add or route to the engine one.
+- **THE TWO `random.uniform` SITES THE USER ASKED ABOUT ARE NOT LOCATIONS.**
+  `_STREAM_PARITY_DRAW` (the name is `_DRAW`, not "PROBE") is **assigned and never
+  read** — pure RNG-stream ballast, so deleting it changes every later number in
+  the match. `rx + random.uniform(1.0, 4.0)` starts from the receiver's REAL
+  `position_engine.get_position(...)` and nudges him 1–4 m further toward goal so
+  the cross is aimed where his run takes him. Same idea as the shot's
+  `strike_pocket = random.uniform(0.5, 2.5)`. A small jitter around a real
+  position is not a fabricated location.
+- **OPEN AND UNVERIFIED — DO NOT QUOTE A FIGURE FOR IT.** The cross-receiver
+  clamp at `event_chain.py:3404` reads the receiver's real x, clamps it into
+  `[85, 100]` via `clamp_attack_x`, and then `record_touch`es the RESULT. A winger
+  standing at x=40 is therefore written at x=85 and the gap is banked as distance
+  covered. Aiming a cross inside the box is right; persisting the clamp as the
+  man's position is not. `_diag_teleport_moves.py` measures the population —
+  **1,040 single-call `record_touch` jumps ≥12 m in one match, 27,333 m total
+  (~260 pitches)** — attributed 779 `unknown` (the engine's own restart /
+  goal-kick / corner repositioning, legitimately discontinuous) / 195
+  `possession` / 55 `set_piece` / 11 `attack_chain`. The clamp lives in
+  `possession` so it is inside that 195, but **it was NOT isolated**, and this is
+  the fourth rejected probe pairing of the session. Measure it before touching it.
+- **HOW I BROKE `match_engine.py` — read this before deleting any line range.**
+  To find where `_shot_location` ended I scanned for the next line matching
+  `^    def `. That regex only sees METHODS. `match_engine.py` has a
+  `class MatchResult:` at **column 0** after `MatchEngine` ends, and the scan
+  sailed 85 lines past the method, through the module banner, `_terrs`, `_pcts`
+  and the `@dataclass class MatchResult:` header. Everything after was left intact
+  but **silently re-parented onto `MatchEngine`** — which is still valid Python,
+  so `import match_engine` SUCCEEDED. The only symptom was
+  `NameError: name 'MatchResult' is not defined` from deep inside `simulate()`.
+  Worse, a duplicate `class MatchResult` then appeared further down the file and,
+  being later, **shadowed the repaired one** — so the repair looked applied and
+  still failed.
+  **RULES, learned the hard way:**
+  1. Never bound a deletion by a regex over `^    def `. Parse with `ast` and use
+     `node.end_lineno`, or delete by matching the exact source text.
+  2. Assert the class structure AFTER deleting (`ast` → `t.body` → count
+     column-0 `ClassDef`s, and check the intended one exists).
+  3. Deleting bottom-up while asserting against indices computed BEFORE the first
+     `del` is how you get asserts that were true when written and false when used.
+  4. A successful `import` proves nothing about class structure in this file.
+- **`PlayerSpatialState.position` IS THE POSITION LABEL ("ST"), NOT A POINT.**
+  Coordinates are `current_x` / `current_y`. Together with `get_position`
+  returning `(50.0, 34.0)` — the pitch centre — for a player it has no state for,
+  this is the single most productive trap in the spatial layer: both read as a
+  real coordinate and neither is one. Use `tracked_position(name)`, which returns
+  `None` for an untracked player.
+- **STILL OPEN, unchanged:** `pass_direction` metadata remains uncorrelated with
+  geometry (label "forward" → 125 fwd / 123 sq / 146 back; marginals match, the
+  assignment is random, so the exporter stamps it wrong ~2/3 of the time); the
+  shot-distance distribution is still miscalibrated (median 20.0 m, 14.8% inside
+  4 m against a real ~0%, 22.2% beyond 25 m against ~3%); and a match is still not
+  reproducible from `random.seed`, which is the only reason
+  `_STREAM_PARITY_DRAW` has to stay.
+- **SUITES (2026-10-02, second pass):** `tests/test_set_piece_routines` +
+  `tests/test_chance_creation` + `tests/test_plofa_export` + `tests/
+  test_cross_detector` re-run green after the `MatchResult` repair and the dead-
+  pipeline removal; `tests/test_chance_provenance.py` 26 passed. The full 26/27
+  regression (`tests/tests.py`, `test_chronography`,
+  `test_possession_causality`, `test_checkpoint7_subsystems`) was launched
+  BEFORE the `secondary_player` fix, so it does **not** gate that fix — re-run
+  it before claiming the second pass is clean. Expect the one known
+  pre-existing failure, `tests.py::test_pass_matrix_sums_match_real_events`
+  (matrix − manual = the number of successful crosses), and treat any OTHER
+  failure as new until shown otherwise.
+- **COMMIT `e76b644`** carries an explicit NOT-FIXED block in its message. Read
+  it before assuming this work closed the class.
+- **NEW PROBES:** `_diag_shot_pipeline_split.py` (which pipeline produced each
+  shot/goal, by `id()`-tagging the emitted event objects — not by guessing from a
+  timeline) and `_diag_teleport_moves.py` (single-call `record_touch` jumps,
+  attributed by wrapping each chain's `generate` to push a context label).
+  `_diag_chance_coords.py` is the primary chance-provenance probe and exports
+  `build_pair(home, away)` that the others import. `_diag_shot_origin.py` is v4
+  (`id()`-tagged) and its docstring records the three REJECTED pairings — read
+  it before writing a fifth. **Write probes to a FILE, never an inline
+  `python -c`**: PowerShell mangles the quotes, and both of my probe crashes
+  today were real bugs surfaced by that mangling rather than by the probe.
+- **PROBE-SCRIPT RULES (four false findings today, all the same shape):**
+  1. `PlayerSpatialState.position` is the position LABEL (`"ST"`), not a point;
+     coordinates are `current_x`/`current_y`.
+  2. `position_engine.get_position(name)` returns `(50.0, 34.0)` — the centre
+     spot — for a player it has no state for. That is a coordinate that reads
+     as real and is not one. Use `tracked_position(name)`, which returns `None`.
+  3. Reading position state AFTER `simulate()` returns attributes
+     final-whistle state to a mid-match moment.
+  4. An unattributed jump histogram cannot separate a deliberate placement
+     from a clamp. Signature-test the mechanism instead of context-tagging it.
+
 ## Work State
 - DONE: neural net + sensors + GA evolution; surrogate build + integration;
   pseudo-evo; evolved real brains; registration-bug fix (`validate_neural_xl.py`).
@@ -1060,6 +1196,45 @@ positively rather than argued away.
   end-to-end; `--no-collect --no-evolve` = re-gate an existing challenger.
 
 ## Next Move
+**ACTIVE — THE FABRICATION AUDIT IS NOT FINISHED.** The assist/shooter work closed
+one path, not the class. Do not report "fabrication eliminated". Remaining, in
+the order I would take them:
+
+1. **`_pick_creator` is STILL LIVE** and still supplies `CHANCE_CREATED`'s
+   `player` field. It is a role- and distance-weighted random draw over the
+   squad, exactly the mechanism removed from the assist. Either derive it from
+   the last completed pass into the box, or omit the field. Note the same
+   trap that bit me on the assist: `chance_creation.py`'s docstring already
+   claims the engine "used to" fabricate chances — check what the EXPORT reads,
+   not what the ledger class offers.
+2. **The cross-receiver clamp at `event_chain.py:3404`** — the receiver's real
+   x is clamped into `[85, 100]` and then `record_touch`ed, so a winger at
+   x=40 is written at x=85 and the gap is banked as distance covered. Isolating
+   it is cheaper than it looks: a signature test is `new_x` inside the
+   attacking `[85,100]` band AND `y` in `[22,46]` AND `old_x` more than ~5 m
+   outside the band. Do NOT report a figure from `_diag_teleport_moves.py`
+   context attribution — it cannot separate a clamp from a deliberate
+   placement, which is the fourth rejected probe pairing of the session.
+3. **`pass_direction` metadata is uncorrelated with geometry** — marginals
+   match, the assignment is random, so the exporter stamps it wrong ~2/3 of
+   the time. `detect_cross` / `detect_long_pass` already exist and
+   `event_chain.py:2482` already makes this argument; `pass_direction` was
+   never converted. Cheapest honest fix is to derive it from geometry, or drop
+   it.
+4. **Shot-distance distribution** — median 20.0 m (real ~17), 14.8% inside 4 m
+   (real ~0%), 22.2% beyond 25 m (real ~3%). `_shot_location`'s open-play draw
+   `min(32, -14·ln(1-u) + 3)` is a log-uniform tail that over-feeds long range.
+   This is calibration, NOT a fabrication — do not conflate it with 1-3.
+5. **Seed reproducibility** remains the root blocker for every A/B in this
+   project: module-level brain/mind caches survive `simulate()`, so two
+   `simulate()` calls in one process are not comparable and
+   `validate_neural_xl`-style gates are only meaningful across processes.
+   Until it is fixed, `_STREAM_PARITY_DRAW` must stay.
+
+Then the wider set-piece work, still in the user's non-negotiable order:
+corner box crowding via the pre-corner shape (block drops before the ball goes
+out) → geometric shot resolution → exporter.
+
 0. **PASS DIRECTION IS HAND-CODED, AND THAT IS A DECISION, NOT A BUG.**
    Read `DECIDER_BOUNDARY.md` before touching `_pass_destination` or
    `_best_forward`. The evolved brain's entire output is one of ten intent
@@ -1187,6 +1362,24 @@ positively rather than argued away.
   depth-only clamp, the no-global-RNG guarantee, and a full real match.
 - `_diag_posplay_speed.py`, `_diag_cross_probe.py` — throughput and
   cross-detection probes (diagnostics, not tests).
+- `event_chain.py` — ALSO the chance-provenance site: `ChainResult.shoot_player`
+  / `shoot_assister`, `_resolve_assister` (NO FALLBACK, by design),
+  `_pick_creator` (STILL LIVE — feeds `CHANCE_CREATED.player`), `_named_shooter`,
+  `clamp_attack_x` (~1030), `_STREAM_PARITY_DRAW` (~5719, DO NOT DELETE),
+  cross-receiver clamp (~3404, unverified).
+- `tests/test_chance_provenance.py` — 26 tests. Contains an AST guard asserting
+  every `set_piece` call site in `match_engine.py` passes `attacks_right`, which
+  is why that class of omission cannot recur silently.
+- `_diag_chance_coords.py` — primary chance-provenance probe; exports
+  `build_pair(home, away)` reused by the other probes.
+- `_diag_shot_pipeline_split.py` — proves which pipeline emitted each shot/goal
+  by `id()`-tagging the event objects at emission. This is what established
+  that `_simulate_shot_sequence` fires zero times.
+- `_diag_teleport_moves.py` — single-call `record_touch` jump audit. Measures
+  the population; CANNOT isolate the cross-receiver clamp. Do not quote a
+  clamp figure from it.
+- `_diag_shot_origin.py` — v4, `id()`-tagged. Docstring records three rejected
+  pairings; read before writing another.
 - `decision_brain.py` — heuristic (still the baseline; no longer called).
 - `auto_run_match.py` — production runner (run() line 655). OFF-LIMITS:
   persists into `season_state`/`season_stats`; season fixtures cannot replay.

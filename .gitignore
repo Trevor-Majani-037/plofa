@@ -3,3 +3,5 @@ __pycache__/
 alltime.db
 alltime.db-wal
 alltime.db-shm
+# generated app-feed for the stats hub (export app-json); rebuilt after each sync
+plofa_output/history/
