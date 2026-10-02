@@ -31,6 +31,7 @@ from brain_integration import (
     NeuralDecisionBrain, register_brain, clear_registry,
 )
 from decision_brain import PlayerIntent, DecisionBrain
+from perception import PerceptionConfig, get_perception_config, set_perception
 import match_probe
 
 # position (as on the player object) -> brain file stem
@@ -68,9 +69,17 @@ def register_full_xi(brains_dir: str, starters: List[Any]) -> int:
 
 
 def _run_neural(brains_dir: str, seed: int, home_style: str, away_style: str):
-    home_squad, away_squad = match_probe._build_squads("Probe FC", "Rival FC")
-    n_bound = register_full_xi(brains_dir, home_squad["starters"])
+    # Production default is perception ON (true football), but the
+    # gate-of-record compares brain SETS at identical seeds and the
+    # heuristic arm has NO perception layer — running neural-with-degraded-
+    # vision vs heuristic-with-omniscient-vision would be unfair AND would
+    # silently drift every recorded gate number.  Pin the identity regime
+    # here; future gates wanting the perception world must add a flag.
+    saved_cfg = get_perception_config()
+    set_perception(PerceptionConfig(enabled=False))
     try:
+        home_squad, away_squad = match_probe._build_squads("Probe FC", "Rival FC")
+        n_bound = register_full_xi(brains_dir, home_squad["starters"])
         config = match_probe.MatchConfig(
             home_team="Probe FC", away_team="Rival FC",
             match_date=date(2026, 9, 6), matchday=3, season="26/27",
@@ -87,20 +96,23 @@ def _run_neural(brains_dir: str, seed: int, home_style: str, away_style: str):
         return result, fitness
     finally:
         clear_registry()
+        set_perception(saved_cfg)
 
 
 def _run_heuristic(seed: int, home_style: str, away_style: str):
-    home_squad, away_squad = match_probe._build_squads("Probe FC", "Rival FC")
-    clear_registry()
-    # Temporarily pin the neural entry point to the genuine heuristic so
-    # substitutes/unregistered players cannot auto-load neural brains, and
-    # turn the team press controller OFF: the heuristic arm is the OLD system
-    # (heuristic on-ball + pure role-rate Bernoulli off-ball).
-    saved_neural = NeuralDecisionBrain.decide
-    NeuralDecisionBrain.decide = staticmethod(_HEURISTIC_DECIDE)
-    from match_engine import set_team_press_auto
-    set_team_press_auto(False)
+    saved_cfg = get_perception_config()
+    set_perception(PerceptionConfig(enabled=False))
     try:
+        home_squad, away_squad = match_probe._build_squads("Probe FC", "Rival FC")
+        clear_registry()
+        # Temporarily pin the neural entry point to the genuine heuristic so
+        # substitutes/unregistered players cannot auto-load neural brains, and
+        # turn the team press controller OFF: the heuristic arm is the OLD
+        # system (heuristic on-ball + pure role-rate Bernoulli off-ball).
+        saved_neural = NeuralDecisionBrain.decide
+        NeuralDecisionBrain.decide = staticmethod(_HEURISTIC_DECIDE)
+        from match_engine import set_team_press_auto
+        set_team_press_auto(False)
         config = match_probe.MatchConfig(
             home_team="Probe FC", away_team="Rival FC",
             match_date=date(2026, 9, 6), matchday=3, season="26/27",
@@ -118,6 +130,7 @@ def _run_heuristic(seed: int, home_style: str, away_style: str):
         NeuralDecisionBrain.decide = saved_neural
         set_team_press_auto(True)
         clear_registry()
+        set_perception(saved_cfg)
 
 
 def main():

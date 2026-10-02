@@ -258,7 +258,13 @@ def test_direct_routine_strikes_goal():
         types = [e.event_type.name for e in res.events]
         assert "FREEKICK_DIRECT" in types, types
         assert "FREEKICK_CROSS" not in types, types
-        assert "GOAL" in types or "SAVE" in types or "SHOT_OFF_TARGET" in types
+        # The direct branch now builds a wall and resolves the flight through
+        # it, so SHOT_BLOCKED is a legitimate fourth outcome alongside
+        # GOAL/SAVE/SHOT_OFF_TARGET: a wall that never blocked anything would
+        # not be a wall. The assertion is "the attempt resolved into a shot
+        # outcome", not "the shot beat the wall".
+        assert ({"GOAL", "SAVE", "SHOT_OFF_TARGET", "SHOT_BLOCKED"}
+                & set(types)), types
         break
 
 

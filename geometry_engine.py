@@ -960,6 +960,18 @@ def make_ballistic_flight(
     )
 
 
+# A corner or a cross is resolved in a few milliseconds and called a handful of
+# times a match, so the flight is scored on a fixed fine grid. This is the
+# floor on `sample_step`, not a replacement for it -- see the scoring loop.
+AERIAL_SCORE_STEPS = 240
+
+
+def _pname(player: "MovingPlayer") -> str:
+    """A stable, side-agnostic identity for tie-breaking."""
+    inner = getattr(player, "player", None)
+    return str(getattr(inner, "name", id(player)))
+
+
 def resolve_aerial_delivery(
     flight: BallFlight,
     attackers: Iterable[MovingPlayer],
@@ -976,59 +988,97 @@ def resolve_aerial_delivery(
     defending_players = tuple(defenders)
     candidates: list[tuple[MovingPlayer, bool, float, Vec3, float, float]] = []
     
-    steps = max(1, int(math.ceil(flight.duration / sample_step)))
+    # A FIXED scoring grid. It used to be derived from `sample_step`,
+    # which made the winner a function of the caller's arithmetic: the
+    # same duel returned ATTACKER at 0.1 s and DEFENDER at 0.01 s,
+    # because the feasibility test `arrival > time_s` is evaluated
+    # against the sampled times. `sample_step` is still honoured, but
+    # only as a FLOOR -- it can ask for more resolution, never less.
+    steps = max(AERIAL_SCORE_STEPS,
+                int(math.ceil(flight.duration / sample_step)))
+
+    # ── PER-CONTESTANT SCORE, NOT A LIST-ORDER TIE ─────────────────────
+    # The flight used to be abandoned at the first sample at which ANYBODY
+    # could reach the ball (`if candidates: break`) and the survivors were
+    # ordered by a STABLE sort on (sample_time, -reach). Two measured
+    # consequences, both of which made corners attacker-proof:
+    #
+    #   * an exact tie was won by whoever had been APPENDED first, and every
+    #     call site passes attackers before defenders -- so every dead heat
+    #     went to the attack. Corners resolved 93-100% to the attacker.
+    #   * the race was quantised to `sample_step` (TICK_S = 0.1 s) over a
+    #     ~1.3 s flight, so a duel decided inside one bucket flipped with the
+    #     resolution alone: the SAME geometry returned ATTACKER at 0.1 s and
+    #     DEFENDER at 0.02 s.
+    #
+    # `time_to_reach` is continuous, so the contest is settled on it instead.
+    # Each contestant is scored by the earliest moment he could be at ANY
+    # point the ball will occupy -- no bucket, and no dependence on the order
+    # the arguments arrived in.
+    #
+    # `arrival > time_s` is not a near miss: the ball reaches that point
+    # BEFORE he can, so he cannot contest it there at all.
+    per_player: dict = {}
     for index in range(1, steps + 1):
         time_s = flight.duration * index / steps
         point = flight.position_at(time_s)
         airborne = point.z > 1.15
-        
+        # direction the ball is travelling, for the dead-heat tiebreak
+        _nxt = flight.position_at(min(1.0, time_s + 0.05))
+        _vx, _vy = _nxt.x - point.x, _nxt.y - point.y
+        _vn = math.hypot(_vx, _vy) or 1.0
+
         for player in attacking_players + defending_players:
-            # Check vertical reach first (player must be able to reach this height)
             max_reach = player.vertical_reach(airborne)
             if point.z > max_reach:
                 continue
-            
-            # Check horizontal arrival time (turn/entry-aware with context)
-            arrival = _race_motion(player, point.horizontal(), player.control_radius, player_context)
-            if arrival <= time_s:
-                # Calculate jump timing: when must player leave ground to reach point.z?
-                # Jump time is the time before contact when player initiates jump
-                # Higher jumps require earlier takeoff
-                jump_height_needed = max(0.0, point.z - player.standing_reach)
-                if jump_height_needed > 0:
-                    # Time to reach peak of jump (parabolic: t = sqrt(2h/g), g≈9.8)
-                    jump_time_to_peak = math.sqrt(2.0 * jump_height_needed / 9.8)
-                    # Player must leave ground before this time
-                    jump_start_time = time_s - jump_time_to_peak
-                else:
-                    jump_start_time = time_s
-                
-                is_attacker = player in attacking_players
-                candidates.append((
-                    player, is_attacker, time_s, point,
-                    jump_start_time, max_reach
-                ))
-        
-        if candidates:
-            break
-    
+            arrival = _race_motion(player, point.horizontal(),
+                                   player.control_radius, player_context)
+            if arrival > time_s:
+                continue
+            jump_needed = max(0.0, point.z - player.standing_reach)
+            jump_start = (time_s - math.sqrt(2.0 * jump_needed / 9.8)
+                          if jump_needed > 0 else time_s)
+            # "ahead" = how far in front of the ball this man is, along the
+            # ball's own direction of travel. In a dead heat the man the cross
+            # is travelling INTO gets it. Direction-agnostic, so it cannot
+            # favour a side.
+            ahead = ((player.position.x - point.x) * _vx
+                     + (player.position.y - point.y) * _vy) / _vn
+            # The 4th term is the player's NAME, and it is load-bearing:
+            # an exact tie must not be resolved by which man happened to be
+            # iterated first, because iteration is `attacking + defending`.
+            # Without it the per-player update below never REPLACES on a tie
+            # (a strict `<`), so the attacker silently kept every dead heat
+            # even after the sort key was fixed. The name is used rather than
+            # `id()` because `id()` is not reproducible across processes, and
+            # a match that varied run to run for a tie-break would be worse
+            # than the bias it removed.
+            entry = (arrival, -max_reach, -ahead, _pname(player), player,
+                     player in attacking_players, time_s, point,
+                     jump_start, max_reach)
+            prev = per_player.get(_pname(player))
+            if prev is None or entry[:4] < prev[:4]:
+                per_player[_pname(player)] = entry
+
+    candidates = sorted(per_player.values(), key=lambda item: item[:4])
+
     if not candidates:
-        return AerialResolution("drops", flight.position_at(flight.duration), flight.duration)
-    
-    # Sort by: earliest contact time, then highest reach (taller/jumping players win)
-    candidates.sort(key=lambda item: (item[2], -item[5]))
-    
-    winner, winner_is_attacker, time_s, point, jump_time, reach_height = candidates[0]
-    
-    # Find challenger (first player from opposite side who also could reach)
+        return AerialResolution("drops", flight.position_at(flight.duration),
+                                flight.duration)
+
+    (_arr, _nr, _na, _k, winner, winner_is_attacker, time_s, point,
+     jump_time, reach_height) = candidates[0]
+
+    # Challenger = the best-placed man from the other side who could also reach.
     challenger = None
     challenger_reach = 0.0
-    for p, is_att, _, _, _, reach in candidates[1:]:
-        if is_att != winner_is_attacker:
-            challenger = p
-            challenger_reach = reach
+    for entry in candidates[1:]:
+        if entry[5] != winner_is_attacker:
+            challenger = entry[4]
+            challenger_reach = entry[9]
             break
-    
+
     outcome = "contested" if challenger is not None else "controlled"
     
     return AerialResolution(

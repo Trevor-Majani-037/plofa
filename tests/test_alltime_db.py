@@ -9,7 +9,9 @@ from alltime_db import (
     alias_scan,
     apply_alias_fixup,
     connect,
+    export_app_json,
     get_or_create_player,
+    get_or_create_team,
     init_schema,
     ingest_match_package,
     import_legacy_xlsx,
@@ -241,3 +243,109 @@ def test_idempotent_alias_add_same_name(db_path):
     init_schema(conn)
     add_alias(conn, "Rayan Victor James", "Rayan Victor James")
     assert conn.execute("SELECT COUNT(*) FROM player_aliases").fetchone()[0] == 0
+
+
+def _pkg_season(tmp_path, name, season, matchday, goals, xg,
+                team="Alpha", date=None):
+    doc = {
+        "match": {
+            "home_team": team, "away_team": "Beta", "score": "1\u20130",
+            "home_xg": 1.0, "away_xg": 0.3, "matchday": matchday,
+            "season": season, "competition": "PLOFA",
+            "venue": "Stadium",
+            "date": date or f"2026-09-0{matchday}",
+        },
+        "timeline": [],
+        "players": {
+            name: {
+                "player": name, "team": team, "position": "ST",
+                "age": 25, "goals": goals, "xg": xg, "shots_on_target": 2,
+                "passes_attempted": 10, "passes_completed": 8,
+                "yellow_cards": 1,
+                "minutes_played": 90, "is_starter": True,
+                "home_or_away": "home",
+            },
+        },
+        "goals": [{
+            "minute": 10, "team": team, "scorer": name,
+            "assist": "", "situation": "open_play", "xg": xg,
+        }],
+    }
+    p = tmp_path / f"match_{season.replace('/', '_')}_{matchday}_{name.replace(' ', '_')}.json"
+    p.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def _export_payload(conn, tmp_path):
+    out = tmp_path / "history"
+    export_app_json(conn, str(out))
+    return json.loads((out / "player_history.json").read_text(encoding="utf-8"))
+
+
+def test_export_app_json_roundtrip(db_path, tmp_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    ingest_match_package(conn, str(_pkg_season(
+        tmp_path, "Striker One", "24/25", 1, goals=2, xg=1.4,
+        date="2024-09-01")))
+    ingest_match_package(conn, str(_pkg_season(
+        tmp_path, "Striker One", "26/27", 1, goals=1, xg=0.8)))
+
+    payload = _export_payload(conn, tmp_path)
+    assert payload["schema"] == "plofa_alltime_player_history_v1"
+    assert payload["seasons"] == ["24/25", "25/26", "26/27"]
+
+    entry = payload["players"]["Striker One"]
+    assert set(entry["seasons"]) == {"24/25", "26/27"}
+    legacy = entry["seasons"]["24/25"][0]
+    assert legacy["team"] == "Alpha"
+    assert legacy["apps"] == 1
+    assert legacy["goals"] == 2
+    assert legacy["minutes_played"] == 90
+    assert legacy["yellow_cards"] == 1
+
+    career = entry["career"]
+    assert career["apps"] == 2
+    assert career["goals"] == 3
+    assert career["minutes_played"] == 180
+    assert career["xg"] == pytest.approx(2.2)
+    assert entry["last_season"] == "26/27"
+    assert entry["current_team"] == "Alpha"
+    assert entry["position"] == "ST"
+
+
+def test_export_app_json_unifies_aliases(db_path, tmp_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    ingest_match_package(conn, str(_pkg_season(
+        tmp_path, "Victor James", "24/25", 1, goals=1, xg=0.6,
+        date="2024-09-01")))
+    ingest_match_package(conn, str(_pkg_season(
+        tmp_path, "Rayan Victor James", "25/26", 1, goals=2, xg=1.1,
+        date="2025-09-01")))
+    add_alias(conn, "Victor James", "Rayan Victor James")
+    moved, deleted = apply_alias_fixup(conn)
+    assert moved + deleted == 1
+
+    payload = _export_payload(conn, tmp_path)
+    assert "Victor James" not in payload["players"]
+    entry = payload["players"]["Rayan Victor James"]
+    assert set(entry["seasons"]) == {"24/25", "25/26"}
+    assert entry["aliases"] == ["Victor James"]
+    assert entry["career"]["apps"] == 2
+    assert entry["career"]["goals"] == 3
+
+
+def test_export_app_json_skips_odd_season_rows(db_path, tmp_path):
+    conn = connect(db_path)
+    init_schema(conn)
+    tid = get_or_create_team(conn, "Ghosts")
+    pid = get_or_create_player(conn, "Ghost Player")
+    conn.execute(
+        "INSERT INTO player_season_stats(season, team_id, player_id, "
+        "player_name, fidelity, source) VALUES ('ALL-TIME',?,?,?,'legacy','test')",
+        (tid, pid, "Ghost Player"))
+    conn.commit()
+
+    payload = _export_payload(conn, tmp_path)
+    assert payload["players"] == {}

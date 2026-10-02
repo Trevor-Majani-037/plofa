@@ -675,6 +675,7 @@ class DecisionBrain:
         minute: float = 45.0,
         soul: Any = None,
         record_trace: bool = False,
+        rule_exec: Any = None,
     ) -> PlayerDecision:
         if soul is None:
             try:
@@ -690,6 +691,28 @@ class DecisionBrain:
             under_pressure, attacks_right, game_state, minute,
         )
         perceived = _perceive(candidates, player, soul, under_pressure, fatigue)
+
+        # --- Step-8 / audit-item-7 follow-through: rule layers become
+        # proposers, NEVER choosers.  When ``rule_exec`` is None (the
+        # default -- this is the matchday anchor) the fold is a no-op and
+        # the candidate/perception stream is byte-identical to production.
+        # When it yields proposals, each proposal joins the *perceived*
+        # stream as a DIRECT, zero-noise, zero-bias candidate -- a coaching
+        # instruction is heard, not re-guessed through noisy perception.
+        # The softmax below still chooses; the brain remains the sole
+        # chooser, and the chosen intent records the instruction's
+        # ``rule_source`` via the candidate note so ``why(player, minute)``
+        # can answer "he obeyed the wide-combo instruction".
+        if rule_exec is not None:
+            folded = rule_exec.propose_all(
+                player=player, x=x, y=y, teammates=teammates,
+                defenders=defenders, position_engine=position_engine,
+                team_profile=team_profile, under_pressure=under_pressure,
+                attacks_right=attacks_right, game_state=game_state,
+                minute=minute,
+            )
+            perceived = _fold_rule_proposals(perceived, folded)
+
         if not perceived:
             # Should not happen (CARRY/SAFE_PASS/RECYCLE/PROTECT are
             # always visible), but never crash the match sim over a

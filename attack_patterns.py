@@ -189,12 +189,13 @@ _STYLE_PATTERN_POOLS: Dict[str, Tuple[AttackPattern, ...]] = {
 
 def pattern_for(
     style_name: str,
-    state,
+    state: MatchState,
     team_name: str,
     home_team: str,
     minute: int,
     chasing: bool = False,
     protecting: bool = False,
+    manager=None,
 ) -> AttackPattern:
     """Deterministic, chunk-stable pattern selection for one team+minute.
 
@@ -204,7 +205,22 @@ def pattern_for(
     line with a real manager: a side chasing late abandons identity and
     blasts direct channels; a side protecting a lead keeps it on the box
     (low-risk, controlled central possession).
-    `style_name` is the value of TeamStyle (e.g. "tiki_taka")."""
+    `style_name` is the value of TeamStyle (e.g. "tiki_taka").
+
+    Phase 8 — coach's say: a live brain-manager's CURRENT posture
+    (stored, no decide() poll) commits the same way. ATTACK blasts direct
+    channels; DEFEND keeps it on the box; BALANCED (or no live manager /
+    flag OFF) falls through to the scoreline logic below, byte-identical.
+    """
+
+    if manager is not None and hasattr(manager, "decide"):
+        import match_engine as _me
+        if bool(getattr(_me, "USE_MANAGER_BRAIN", False)):
+            posture = getattr(manager, "_current_posture", "BALANCED")
+            if posture == "ATTACK":
+                return AttackPattern.DIRECT_CHANNELS
+            if posture == "DEFEND":
+                return AttackPattern.BOX_MIDFIELD
 
     if chasing:
         return AttackPattern.DIRECT_CHANNELS

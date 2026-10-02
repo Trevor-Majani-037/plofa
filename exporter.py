@@ -62,6 +62,7 @@ from match_engine import MatchEvent, EventType, SituationType, MatchResult, Matc
 from player_dna import PlayerProfile
 from player_maps import plot_player_dashboard
 from pass_network import PassMatrix, ChanceMatrix
+from run_tracking import INTENDED_RUN_MODES, RUN_TYPES
 from opta_stats import compute as compute_opta_stats
 
 
@@ -403,19 +404,33 @@ class StatAccumulator:
         for event in self.result.timeline:
             self._process_event(event)
 
-        # Enrich every shot-map entry with a shot trajectory (destination) so
-        # the PNG shot map can draw where each shot went and the Excel "Shot
-        # Map" sheet carries the same coordinates. The engine logs the shot's
-        # origin + outcome but not an explicit target, so the destination is
-        # reconstructed geometrically from origin and outcome (on-target shots
-        # finish in the goal mouth, misses go wide/high, blocks are cut short,
-        # woodwork strikes end at a post).
+        # Every shot needs a destination so the PNG shot map can draw where it
+        # went and the Excel "Shot Map" sheet carries the same coordinates.
+        #
+        # MOST SHOTS ALREADY HAVE A REAL ONE. The open-play shot path builds a
+        # ballistic BallFlight and resolves it against the keeper's dive
+        # envelope (`geometry_engine.resolve_shot`); the point where that flight
+        # actually ended rides on the event as end_x/end_y (= the resolved
+        # `ShotResolution.goal_point` — in the goal mouth for a goal or a save,
+        # on the post for woodwork, wherever the defender's body got in the way
+        # for a block, wide of or over the frame for a miss). That value is used
+        # verbatim and marked `physics`.
+        #
+        # THE SET-PIECE CHAIMS BUILD NO FLIGHT. Corners, direct free kicks and
+        # penalties decide their outcome from a probability roll and emit no
+        # endpoint, so for those there is nothing true to draw and
+        # `_shot_trajectory` reconstructs one. Those rows are marked
+        # `reconstructed` rather than being passed off as simulated.
         for name, s in self.stats.items():
             team = s.get("team", "")
             for sh in s.get("shot_map", []):
+                if sh.get("end_x") is not None and sh.get("end_y") is not None:
+                    sh["trajectory"] = "physics"
+                    continue
                 sh["end_x"], sh["end_y"] = self._shot_trajectory(
                     sh["x"], sh["y"], sh.get("outcome", "miss"), team
                 )
+                sh["trajectory"] = "reconstructed"
 
         # ── GK xGOT FACED & GOALS PREVENTED ────────────────────
         # Opta/StatsBomb definition: Goals Prevented = xGOT_faced - Goals Conceded
@@ -461,16 +476,26 @@ class StatAccumulator:
 
         # Count off-ball runs from position_log
         self._count_off_ball_runs()
+        # ...and the REAL run taxonomies, which the line above knows nothing
+        # about. See _apply_run_taxonomies for why these are two things.
+        self._apply_run_taxonomies()
 
         # Post-process derived stats
         self._finalise()
 
     def _shot_trajectory(self, x: float, y: float, outcome: str,
                          team: str) -> Tuple[float, float]:
-        """
-        Reconstruct where a shot went as a (end_x, end_y) pitch-coordinate
-        destination, derived deterministically from the shot's origin and
-        outcome so every shot on the map has a stable, realistic trajectory:
+        """Reconstruct a shot destination for the shots that have NO physics.
+
+        This is a FALLBACK, not the normal path. Open-play shots are resolved by
+        a real ballistic flight and carry their own endpoint on the event, which
+        the caller uses verbatim (`trajectory="physics"`). Only the set-piece
+        chains — corners, direct free kicks, penalties — build no flight and
+        emit no endpoint; those rows are marked `reconstructed` and come from
+        here, so this function must never be mistaken for simulation.
+
+        The mapping is deterministic in origin + outcome, so every such shot has
+        a stable, plausible trajectory:
 
           goal/saved   → finishes inside the goal mouth
           woodwork     → ends at a post
@@ -481,11 +506,18 @@ class StatAccumulator:
         goal_x = 105.0 if attacks_right else 0.0
 
         # Safety net: override goal_x when the shot position contradicts
-        # the team-name-based attacking direction. This catches cases
-        # where the match engine recorded the shot in the wrong half
-        # (e.g. an away-team shot landing at x≈90 instead of x≈10).
-        # Shots in the right half (>70) attack the right goal (x=105);
-        # shots in the left half (<35) attack the left goal (x=0).
+        # the team-name-based attacking direction. Shots in the right half
+        # (>70) attack the right goal (x=105); shots in the left half (<35)
+        # attack the left goal (x=0).
+        #
+        # This was written when EVERY shot came through here, so a
+        # mis-attributed direction corrupted every plot. It now only ever runs
+        # on the handful of set-piece rows that have no physics endpoint — and
+        # for those the origin IS the only evidence available, so there is no
+        # resolved endpoint to defer to. Measured over 57 real shot events
+        # (`_diag_shot_endpoints.py`) the origin contradicted the team once, so
+        # this branch is close to inert; it is kept because removing it would
+        # leave the reconstruction with no directional check at all.
         if x < 35:
             goal_x = 0.0
         elif x > 70:
@@ -582,6 +614,15 @@ class StatAccumulator:
             "line_breaking_passes": 0,
             "passes_right_foot": 0, "passes_left_foot": 0, "passes_head": 0,
             "chipped_passes": 0, "headed_passes": 0,
+
+            # Run taxonomies. Observed = RunTracker's six geometric types;
+            # intended = the behaviour engines' own decisions. Filled by
+            # _apply_run_taxonomies, which also adds any mode a future
+            # engine introduces. runs_without_ball above is the legacy flat
+            # counter and is NOT a run count.
+            "run_advance": 0, "run_overlap": 0, "run_underlap": 0,
+            "run_far_side": 0, "run_forward": 0, "run_support": 0,
+            "runs_observed_total": 0, "runs_intended_total": 0,
 
             # Crossing
             "crosses_att": 0, "crosses_comp": 0,
@@ -794,6 +835,8 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 90, "y": e.location_y or 34,
                 "outcome": "goal", "xg": e.xg,
+                "end_x": e.end_x, "end_y": e.end_y,
+                "minute": e.minute,
                 "body_part": e.body_part, "situation": e.situation.value if e.situation else "open_play"
             })
             actor["big_chances_scored"] += 1 if e.metadata.get("is_big_chance") else 0
@@ -828,6 +871,7 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 94, "y": e.location_y or 34,
                 "outcome": "goal", "xg": 0.79,
+                "minute": e.minute,
                 "body_part": e.body_part or "foot", "situation": "penalty"
             })
 
@@ -838,6 +882,7 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 94, "y": e.location_y or 34,
                 "outcome": "saved", "xg": 0.79,
+                "minute": e.minute,
                 "body_part": e.body_part or "foot", "situation": "penalty"
             })
 
@@ -856,6 +901,8 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 90, "y": e.location_y or 34,
                 "outcome": "saved", "xg": e.xg,
+                "end_x": e.end_x, "end_y": e.end_y,
+                "minute": e.minute,
                 "body_part": e.body_part, "situation": e.situation.value if e.situation else "open_play"
             })
             actor["big_chances_received"] += 1 if e.metadata.get("is_big_chance") else 0
@@ -874,6 +921,8 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 88, "y": e.location_y or 30,
                 "outcome": "miss", "xg": e.xg,
+                "end_x": e.end_x, "end_y": e.end_y,
+                "minute": e.minute,
                 "body_part": e.body_part or "foot", "situation": e.situation.value if e.situation else "open_play"
             })
 
@@ -891,6 +940,8 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 87, "y": e.location_y or 32,
                 "outcome": "blocked", "xg": e.xg,
+                "end_x": e.end_x, "end_y": e.end_y,
+                "minute": e.minute,
                 "body_part": e.body_part or "foot", "situation": e.situation.value if e.situation else "open_play"
             })
             # Blocker — shot block (attempt on goal stopped by body)
@@ -914,6 +965,8 @@ class StatAccumulator:
             actor["shot_map"].append({
                 "x": e.location_x or 100, "y": e.location_y or 34,
                 "outcome": "woodwork", "xg": e.xg,
+                "end_x": e.end_x, "end_y": e.end_y,
+                "minute": e.minute,
                 "body_part": e.body_part or "foot",
                 "situation": e.situation.value if e.situation else "open_play"
             })
@@ -1481,7 +1534,13 @@ class StatAccumulator:
         )
 
     def _count_off_ball_runs(self):
-        """Count significant off-ball movements from position_log."""
+        """LEGACY, not a run count: any frame-to-frame jump >= 15 m.
+
+        Kept because `runs_without_ball` is an existing exported column and
+        dropping it would change every historical export's shape. It is NOT the
+        run taxonomy — see `_apply_run_taxonomies` for the six real types, which
+        this method never looked at.
+        """
         position_log = getattr(self.result, "position_log", [])
         if not position_log:
             return
@@ -1502,6 +1561,51 @@ class StatAccumulator:
                         if dist >= RUN_THRESHOLD and name in self.stats:
                             self.stats[name]["runs_without_ball"] += 1
                     prev_positions[name] = (x, y)
+
+    def _apply_run_taxonomies(self):
+        """Attach the six observed run types AND the intended-run counts.
+
+        Why this exists separately from `_count_off_ball_runs`
+        -------------------------------------------------------
+        That method is the only run thing the exporter did, and it is not a run
+        counter: it walks `position_log`, and any frame-to-frame jump of >= 15 m
+        increments one flat `runs_without_ball`. A keeper shuffle, a formation
+        reset at half time and a genuine diagonal run all count identically.
+
+        Meanwhile `RunTracker` had been classifying six real types live for
+        months - advance, overlap, underlap, far_side, forward, support - with
+        per-type cooldowns and gain thresholds, exposed as
+        `MatchEngine.get_run_profile()`. It was simply never read. So the six
+        types existed, ran on every match, and reached no output at all.
+
+        The intended-run counts are the second, separate thing: the behaviour
+        engines' own vocabulary (behind / cut / orbit / tuck / drop ...) recorded
+        at the moment the DECISION was made. Intent and outcome are different
+        facts and are deliberately not merged - comparing them is how you find
+        a striker who was told to run in behind and arrived nowhere.
+
+        `runs_without_ball` is left in place. It is a real exported column, and
+        removing it would change every historical export's shape; it is now
+        documented as the crude legacy metric it is rather than a run count.
+        """
+        observed = getattr(self.result, "run_profile", None) or {}
+        intended = getattr(self.result, "intended_run_profile", None) or {}
+        if not observed and not intended:
+            return
+        for name, stat in self.stats.items():
+            obs = observed.get(name) or {}
+            itd = intended.get(name) or {}
+            for kind in RUN_TYPES:
+                stat[f"run_{kind}"] = int(obs.get(kind, 0) or 0)
+            stat["runs_observed_total"] = sum(obs.values()) if obs else 0
+            for mode in INTENDED_RUN_MODES:
+                stat[f"run_intended_{mode}"] = int(itd.get(mode, 0) or 0)
+            # A mode the engines gained after this list was written still gets
+            # a column, so a new run type cannot silently vanish from the export.
+            for mode, n in itd.items():
+                if mode not in INTENDED_RUN_MODES:
+                    stat[f"run_intended_{mode}"] = int(n)
+            stat["runs_intended_total"] = sum(itd.values()) if itd else 0
 
     def _apply_opta_stats(self):
         """Merge OptaStatsEngine results into per-player stat dicts."""
@@ -2354,7 +2458,30 @@ class PLOFAExporter:
                 "Passes Head": s["passes_head"],
                 "Runs to Opp Box (with ball)": s["carries_opp_box"],
                 "Runs to Own Box (with ball)": s["carries_own_box"],
-                "Runs Without Ball": s["runs_without_ball"],
+                "Runs Without Ball (legacy, not a run count)": s["runs_without_ball"],
+                # -- Run taxonomy: what the movement OBSERVED (RunTracker) --
+                "Runs Observed: Advance": s["run_advance"],
+                "Runs Observed: Overlap": s["run_overlap"],
+                "Runs Observed: Underlap": s["run_underlap"],
+                "Runs Observed: Far Side": s["run_far_side"],
+                "Runs Observed: Forward (behind->ahead)": s["run_forward"],
+                "Runs Observed: Support (drop)": s["run_support"],
+                "Runs Observed: Total": s["runs_observed_total"],
+                # -- Run taxonomy: what the engine DECIDED (intent) --
+                "Runs Intended: In Behind (ST)": s.get("run_intended_behind", 0),
+                "Runs Intended: Drop to Link (ST)": s.get("run_intended_hold", 0),
+                "Runs Intended: Post Channel": s.get("run_intended_box", 0),
+                "Runs Intended: Drive Byline (W)": s.get("run_intended_byline", 0),
+                "Runs Intended: Cut Inside (W)": s.get("run_intended_cut", 0),
+                "Runs Intended: Overlap (FB)": s.get("run_intended_overlap", 0),
+                "Runs Intended: Underlap (FB)": s.get("run_intended_underlap", 0),
+                "Runs Intended: Tuck In (FB)": s.get("run_intended_tuck", 0),
+                "Runs Intended: Drop to Receive (CM)": s.get("run_intended_drop", 0),
+                "Runs Intended: Carry (CM)": s.get("run_intended_carry", 0),
+                "Runs Intended: Late Arrival (CM)": s.get("run_intended_late", 0),
+                "Runs Intended: Orbit (CM)": s.get("run_intended_orbit", 0),
+                "Runs Intended: Pocket Roam (CAM)": s.get("run_intended_roam", 0),
+                "Runs Intended: Total": s.get("runs_intended_total", 0),
                 "Progressive Carry Distance": s["progressive_carry_distance"],
                 "Longest Progressive Carry": s["longest_progressive_carry"],
             })
@@ -2903,6 +3030,11 @@ class PLOFAExporter:
                     "x": sh["x"], "y": sh["y"],
                     "End X": sh.get("end_x", sh["x"]),
                     "End Y": sh.get("end_y", sh["y"]),
+                    # physics = the resolved ball flight; reconstructed = the
+                    # set-piece chains build no flight, so the endpoint is
+                    # inferred. Never present the two as the same thing.
+                    "Trajectory": sh.get("trajectory", ""),
+                    "Minute": sh.get("minute", ""),
                     "Outcome": sh["outcome"], "xG": sh["xg"],
                     "Body Part": sh.get("body_part", ""),
                     "Situation": sh.get("situation", ""),
@@ -3582,6 +3714,13 @@ class PLOFAExporter:
         All shots are circular markers sized by xG and colored by outcome, with
         dotted trajectory lines and marginal rug plots showing shot-position
         distributions on each side of the pitch.
+
+        The dotted line runs from the shot's origin to where the ball ACTUALLY
+        finished. For open-play shots that is the endpoint of the resolved
+        ballistic flight, read straight off the event. For set pieces, which
+        build no flight, it is inferred from origin + outcome — see
+        `_shot_trajectory`, which is a fallback and is labelled as one in the
+        export's `Trajectory` column.
         """
         # Collect all shots from both teams into flat lists
         home_shots, away_shots = [], []
@@ -3619,7 +3758,7 @@ class PLOFAExporter:
             "woodwork": PLOFAStyle.ACCENT_GOLD,
         }
 
-        def _plot_shots(shots, color, team):
+        def _plot_shots(shots, color):
             """Plot one team's shots on the shared pitch. Returns (xs, ys) for marginals."""
             xs, ys = [], []
             for shot in shots:
@@ -3628,16 +3767,21 @@ class PLOFAExporter:
                 sy = (shot["y"] / 68) * 80
                 ex = shot.get("end_x", shot["x"])
                 ey = shot.get("end_y", shot["y"])
-                
-                # Mirror away-team shots that ended up in the wrong half
-                # (match engine occasionally records away shots at x>70 instead
-                # of the expected x<35). Only mirror shots clearly in the
-                # attacking-team's own half so we don't double-mirror penalties
-                # or correctly-placed shots.
-                if team == self.config.away_team and sx > 80:
-                    sx = 120 - sx
-                    ex = 120 - ex if ex is not None else None
-                
+
+                # NO MIRRORING, DELIBERATELY. Both teams are drawn on one pitch
+                # (home attacks right, away attacks left) and every endpoint is
+                # already in that shared frame, so there is nothing to flip.
+                #
+                # This used to mirror an away team's shot when sx > 80, on the
+                # theory that the engine sometimes logs a shot in the half its
+                # team does not attack. Measured over two real matches
+                # (`_diag_shot_endpoints.py`, 57 shot events): the origin
+                # contradicted the team ONCE, at sx = 76.7 — below the
+                # threshold — so the branch never fired. It was also actively
+                # wrong: it flipped `ex` too, so any shot it did catch would
+                # have had its trajectory drawn pointing AWAY from the goal the
+                # ball actually finished at. With the real endpoint in place
+                # there is no case left for it to serve.
                 eb_x = (ex / 105) * 120 if ex is not None else sx
                 eb_y = (ey / 68) * 80 if ey is not None else sy
                 xs.append(sx)
@@ -3671,8 +3815,8 @@ class PLOFAExporter:
                               edgecolors=edge_color, linewidths=edge_width)
             return xs, ys
 
-        home_xs, home_ys = _plot_shots(home_shots, self.home_color, self.config.home_team)
-        away_xs, away_ys = _plot_shots(away_shots, self.away_color, self.config.away_team)
+        home_xs, home_ys = _plot_shots(home_shots, self.home_color)
+        away_xs, away_ys = _plot_shots(away_shots, self.away_color)
 
         # Marginal rug plots (shot position distributions, jointgrid style)
         if home_xs:
@@ -3723,7 +3867,8 @@ class PLOFAExporter:
 
         # Footnote
         fig.text(0.5, 0.01,
-                 "Circle size = xG · dotted lines = shot trajectory · rug = shot distribution",
+                 "Circle size = xG · dotted lines = shot trajectory (resolved ball flight; "
+                  "set pieces inferred) · rug = shot distribution",
                  ha="center", fontsize=8, color=PLOFAStyle.TEXT_MUTED,
                  fontstyle="italic")
 
@@ -4255,8 +4400,20 @@ class PLOFAExporter:
             if bm and len(bm) >= 2:
                 paths.append((e.team, bm))
 
-        fig, ax = plt.subplots(figsize=(9, 13), facecolor=PLOFAStyle.BG_DARK)
-        pitch = VerticalPitch(
+        fig, ax = plt.subplots(figsize=(13, 9), facecolor=PLOFAStyle.BG_DARK)
+        # Pitch, NOT VerticalPitch. `to_sb` maps sim x (0-105, goal to goal)
+        # onto the 0-120 axis and sim y (0-68) onto 0-80, which is the HORIZONTAL
+        # statsbomb layout - verified by plotting (52.5, 34) and confirming it
+        # lands on the centre circle.
+        #
+        # This was the only plot in the file using VerticalPitch, whose axes
+        # are rotated 90 degrees relative to that mapping. The result was not
+        # merely ugly: every point was drawn in the wrong place, so the chart
+        # showed the ball occupying a fraction of the pitch it never visited.
+        # A real 3-2 with 2.82 away xG rendered as "the ball never leaves one
+        # half" - the plot was lying, and every other stat in the same export
+        # disagreed with it. Verified with _diag_axis_test.py.
+        pitch = Pitch(
             pitch_type="statsbomb",
             pitch_color=PLOFAStyle.PITCH_GREEN,
             line_color=PLOFAStyle.PITCH_LINE,

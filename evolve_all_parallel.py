@@ -26,7 +26,8 @@ ALL_POSITIONS = ["GK", "CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST", "
 
 
 def _run_position(args_tuple):
-    pos, surrogate, states, generations, population, seed, out, goal_bias = args_tuple
+    pos, surrogate, states, generations, population, seed, out, goal_bias, \
+        role_features, tactics_context, perception, perception_roles = args_tuple
     cmd = [
         sys.executable, "evolve_brains.py",
         "--position", pos,
@@ -38,6 +39,14 @@ def _run_position(args_tuple):
         "--goal-bias", str(goal_bias),
         "--out", out,
     ]
+    if role_features:
+        cmd.append("--role-features")
+    if tactics_context:
+        cmd.append("--tactics-context")
+    if perception:
+        cmd.append("--perception")
+    if perception_roles:
+        cmd.append("--perception-roles")
     start = time.time()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
@@ -69,6 +78,18 @@ def main():
     p.add_argument("--goal-bias", type=float, default=0.0,
                    help="Fraction of states drawn from scoring situations "
                         "(passed through to evolve_brains --goal-bias).")
+    p.add_argument("--role-features", action="store_true",
+                   help="Evolve schema-v2 role-features brains (24 + role block "
+                        "inputs), passed through to evolve_brains --role-features.")
+    p.add_argument("--tactics-context", action="store_true",
+                   help="Evolve schema-v3 tactics-context brains (24 + role block "
+                        "+ manager-instruction dials), passed through to "
+                        "evolve_brains --tactics-context (implies role features).")
+    p.add_argument("--perception", action="store_true",
+                   help="Train through imperfect perception (passed through).")
+    p.add_argument("--perception-roles", action="store_true",
+                   help="With --perception, use per-role perception profiles "
+                        "(passed through).")
     p.add_argument("--positions", type=str, default=None,
                    help="Comma-separated subset; default all 11.")
     p.add_argument("--out", default="brains")
@@ -84,7 +105,10 @@ def main():
     print(f"Evolving {len(positions)} positions with {args.workers} workers "
           f"(surrogate={args.surrogate})")
     tasks = [(pos, args.surrogate, args.states, args.generations, args.population,
-              args.seed, args.out, args.goal_bias) for pos in positions]
+              args.seed, args.out, args.goal_bias,
+              args.role_features, args.tactics_context,
+              args.perception, args.perception_roles)
+             for pos in positions]
 
     results = {}
     start = time.time()
@@ -107,6 +131,10 @@ def main():
             "states": args.states, "generations": args.generations,
             "population": args.population, "seed": args.seed,
             "goal_bias": args.goal_bias,
+            "role_features": args.role_features,
+            "tactics_context": args.tactics_context,
+            "perception": args.perception,
+            "perception_roles": args.perception_roles,
             "total_elapsed_s": round(elapsed, 1), "results": results,
         }, f, indent=2)
     print(f"\nDone in {elapsed/60:.1f} min. Manifest: {manifest}")

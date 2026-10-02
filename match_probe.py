@@ -66,6 +66,26 @@ _BASE_TEMPLATE = [
 
 _SUBS = [("SUB1", "ST"), ("SUB2", "CM"), ("SUB3", "CB")]
 
+# position → the exact starter name on the probe 4-3-3 template.  get_brain()
+# resolves by exact player name, so a candidate MUST be registered under the
+# on-pitch name (the old f'{pos}{pos}' placeholder never matched a player and
+# silently fell back to the auto-loaded brain JSON).
+_POSITION_SLOTS = {
+    "GK": "GK", "CB": "CB1", "LB": "LB", "RB": "RB",
+    "CDM": "CDM", "CM": "CM1", "LW": "LW", "RW": "RW", "ST": "ST",
+}
+
+
+def _slot_for_position(position: str) -> str:
+    slot = _POSITION_SLOTS.get(position)
+    if slot is None:
+        raise ValueError(
+            f"No 4-3-3 probe slot for position '{position}'. "
+            f"Supported: {', '.join(sorted(_POSITION_SLOTS))}. "
+            "CAM/CF are not on the probe template."
+        )
+    return slot
+
 
 def _build_squads(home: str, away: str):
     home_squad = SquadBuilder.build(home, list(_BASE_TEMPLATE), list(_SUBS))
@@ -73,7 +93,7 @@ def _build_squads(home: str, away: str):
     return home_squad, away_squad
 
 
-def _team_profile(name: str, style: str = "balanced") -> TeamProfile:
+def _team_profile(name: str, style: str = "balanced", philosophy=None) -> TeamProfile:
     style_map = {
         "balanced": TeamStyle.BALANCED,
         "attacking": TeamStyle.ATTACKING,
@@ -82,13 +102,27 @@ def _team_profile(name: str, style: str = "balanced") -> TeamProfile:
         "tiki_taka": TeamStyle.TIKI_TAKA,
         "wing_play": TeamStyle.WING_PLAY,
         "ultra_attacking": TeamStyle.ULTRA_ATTACKING,
+        "ultra_defensive": TeamStyle.ULTRA_DEFENSIVE,
+        "park_the_bus": TeamStyle.PARK_THE_BUS,
+        "gegenpressing": TeamStyle.GEGENPRESSING,
+        "route_one": TeamStyle.ROUTE_ONE,
+        "structured_possession": TeamStyle.STRUCTURED_POSSESSION,
+        "vertical_tiki_taka": TeamStyle.VERTICAL_TIKI_TAKA,
     }
-    return TeamProfile(
+    profile = TeamProfile(
         name=name,
         style=style_map.get(style, TeamStyle.BALANCED),
         playing_style=PlayingStyle.MIXED,
         intensity=Intensity.MEDIUM,
     )
+    if philosophy is not None:
+        if isinstance(philosophy, str):
+            from philosophy import ARCHETYPES
+            philosophy = ARCHETYPES.get(philosophy)
+        if philosophy is not None:
+            profile.philosophy = philosophy
+            profile._apply_philosophy()
+    return profile
 
 
 # ─────────────────────────────────────────────────────────────
@@ -271,6 +305,152 @@ def _run_single_match(
     return result, fitness
 
 
+# ─────────────────────────────────────────────────────────────
+# OUTCOME-DRIVEN ENGINE WIRING (new generalised path)
+# ─────────────────────────────────────────────────────────────
+
+def build_probe_engine(
+    player_name: str,
+    seed: int = 0,
+    home: str = "Probe FC",
+    away: str = "Rival FC",
+    home_style: str = "balanced",
+    away_style: str = "fluid_counter",
+    home_philosophy=None,
+    away_philosophy=None,
+) -> Callable[[FootballBrain], Any]:
+    """Engine builder for outcome-driven evolution / validation.
+
+    Returns ``build_engine(brain) -> MatchResult``.  The candidate brain is
+    registered under ``player_name`` — an EXACT 4-3-3 starter name such as
+    ``'ST'`` (see ``_slot_for_position``).  Because ``get_brain`` resolves
+    by exact name, the candidate genuinely drives its slot instead of the
+    old ``f'{pos}{pos}'`` placeholder that never matched any player and
+    silently fell back to the auto-loaded JSON file.
+
+    Each call builds a fresh ``MatchEngine`` with the supplied seed, so the
+    same builder can be reused across GA population members or match-day
+    iterations simply by passing different brains.
+
+    The returned callable carries a ``.team`` attribute (``"home"``) so outcome
+    extractors can skip the fragile timeline side-inference — with the 4-3-3
+    template both squads name their ST ``"ST"`` and the first timeline hit
+    may be the opponent's.
+    """
+    team = "home"
+
+    def build_engine(brain: FootballBrain) -> Any:
+        random.seed(seed)
+        home_squad, away_squad = _build_squads(home, away)
+        config = MatchConfig(
+            home_team=home, away_team=away,
+            match_date=date(2026, 9, 6), matchday=3, season="26/27",
+        )
+        hp = _team_profile(home, home_style, home_philosophy)
+        ap = _team_profile(away, away_style, away_philosophy)
+        from squad_manager import SubstitutionController
+        sc = SubstitutionController(
+            home_team=home, away_team=away,
+            home_subs_bench=home_squad["substitutes"],
+            away_subs_bench=away_squad["substitutes"],
+            home_style=hp.style.value, away_style=ap.style.value,
+        )
+        clear_registry()
+        register_brain(player_name, brain)
+        try:
+            eng = MatchEngine(config, hp, ap)
+            eng.set_squad(home, home_squad["starters"], home_squad["substitutes"])
+            eng.set_squad(away, away_squad["starters"], away_squad["substitutes"])
+            eng.set_stamina_controller(sc)
+            return eng.simulate()
+        finally:
+            _restore_decide()
+
+    build_engine.team = team  # type: ignore[attr-defined]
+    return build_engine
+
+
+def run_outcome_validation(
+    targets: Optional[List[Tuple[str, str]]] = None,
+    brains_dir: str = "brains",
+    n_matches: int = 3,
+    seed: int = 0,
+    verbose: bool = True,
+) -> Dict[str, Dict[str, Any]]:
+    """Score evolved brains by the REAL engine's own outcomes.
+
+    Like ``run_neural_validation`` but scores via ``outcome_fitness``:
+    team xG diff, goal diff, possession, the target player's turnover rate
+    and his own chance production.  No intention rewards — the brain is
+    judged by what actually happens as the engine's calibrated model decides it.
+
+    Parameters
+    ----------
+    targets : list of (player_name, position) to register+validate.
+        ``player_name`` MUST be the exact on-pitch starter name from the
+        probe 4-3-3 template (use ``_slot_for_position`` to resolve from a
+        position).  Defaults to probing every ``<brains_dir>/<POS>.json``
+        with an automatic slot name.
+    brains_dir : where ``<POS>.json`` brain files live.
+    n_matches : matches to run per target (averaged).
+    seed : RNG seed.
+    verbose : print per-match outcome details.
+
+    Returns
+    -------
+    ``{position: {fitness, n_touches, n_errors, own_shots}}``
+    """
+    os.makedirs(brains_dir, exist_ok=True)
+    if targets is None:
+        targets = []
+        for fn in sorted(os.listdir(brains_dir)):
+            if fn.endswith(".json"):
+                pos = fn[:-5]
+                try:
+                    slot = _slot_for_position(pos)
+                except ValueError:
+                    continue
+                targets.append((slot, pos))
+
+    all_fits: Dict[str, Dict[str, Any]] = {}
+    for name, position in targets:
+        brain_path = os.path.join(brains_dir, f"{position}.json")
+        if not os.path.exists(brain_path):
+            if verbose:
+                print(f"  ! no brain for {position} ({brain_path}), skipping")
+            continue
+        brain = FootballBrain.load(brain_path)
+
+        fits = []
+        if verbose:
+            print(f"\n=== Outcome-scoring {position} brain ({brain_path}, slot '{name}') ===")
+        for m in range(n_matches):
+            t0 = time.time()
+            build_engine = build_probe_engine(name, seed=seed + m * 100)
+            result = build_engine(brain)
+            from brain_evolution import extract_outcome_signals, outcome_fitness
+            sig = extract_outcome_signals(result, target_player=name,
+                                          team=getattr(build_engine, "team", None))
+            f = outcome_fitness(sig)
+            if verbose:
+                print(
+                    f"  match {m+1}: {result.score_str}  xg_diff={sig['xg_diff']:+.2f}  "
+                    f"poss={sig['possession']:.0f}%  touches={sig['n_touches']}  "
+                    f"err={sig['n_errors']}  own_shots={sig['own_shots']}  "
+                    f"fitness={f:.4f}  ({time.time()-t0:.1f}s)"
+                )
+            fits.append({"fitness": f, "n_touches": sig["n_touches"],
+                         "n_errors": sig["n_errors"], "own_shots": sig["own_shots"]})
+        avg = {
+            "fitness": round(sum(x["fitness"] for x in fits) / len(fits), 4) if fits else 0.0,
+            "n_touches": sum(x["n_touches"] for x in fits),
+            "n_errors": sum(x["n_errors"] for x in fits),
+            "own_shots": sum(x["own_shots"] for x in fits),
+        }
+        all_fits[position] = avg
+    return all_fits
+
+
 def run_neural_validation(
     targets: Optional[List[Tuple[str, str]]] = None,
     brains_dir: str = "brains",
@@ -430,12 +610,24 @@ if __name__ == "__main__":
     p.add_argument("--brains-dir", type=str, default="brains")
     p.add_argument("--matches", type=int, default=1)
     p.add_argument("--ab", action="store_true", help="A/B compare vs heuristic.")
+    p.add_argument("--outcome", action="store_true",
+                   help="Score brains by the engine's own outcomes (xG diff, "
+                        "turnover rate, chance production) instead of the "
+                        "intention-quality baseline.")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
     if args.ab:
         pos = args.position or "ST"
         res = ab_compare(pos, args.brains_dir, args.matches, args.seed)
+        print(json.dumps(res, indent=2))
+    elif args.outcome:
+        targets = None
+        if args.position:
+            pos = args.position.strip().upper()
+            targets = [(_slot_for_position(pos), pos)]
+        res = run_outcome_validation(targets=targets, brains_dir=args.brains_dir,
+                                     n_matches=args.matches, seed=args.seed)
         print(json.dumps(res, indent=2))
     else:
         targets = None

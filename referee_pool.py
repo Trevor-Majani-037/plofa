@@ -199,12 +199,36 @@ class RefereeManager:
 
     def record_assignment(self, ref: Referee, matchday: int,
                           home: str, away: str):
-        """Call this AFTER the match is played to update tracking state."""
+        """Call this AFTER the match is played to update tracking state.
+
+        Idempotent per matchday: if this matchday was ALREADY assigned to
+        any referee (e.g. the same fixture was re-run), the prior assignment
+        is unwound first so each matchday is only ever counted once.
+        On a re-run the newly rotated ref replaces the old one entirely."""
+        self._undo_matchday(matchday, home, away)
         ref.matches_officiated += 1
-        ref.matchdays_refd.append(matchday)
+        ref.matchdays_refd = sorted(set(ref.matchdays_refd + [matchday]))
         ref.teams_seen[home] = ref.teams_seen.get(home, 0) + 1
         ref.teams_seen[away] = ref.teams_seen.get(away, 0) + 1
         ref.last_matchday = matchday
+
+    def _undo_matchday(self, matchday: int, home: str, away: str) -> None:
+        """Unwind any existing assignment for this matchday (usually a prior
+        run of the same fixture) so its counts don't double-accumulate."""
+        for r in self.pool:
+            if matchday not in r.matchdays_refd:
+                continue
+            r.matches_officiated = max(0, r.matches_officiated - 1)
+            r.matchdays_refd = [m for m in r.matchdays_refd if m != matchday]
+            # The undone fixture involved the same two teams, so the
+            # teams_seen counts are symmetric to what was added.
+            for t in (home, away):
+                if r.teams_seen.get(t, 0) > 0:
+                    r.teams_seen[t] -= 1
+                    if r.teams_seen[t] <= 0:
+                        r.teams_seen.pop(t, None)
+            r.last_matchday = max(r.matchdays_refd) if r.matchdays_refd else -99
+            return
 
     def assign_all_matchday(self, matchday: int,
                             fixtures: List[Tuple[str, str]],

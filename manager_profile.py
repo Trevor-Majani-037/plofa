@@ -42,7 +42,15 @@ import json
 import os
 import random
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Optional
+from types import SimpleNamespace
+from typing import Dict, List, Optional
+
+import numpy as np
+
+from manager_brain import ManagerBrain
+from manager_memory import ManagerMemory
+from manager_mind import ManagerMind
+from manager_sensors import extract_manager_sensors
 
 
 @dataclass
@@ -98,8 +106,13 @@ class ManagerProfile:
     # ── job security (emergent) ─────────────────────────────────
 
     def record_result(self, matchday: int, actual_pts: float, xp_pts: float):
-        """Append a played result; keep only the last RECENT_WINDOW games."""
-        self.result_history.append((matchday, actual_pts, xp_pts))
+        """Record a played result; keep only the last RECENT_WINDOW games.
+
+        Re-running the same matchday REPLACES the prior entry (a fixture may
+        only contribute one matchday to a manager's history)."""
+        self.result_history = [
+            r for r in self.result_history if r[0] != matchday
+        ] + [(matchday, actual_pts, xp_pts)]
         self.result_history = self.result_history[-8:]
 
     def sack_risk(self, window: int = 8) -> float:
@@ -355,3 +368,292 @@ class ManagerPool:
 
     def all(self) -> Dict[str, ManagerProfile]:
         return self._managers
+
+
+# ─────────────────────────────────────────
+# MANAGER (BRAIN + MIND + MEMORY COMPOSER)
+# ─────────────────────────────────────────
+
+MANAGER_MIN_DWELL_S = 180          # minimum seconds between posture changes
+
+_MANAGER_POSTURE_LABELS = ("DEFEND", "BALANCED", "ATTACK")
+
+
+def _softmax(x: np.ndarray) -> np.ndarray:
+    e = np.exp(x - x.max(axis=-1, keepdims=True))
+    return e / e.sum(axis=-1, keepdims=True)
+
+
+def _opponent_scored(event_type: str, engine, team: str) -> bool:
+    """True if the engine's most recent goal belongs to the opponent.
+
+    The engine (Phase 6 wiring) stamps ``state.last_goal_team`` after a
+    goal chain; tests can set it directly. Falls back to False if the
+    engine exposes no scorer info yet.
+    """
+    last_team = None
+    state = getattr(engine, "state", None)
+    if state is not None:
+        last_team = getattr(state, "last_goal_team", None)
+    if last_team is None:
+        last_team = getattr(engine, "last_goal_team", None)
+    if last_team is None:
+        return False
+    return str(last_team) != str(team)
+
+
+@dataclass
+class Manager:
+    """A full manager: the brain (network), mind (personality) and
+    episodic memory, composed into one decision-maker.
+
+    Decides at engine trigger events (Phase 6), caches the current
+    posture/pressing/urgency, and records every conviction into memory
+    at the final whistle.
+    """
+
+    name: str
+    brain: ManagerBrain
+    mind: ManagerMind
+    memory: ManagerMemory
+    memory_strength: float = 0.3
+
+    # ── Cooldown tracking (decision state) ──
+    _last_posture_change_s: float = -999.0
+    _current_posture: str = "BALANCED"
+    _current_pressing: float = 0.5
+    _current_urgency: float = 0.5
+
+    # ── Decision pipeline (D5 order of operations) ─────────────
+
+    def decide(self, engine, team: str) -> dict:
+        """Produce a full decision dict for a trigger event.
+
+        Order of operations (D5):
+          1. raw = extract_manager_sensors(engine, team)
+          2. perceived = mind.filter_perception(raw, engine)
+          3. out = brain.forward(perceived)
+          4. posture-probs = mind.filter_posture(out["posture_probs"])
+          5. pressing = mind.filter_pressing(out["pressing"])
+          6. urgency = mind.filter_sub_urgency(out["sub_urgency"])
+          7. memory bias applied to posture (in log-space)
+          8. MANAGER_MIN_DWELL_S respected for posture changes
+          9. current values stored on self
+         10. dict returned
+
+        Returns keys: posture, posture_probs, pressing, sub_urgency.
+        """
+        raw = extract_manager_sensors(engine, team)
+        perceived = self.mind.filter_perception(raw, engine)
+        out = self.brain.forward(perceived)
+
+        posture_probs = self.mind.filter_posture(out["posture_probs"], engine)
+        pressing = self.mind.filter_pressing(out["pressing"], engine)
+        urgency = self.mind.filter_sub_urgency(out["sub_urgency"], engine)
+
+        # ── Memory bias (log-space) ─────────────────────────────
+        ctx = self._context_for(engine, team, posture=self._current_posture)
+        bias = self.memory.bias_for(ctx)
+        if np.any(bias != 0.0):
+            logits = np.log(np.clip(posture_probs, 1e-9, 1.0)) \
+                + self.memory_strength * bias
+            posture_probs = _softmax(logits)
+
+        # ── Dwell-time guard on posture changes ─────────────────
+        now_s = float(getattr(engine.state, "minute", 0)) * 60.0
+        chosen_idx = int(np.argmax(posture_probs))
+        proposed = _MANAGER_POSTURE_LABELS[chosen_idx]
+
+        if now_s - self._last_posture_change_s >= MANAGER_MIN_DWELL_S:
+            if proposed != self._current_posture:
+                self._current_posture = proposed
+                self._last_posture_change_s = now_s
+        # (else: keep _current_posture; dwell not elapsed)
+
+        # Every trigger decision is a conviction, even a held posture.
+        self.mind.record_posture_taken(self._current_posture)
+
+        self._current_pressing = pressing
+        self._current_urgency = urgency
+
+        return {
+            "posture": self._current_posture,
+            "posture_probs": posture_probs,
+            "pressing": pressing,
+            "sub_urgency": urgency,
+        }
+
+    # ── Event callbacks ────────────────────────────────────────
+
+    def on_event(self, event_type: str, engine, team: str):
+        if event_type in ("GOAL",) and _opponent_scored(event_type, engine, team):
+            self.mind.on_goal_conceded({})
+        elif event_type == "GOAL":
+            self.mind.on_goal_scored({})
+        # every other event type is currently a no-op
+
+    def end_of_match(self, result, team: str):
+        self.mind.end_of_match(result, team)
+
+        # Record each posture conviction of this match into memory.
+        for posture, count in self.mind.history_posture_counts.items():
+            if count > 0:
+                ctx = self._context_for(
+                    SimpleNamespace(
+                        state=SimpleNamespace(minute=90),
+                        config=result.config if hasattr(result, "config") else None,
+                    ),
+                    team, posture=posture,
+                )
+                self.memory.record(ctx, posture, result, team)
+
+        self.memory_strength = self.memory.strength()
+
+    # ── Context builder for memory keys ────────────────────────
+
+    def _context_for(self, engine_or_state, team: str, posture: str):
+        """Build the memory key context (score_diff, minute, posture)."""
+        state = getattr(engine_or_state, "state", engine_or_state)
+        home_goals = getattr(state, "home_goals", 0) or 0
+        away_goals = getattr(state, "away_goals", 0) or 0
+        is_home = True
+        cfg = getattr(engine_or_state, "config", None)
+        if cfg is not None:
+            is_home = (getattr(cfg, "home_team", None) == team)
+        score_diff = (home_goals - away_goals) if is_home \
+            else (away_goals - home_goals)
+        minute = int(getattr(state, "minute", 0) or 0)
+        return SimpleNamespace(
+            score_diff=score_diff, minute=minute, posture_taken=str(posture))
+
+    # ── Persistence (3 files: manager-bundle, mind, memory) ────
+
+    def save(self, dir_path: str):
+        os.makedirs(dir_path, exist_ok=True)
+        data = {
+            "kind": "manager",
+            "version": 1,
+            "name": self.name,
+            "memory_strength": self.memory_strength,
+            "last_posture_change_s": self._last_posture_change_s,
+            "current_posture": self._current_posture,
+            "current_pressing": self._current_pressing,
+            "current_urgency": self._current_urgency,
+            "brain": self.brain.serialize(),
+        }
+        with open(os.path.join(dir_path, "manager.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        self.mind.save(os.path.join(dir_path, "mind.json"))
+        self.memory.save(os.path.join(dir_path, "memory.json"))
+
+    @classmethod
+    def load(cls, dir_path: str) -> "Manager":
+        with open(os.path.join(dir_path, "manager.json"), "r",
+                  encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("kind") != "manager":
+            raise ValueError(data.get("kind"))
+        brain = ManagerBrain.deserialize(data["brain"])
+        mind = ManagerMind.load(os.path.join(dir_path, "mind.json"))
+        memory = ManagerMemory.load(os.path.join(dir_path, "memory.json"))
+        return cls(
+            name=data.get("name", "Manager"),
+            brain=brain,
+            mind=mind,
+            memory=memory,
+            memory_strength=float(data.get("memory_strength", 0.3)),
+            _last_posture_change_s=float(data.get("last_posture_change_s", -999.0)),
+            _current_posture=data.get("current_posture", "BALANCED"),
+            _current_pressing=float(data.get("current_pressing", 0.5)),
+            _current_urgency=float(data.get("current_urgency", 0.5)),
+        )
+
+    def __repr__(self) -> str:
+        return (f"Manager(name={self.name!r}, posture={self._current_posture}, "
+                f"strength={self.memory_strength:.2f})")
+
+
+# ─────────────────────────────────────────
+# LIVE BRAIN-MANAGER BUILDER (Phase 8: manager goes live)
+# ─────────────────────────────────────────
+# The engine's brain path (match_engine.USE_MANAGER_BRAIN + TacticalAI)
+# only engages for real ``Manager`` objects (brain + mind + memory), but
+# ``ManagerPool`` resolves static ``ManagerProfile`` objects. These helpers
+# bridge the gap:
+#
+#   * the brain is shared — loaded once from the evolved
+#     ``manager_brains/v1/test_manager.json`` (deterministic), with a
+#     club-stable random fallback if the file is missing;
+#   * the mind starts neutral; the memory is per-club and PERSISTED under
+#     ``manager_brains/live/<club>/`` so past matches carry over.
+#
+# The module default stays flag-OFF (baseline + tests assert False); live
+# is explicit opt-in via ``pitch_replay.run_scratch_match(use_manager_brain=True)``.
+
+LIVE_BRAIN_PATH = os.path.join("manager_brains", "v1", "test_manager.json")
+LIVE_MEMORY_DIR = os.path.join("manager_brains", "live")
+
+
+def _stable_seed(text: str) -> int:
+    """Club-stable 32-bit seed without touching the global RNG stream."""
+    import zlib
+    return zlib.crc32(str(text).encode("utf-8")) & 0xFFFFFFFF
+
+
+def _live_club_dir(club: str, memory_dir: str = LIVE_MEMORY_DIR) -> str:
+    safe = "".join(c if c not in '<>:"/\\|?*' else "_" for c in str(club))
+    return os.path.join(memory_dir, safe)
+
+
+def brain_manager_for(club: str,
+                      brain_path: Optional[str] = None,
+                      memory_dir: str = LIVE_MEMORY_DIR,
+                      mind: Optional[ManagerMind] = None) -> Manager:
+    """Build (or reload) the live brain-manager for *club*.
+
+    Brain: ``brain_path`` or ``LIVE_BRAIN_PATH`` if it exists, else a
+    club-stable random brain. Mind: neutral unless given. Memory: loaded
+    from the club's live dir if present, else fresh.
+    """
+    path = brain_path or LIVE_BRAIN_PATH
+    brain = None
+    if path and os.path.exists(path):
+        try:
+            brain = ManagerBrain.deserialize(
+                json.load(open(path, "r", encoding="utf-8")))
+        except Exception:
+            brain = None
+    if brain is None:
+        brain = ManagerBrain.random(seed=_stable_seed(f"brain|{club}"))
+
+    club_dir = _live_club_dir(club, memory_dir)
+    mem_path = os.path.join(club_dir, "memory.json")
+    if os.path.exists(mem_path):
+        try:
+            memory = ManagerMemory.load(mem_path)
+        except Exception:
+            memory = ManagerMemory()
+    else:
+        memory = ManagerMemory()
+
+    live_mind = mind if mind is not None else ManagerMind()
+    mind_path = os.path.join(club_dir, "mind.json")
+    if mind is None and os.path.exists(mind_path):
+        try:
+            live_mind = ManagerMind.load(mind_path)
+        except Exception:
+            live_mind = ManagerMind()
+
+    mgr = Manager(name=f"{club} Brain", brain=brain, mind=live_mind,
+                  memory=memory, memory_strength=memory.strength())
+    return mgr
+
+
+def save_live_manager(manager: Manager, club: str,
+                      memory_dir: str = LIVE_MEMORY_DIR) -> None:
+    """Persist a live manager's mind + memory (the brain file is shared)."""
+    club_dir = _live_club_dir(club, memory_dir)
+    os.makedirs(club_dir, exist_ok=True)
+    manager.mind.save(os.path.join(club_dir, "mind.json"))
+    manager.memory.save(os.path.join(club_dir, "memory.json"))

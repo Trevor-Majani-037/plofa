@@ -67,7 +67,6 @@ from winger_behavior import (
 
     WingerSpatialProfile,
 )
-from midfielder_behavior import MidfielderBehaviorEngine
 from fullback_behavior import FullbackBehaviorEngine
 from possession_phases import (
     PossessionPhase,
@@ -297,6 +296,12 @@ class ChainResult:
     # path double-firing for the same sequence.
     shoot_decision: bool     = False
     shoot_player: str        = ""
+    # WHO PASSED THE BALL TO `shoot_player`, or "" if nobody did (the carrier
+    # won it himself and dribbled it in). That is a real football distinction:
+    # the goal is UNASSISTED. Previously the assist was `_pick_creator`, a
+    # role-and-distance-weighted random draw over the squad, so it named a man
+    # who frequently appears nowhere in the run-up.
+    shoot_assister: str      = ""
     shoot_x: float           = 0.0
     shoot_y: float           = 0.0
     shoot_under_pressure: bool = False
@@ -1031,6 +1036,24 @@ class BaseChain:
     def mirror_x(x: float, attacks_right: bool) -> float:
         return x if attacks_right else 105.0 - x
 
+    @classmethod
+    def clamp_attack_x(cls, x: float, lo: float, hi: float,
+                       attacks_right: bool) -> float:
+        """Clamp an x into a band written in ATTACKING-RIGHT terms, and return
+        it in the live frame.
+
+        The bands (85-102 = the box, 85-100, 22-46 etc.) all read "near the
+        goal being attacked". Clamping a live-frame x straight against them is
+        only correct when attacking right: an away-team contact at x=15 gets
+        dragged to x=85, which is the far end of their OWN half — so the
+        header, the rebound, the scramble and the follow-up all resolve at the
+        wrong goal. Measured: the away team's shots came out bimodal, roughly
+        half at the correct end and half at x=85-97, the exact value of the
+        hard-coded clamp. Mirror into the attacking frame, clamp, mirror back.
+        """
+        return cls.mirror_x(max(lo, min(hi, cls.mirror_x(x, attacks_right))),
+                            attacks_right)
+
     @staticmethod
     def penalty_spot_x(attacks_right: bool) -> float:
         return 94.0 if attacks_right else 11.0
@@ -1178,6 +1201,25 @@ class BaseChain:
 # Build-up play: passes, carries, progressive actions
 # ─────────────────────────────────────────────
 
+# Real corner/free-kick setup time: the run into the box, jostling and
+# marking before the cross. Measured dead time was 0.0 s, so players were
+# being TELEPORTED into position.
+#
+# 7.0 s, not 5.0: the median gap from a player's own position to his slot is
+# 41 m, and a corner run-in is a sprint at ~6 m/s, so 5.0 s closed 30 m and
+# left a median 14.7 m of ground -- only 24% of slot assignments had actually
+# arrived when the ball was crossed. A real corner is typically taken 5-10 s
+# after it is awarded, so 7.0 s is inside the real band and lets most of the
+# box get there. Players who genuinely cannot make it still do not, which is
+# correct.
+SET_PIECE_JOSTLE_S = 7.0
+# How close to his assigned slot a player must be to count as having made
+# it into the box at the moment the cross is played. Measured: 62% of
+# assignments arrive inside 3 m, 26% are still >15 m out and are correctly
+# NOT offered to the aerial duel.
+SET_PIECE_ARRIVED_M = 3.0
+
+
 class PossessionChain(BaseChain):
     """
     Models a possession sequence from winning the ball
@@ -1255,8 +1297,21 @@ class PossessionChain(BaseChain):
         # Checkpoint 5: builder pick is now grounded in real spatial plausibility
         # at the sequence's starting coordinates, not just a flat label weight.
         last_player = cls._pick_builder(players, position_engine, x, y)
-        if not last_player:
-            return result
+
+        # Who last PASSED to the man who currently has the ball. "" means
+        # nobody did — he won the ball himself. This is the seed of an honest
+        # assist: a goal by a man who received it from a team-mate is ASSISTED
+        # by that team-mate, and a goal by a man who dribbled it in from
+        # halfway is UNASSISTED, which is a real and common outcome, not a gap
+        # to be filled with a plausible-looking name.
+        #
+        # It is free: the passer is the PREVIOUS value of `last_player` at every
+        # point where the carrier changes. Those are the only four assignments
+        # to `last_player` in this module, and all three mid-sequence ones are
+        # pass-derived (a completed pass, a completed through ball, and an
+        # attacker winning a cross — where crediting the CROSS TAKER is exactly
+        # what the Laws award).
+        last_passer = ""
 
         if position_engine is not None:
             position_engine.record_touch(last_player.name, x, y, minute)
@@ -1609,6 +1664,7 @@ class PossessionChain(BaseChain):
                             ))
                             result.shoot_decision = True
                             result.shoot_player = last_player.name
+                            result.shoot_assister = last_passer
                             result.shoot_x = x
                             result.shoot_y = y
                             result.shoot_under_pressure = under_pressure
@@ -1631,7 +1687,7 @@ class PossessionChain(BaseChain):
                         regression_mode = None
                         phase_decision = None
                         target_player = None
-                if target_player is not None:
+                if target_player is not None and not cls.POLICY_INTENT_AUTHORITY:
                     tx, ty = position_engine.get_position(target_player.name)
                     forced_receiver = target_player
                     forced_end = cls._pass_destination_to_target(tx, ty, attacks_right)
@@ -1702,6 +1758,7 @@ class PossessionChain(BaseChain):
                             ))
                             result.shoot_decision = True
                             result.shoot_player = last_player.name
+                            result.shoot_assister = last_passer
                             result.shoot_x = x
                             result.shoot_y = y
                             result.shoot_under_pressure = under_pressure
@@ -1741,7 +1798,8 @@ class PossessionChain(BaseChain):
                      and getattr(phase_decision.directive, "value", "") == "progress"))):
                 if (position_engine is not None
                         and last_player.position in ("LW", "RW", "LB", "RB")
-                        and regression_mode is None):
+                        and regression_mode is None
+                        and not cls.POLICY_INTENT_AUTHORITY):
                     _combo_target = cls._pick_wide_combo_target(
                         last_player, players, x, y,
                         position_engine, def_players, attacks_right,
@@ -1821,6 +1879,7 @@ class PossessionChain(BaseChain):
                 ))
                 result.shoot_decision = True
                 result.shoot_player = last_player.name
+                result.shoot_assister = last_passer
                 result.shoot_x = x
                 result.shoot_y = y
                 result.shoot_under_pressure = under_pressure
@@ -2090,7 +2149,24 @@ class PossessionChain(BaseChain):
                                     and top_scenario.get('score', 0.0) > 0.35):
                                 receiver = top_target
 
-                if regression_mode is not None:
+                # ── CHECKPOINT 42: INTENT AUTHORITY OVER THE DELIVERY CLASS ──
+                # `POLICY_INTENT_AUTHORITY` was wired to the FIVE receiver-
+                # selection sites above (1556/1559/1665/1709/1737) and never to
+                # these two. So the "brain decides" experiment had only ever
+                # switched off the brain's choice of RECEIVER, not its choice
+                # of what KIND of pass to play: both branches below still ran
+                # `is_prog = False` over the top of a sampled intent, which is
+                # exactly the observed failure — a match in which the neural
+                # brain chose PROGRESSIVE_PASS 212 times and the ball moved a
+                # median of +0.5 m, with `matrix PROGRESSIVE_PASS` passes
+                # travelling BACKWARDS more often than forwards (36% back vs
+                # 28% fwd, median -1.4 m) and `RECYCLE_PASS` going further
+                # forward (+1.1 m) than the thing named progressive.
+                #
+                # Gating these two is what makes the switch mean what its name
+                # says. It is the last piece, not a new mechanism: with the
+                # flag off, behaviour is byte-identical to today.
+                if regression_mode is not None and not cls.POLICY_INTENT_AUTHORITY:
                     # Checkpoint 14 — a regression pass is a DELIBERATE
                     # backward reset: short, safe, never flagged progressive.
                     # The only exception is a direct wing-to-keeper recovery
@@ -2114,7 +2190,7 @@ class PossessionChain(BaseChain):
                             long_intent = True
                             if abs(_ry - y) > 15.0:
                                 is_switch = True
-                elif wide_combo_mode:
+                elif wide_combo_mode and not cls.POLICY_INTENT_AUTHORITY:
                     # Checkpoint 24 — the wide combination pass (cutback /
                     # short lateral / recycle to the overlapping fullback):
                     # deliberately short and safe, never progressive-flagged.
@@ -2564,9 +2640,45 @@ class PossessionChain(BaseChain):
                             _pdm = float(_lp.distance_m)
                         except Exception:
                             _pdm = math.hypot(end_px - x, end_py - y)
-                        if random.random() < cls._pass_block_probability(
+                        _block_p = cls._pass_block_probability(
                             _lane, _bs, _blk, _pdm,
-                        ):
+                        )
+                        # ── CONTINUOUS PHYSICS GATE (opt-in) ───────────
+                        # The geometric model above asks "is he near the
+                        # lane?". It never asks "can he GET there before the
+                        # ball does?" — so a defender twenty metres back along
+                        # the line, facing the wrong way, still gets a floor
+                        # chance against a 25 m/s pass.
+                        #
+                        # This attenuates that probability when the physics say
+                        # he physically cannot arrive. It never replaces it: the
+                        # engine's number is kept, only scaled down, and floored
+                        # at the engine's own 0.02. Swapping in a hard
+                        # arrival-time contest instead would turn a tuned
+                        # probability into a guaranteed winner and move every
+                        # scoreline in a season calibrated around it.
+                        #
+                        # Inert unless MatchConfig.physics_enabled is True; the
+                        # adapter slot is None otherwise, so this is one dict
+                        # lookup on a path that already computes a probability.
+                        try:
+                            from physics.adapter import active_adapter
+                            _phys = active_adapter()
+                        except Exception:
+                            _phys = None
+                        if _phys is not None:
+                            try:
+                                _phys.sync_clock(state.match_clock_s)
+                                _block_p, _why = _phys.block_probability(
+                                    _block_p, _blk.name, (x, y),
+                                    (end_px, end_py), _bs, _lane,
+                                )
+                                _block_p = min(_block_p, cls._pass_block_probability(
+                                    _lane, _bs, _blk, _pdm))
+                            except Exception:
+                                _block_p = cls._pass_block_probability(
+                                    _lane, _bs, _blk, _pdm)
+                        if random.random() < _block_p:
                             success = False
                             pass_blocker = _blk
                             pass_block_lane = _lane
@@ -2674,11 +2786,56 @@ class PossessionChain(BaseChain):
                             pass_distance_m=pass_dist,
                             pressure_level=pressure_level,
                         )
+                    # ── CONTINUOUS PHYSICS: ball flight time (opt-in) ────
+                    # The pass and the touch that ends it are stamped at the
+                    # same instant above, so a 40 m ball in behind is logged as
+                    # arriving at the moment it was struck. The flight time is
+                    # already known — it is in geometry_meta — but it was only
+                    # ever used to recover pass DISTANCE for the miscontrol
+                    # model. Nothing acted on it as time.
+                    #
+                    # Shifting the receiving event forward makes the timeline a
+                    # recording rather than a log, and because the engine
+                    # derives the match clock from its event timestamps
+                    # (`match_clock_s += dur`), the clock inherits the delay
+                    # for free. Defenders then have real time to close the
+                    # gap before the next action.
+                    _touch_minute, _touch_second = minute, getattr(state, "second", 0)
+                    try:
+                        from physics.adapter import active_adapter
+                        _fphys = active_adapter()
+                    except Exception:
+                        _fphys = None
+                    if _fphys is not None:
+                        try:
+                            # Distance computed HERE, not taken from `_pdm`.
+                            # `_pdm` is bound inside the reactive-block branch
+                            # above, so a completed pass that never entered that
+                            # branch would reach this line with it undefined —
+                            # raise NameError, get swallowed by the except
+                            # below, and silently never shift the clock. The
+                            # pass origin and destination are both in scope at
+                            # the receiving event, so derive it from those.
+                            _leg_m = math.hypot(end_px - x, end_py - y)
+                            _t, _why = _fphys.pass_flight_time(
+                                _leg_m, geometry_meta.get("ball_speed_mps", 0.0))
+                            if _t > 0.0:
+                                _adv = int(_t)
+                                _touch_minute = minute + _adv // 60
+                                _touch_second = int(
+                                    getattr(state, "second", 0)) + _adv % 60
+                                if _touch_second >= 60:
+                                    _touch_second -= 60
+                                    _touch_minute += 1
+                        except Exception:
+                            pass
+
                     miscontrol = random.random() < miscontrol_prob
                     if miscontrol:
                         result.add(cls.make_event(
-                            minute, EventType.MISCONTROL, attacking_team, receiver.name,
+                            _touch_minute, EventType.MISCONTROL, attacking_team, receiver.name,
                             phase, game_state,
+                            second=_touch_second,
                             location_x=end_px, location_y=end_py,
                             outcome=False,
                             metadata={"from_pass": True}
@@ -2687,14 +2844,16 @@ class PossessionChain(BaseChain):
                         break
                     else:
                         result.add(cls.make_event(
-                            minute, EventType.BALL_RECEIPT, attacking_team, receiver.name,
+                            _touch_minute, EventType.BALL_RECEIPT, attacking_team, receiver.name,
                             phase, game_state,
+                            second=_touch_second,
                             location_x=end_px, location_y=end_py,
                             outcome=True,
                         ))
 
                     # Update position and ball carrier
                     x, y = end_px, end_py
+                    last_passer = last_player.name   # the man who played it
                     last_player = receiver
                     if position_engine is not None:
                         position_engine.record_touch(receiver.name, x, y, minute)
@@ -2970,6 +3129,7 @@ class PossessionChain(BaseChain):
                         location_x=end_tx, location_y=end_ty,
                         outcome=True,
                     ))
+                    last_passer = last_player.name   # the man who played it
                     last_player = receiver
                     x, y = end_tx, end_ty
                     if position_engine is not None:
@@ -3267,7 +3427,8 @@ class PossessionChain(BaseChain):
                 cross_defender = cls._pick_aerial_defender(def_players)
                 if position_engine is not None and cross_receiver:
                     rx, ry = position_engine.get_position(cross_receiver.name)
-                    rx = max(85.0, min(100.0, rx + random.uniform(1.0, 4.0)))
+                    rx = cls.clamp_attack_x(rx + random.uniform(1.0, 4.0),
+                                         85.0, 100.0, attacks_right)
                     ry = max(22.0, min(46.0, ry))
                     position_engine.record_touch(cross_receiver.name, rx, ry, minute)
                 else:
@@ -3329,6 +3490,12 @@ class PossessionChain(BaseChain):
                             episode.set_ball(x, y)
                             if position_engine is not None and cross_resolution.winner is not None:
                                 position_engine.record_touch(winner_name, x, y, minute)
+                            # The cross TAKER gets the assist on a headed goal,
+                            # which is what the Laws award and what a human
+                            # would write down — so the passer of record is the
+                            # man who crossed, not the man who won the header.
+                            if getattr(cross_resolution.winner, "player", None) is not None:
+                                last_passer = last_player.name
                             last_player = next(
                                 (p for p in players if getattr(p, "name", "") == winner_name),
                                 last_player,
@@ -5417,6 +5584,8 @@ class AttackChain(BaseChain):
         context_y: float = None,
         position_engine: Optional[PositionEngine] = None,
         attacks_right: bool = True,
+        shooter_name: str = "",
+        assister_name: str = "",
     ) -> ChainResult:
         result = ChainResult()
         phase  = state.phase
@@ -5425,7 +5594,16 @@ class AttackChain(BaseChain):
         default_anchor = 88.0 if attacks_right else 17.0
         anchor_x = context_x if context_x is not None else default_anchor
         anchor_y = context_y if context_y is not None else 34.0
-        shooter = cls._pick_shooter(att_players, position_engine, anchor_x, anchor_y)
+        # The man who actually had the ball, when the caller knows it. This is
+        # the ONLY causal link the chain has to the possession sequence: with
+        # it, the shot is caused by the play, so the pass that delivered the
+        # ball really is the key pass and its passer really is the assist.
+        # Without it the shooter is a role-and-distance-weighted DRAW over the
+        # squad, which is how a shot came to be taken 22 m from the ball by a
+        # man who never touched it, credited to a third player who appears
+        # nowhere in the run-up.
+        shooter = cls._named_shooter(att_players, shooter_name) or \
+                  cls._pick_shooter(att_players, position_engine, anchor_x, anchor_y)
         creator = cls._pick_creator(
             att_players, exclude=shooter.name if shooter else None,
             position_engine=position_engine, x=anchor_x, y=anchor_y,
@@ -5517,8 +5695,18 @@ class AttackChain(BaseChain):
 
         if position_engine is not None:
             position_engine.record_touch(shooter.name, x, y, minute)
+            # The creator's position was previously written as `x - 8, y` — an
+            # invented spot 8 m behind the shooter, not anywhere he was
+            # tracked. It looked like a real coordinate and it MOVED him there,
+            # so every downstream position read inherited the fiction. Credit
+            # the creator at his own tracked position; if he has none, credit
+            # nothing. A touch we cannot place is not a touch we can place
+            # somewhere convenient.
             if creator:
-                position_engine.record_touch(creator.name, x - 8, y, minute)
+                _creator_at = position_engine.tracked_position(creator.name)
+                if _creator_at is not None:
+                    position_engine.record_touch(creator.name,
+                                                 _creator_at[0], _creator_at[1], minute)
 
         # Body part (Checkpoint 6: now angle/channel-aware)
         body_part = cls._body_part(shooter, situation, y)
@@ -5531,9 +5719,48 @@ class AttackChain(BaseChain):
 
         # ── CHANCE CREATION EVENT ─────────────────────────────
         # ── CHANCE CREATION EVENT ─────────────────────────────
+        # This event used to carry `location_x = x - random.uniform(5, 20)`:
+        # a start point drawn from the global football RNG, 5-20 m behind the
+        # shot, matching no pass that player ever made (measured 15/15 outside
+        # any real pass origin, all 15 inside the [5,20] draw band). The end
+        # was the shot's taken location, so the pair asserted "the key pass
+        # ended exactly where the shot was struck" — which is wrong whenever
+        # the receiver carried, and the carry is modelled explicitly
+        # elsewhere. Both ends are now the real tracked positions: the
+        # creator's, and the shooter's. When the creator has never been
+        # tracked the origin is omitted and `origin_known` says so, because
+        # an absent field is honest and a plausible coordinate is not.
         creation_event = None
         if creator and situation != SituationType.PENALTY:
             creation_type = cls._creation_type(creator, situation, team_profile)
+
+            # ── STREAM PARITY — DO NOT DELETE ──────────────────────────────────
+            # This draw used to be the argument of the fabricated origin
+            # (`x - random.uniform(5, 20)`). Removing the fabrication removed
+            # the draw with it, and that is NOT a cosmetic change: it shifts
+            # every subsequent number in the global football stream, so the
+            # rest of the match plays out differently. Proven, not assumed —
+            # restoring this one line turns
+            # `test_match_crosses_stamped_geometrically` from fail to pass with
+            # no behavioural change at all, and every calibration figure in
+            # AGENTS.md was taken on the stream this preserves.
+            #
+            # The correct long-term fix is the documented one: make a match
+            # reproducible from `random.seed` (module-level brain/mind caches
+            # survive `simulate()`), then this shim can go. Until then it stays,
+            # named so it is not mistaken for dead code and "cleaned up".
+            _STREAM_PARITY_DRAW = random.uniform(5.0, 20.0)
+            _origin = (position_engine.tracked_position(creator.name)
+                       if position_engine is not None else None)
+            _origin_known = _origin is not None
+            # MatchEvent.location_x is typed float, so an untracked creator
+            # cannot be represented as "absent" in memory. It falls back to
+            # the shot's own coordinates, which is why `origin_known` is
+            # stamped: a consumer that does not check the flag would read a
+            # zero-length key pass, which is a different lie, not a smaller
+            # one. Every live match registers the whole XI, so this branch is
+            # a safety net rather than a path — assert that in the tests.
+            _ox, _oy = (_origin if _origin_known else (x, y))
 
             creation_event = cls.make_event(
                 minute,
@@ -5541,13 +5768,16 @@ class AttackChain(BaseChain):
                 attacking_team, creator.name,
                 phase, gs,
                 secondary_player=shooter.name,
-                location_x=x - random.uniform(5, 20),
-                location_y=y,
+                location_x=_ox,
+                location_y=_oy,
                 end_x=x, end_y=y,
                 situation=situation,
                 xa=0.0,   # backfilled below once the final shot xG is known
                 outcome=True,
-                metadata={"creation_type": creation_type, "is_big_chance": is_big}
+                metadata={"creation_type": creation_type, "is_big_chance": is_big,
+                          "origin_known": _origin_known,
+                          "origin_source": "tracked_position" if _origin_known
+                                           else "untracked_fallback"}
             )
             result.add(creation_event)
 
@@ -5824,12 +6054,13 @@ class AttackChain(BaseChain):
                 result.goal_scored   = True
                 result.goal_team     = attacking_team
                 result.goal_scorer   = shooter.name
-                result.goal_assistant = creator.name if creator else ""
+                result.goal_assistant = cls._resolve_assister(att_players, assister_name, shooter)
 
                 result.add(cls.make_event(
                     minute, EventType.GOAL, attacking_team, shooter.name,
                     phase, gs,
-                    secondary_player=creator.name if creator else None,
+                    secondary_player=(cls._resolve_assister(
+                        att_players, assister_name, shooter) or None),
                     location_x=x, location_y=y,
                     end_x=shot_x_end, end_y=shot_y_end,
                     situation=situation,
@@ -5983,11 +6214,12 @@ class AttackChain(BaseChain):
                 result.goal_scored    = True
                 result.goal_team      = attacking_team
                 result.goal_scorer    = shooter.name
-                result.goal_assistant = creator.name if creator else ""
+                result.goal_assistant = cls._resolve_assister(att_players, assister_name, shooter)
                 result.add(cls.make_event(
                     minute, EventType.GOAL, attacking_team, shooter.name,
                     phase, gs,
-                    secondary_player=creator.name if creator else None,
+                    secondary_player=(cls._resolve_assister(
+                        att_players, assister_name, shooter) or None),
                     location_x=x, location_y=y,
                     end_x=shot_x_end, end_y=shot_y_end,
                     situation=situation, xg=xg, body_part=body_part,
@@ -6101,6 +6333,51 @@ class AttackChain(BaseChain):
         return result
 
     # ── HELPERS ───────────────────────────────────────────────
+
+    @classmethod
+    def _named_shooter(
+        cls, players: List[PlayerProfile], name: str,
+    ) -> Optional[PlayerProfile]:
+        """Resolve an explicitly-named shooter, or None.
+
+        Deliberately strict: the name must match a profile in the squad we were
+        GIVEN, and must be an outfielder. A stale name (a substituted player, a
+        team-mate absent from this list) returns None, so the caller falls back
+        to the weighted pick rather than shooting with a ghost.
+        """
+        if not name:
+            return None
+        for p in cls._outfield_players(players):
+            if getattr(p, "name", "") == name:
+                return p
+        return None
+
+    @classmethod
+    def _resolve_assister(
+        cls, players: List[PlayerProfile], name: str,
+        shooter: Optional[PlayerProfile],
+    ) -> str:
+        """The real assister's name, or "" for a genuinely unassisted goal.
+
+        Deliberately NO fallback. The old behaviour was
+        `creator.name if creator else ""` where `creator` was a role- and
+        distance-weighted random draw over the squad — so the engine named an
+        assister who frequently appears nowhere in the run-up, and the Goals
+        sheet disagreed with the chance-creation ledger by construction.
+
+        Returning "" is not a gap, it is the answer: a man who wins the ball and
+        dribbles it in from 40 yards has NO assist, and that is common in real
+        football. An absent field is omitted, never invented.
+
+        The name must resolve to an outfielder in the squad we were given, and
+        must not be the shooter (nobody assists himself).
+        """
+        if not name:
+            return ""
+        if shooter is not None and name == getattr(shooter, "name", ""):
+            return ""
+        found = cls._named_shooter(players, name)
+        return getattr(found, "name", "") if found else ""
 
     @classmethod
     def _pick_shooter(
@@ -6465,12 +6742,136 @@ class SetPieceChain(BaseChain):
 
         return result
 
+    # ── CORNER BOX OCCUPANCY (2026-10-02) ─────────────────────────────────
+    #
+    # `_corner_chain` builds a genuine corner-defence grid via
+    # `SetPieceMarkingEngine` — aerial man on the top threat, a first man on
+    # the near-post line, GK on the defended side — and then applied it to
+    # exactly THREE players: the receiver, one marker, and the keeper. The
+    # other eighteen outfielders were never repositioned and held the live
+    # defensive shape, which sits OUTSIDE the box. So a corner was resolved as
+    # a 1-v-1 aerial duel in an empty box, and nothing suppressed the header
+    # except the keeper. Geometry alone does not fix that: what suppresses
+    # corner goals in real football is a pack of seven defenders dragging six
+    # attackers, so the pack has to exist before the crossing geometry means
+    # anything.
+    #
+    # Real occupancy, which is the target: 5-7 attackers between the penalty
+    # spot and the six-yard line, one on each post, a couple at the top of the
+    # box for the second phase; 6-8 defenders, each GOAL-SIDE of the man he is
+    # marking; the keeper on his line.
+    #
+    # Returns {name: (x, y)} in RAW pitch coordinates and writes NOTHING, so
+    # the decision and the application stay separable and the caller decides
+    # how hard to pull. Only draws randomness for the small positional jitter
+    # that real bodies have inside a fixed slot.
+    @classmethod
+    def _corner_box_occupancy(
+        cls,
+        *,
+        attacks_right: bool,
+        corner_y: float,
+        zone: Optional[str],
+        marking,
+        receiver,
+        att_players,
+        def_players,
+    ) -> Dict[str, Tuple[float, float]]:
+        """Fill the box for a corner. Depth is measured FROM the goal being
+        attacked, so one slot table serves a team attacking either way."""
+        own_goal_x = 105.0 if attacks_right else 0.0
+
+        def at(depth: float, y: float) -> Tuple[float, float]:
+            return ((own_goal_x - depth, y) if attacks_right
+                    else (own_goal_x + depth, y))
+
+        near = (38.0, 43.0) if corner_y < 34 else (25.0, 30.0)
+        far = (25.0, 30.0) if corner_y < 34 else (38.0, 43.0)
+        # (depth from the goal line, y band, slot label)
+        slots: List[Tuple[float, Tuple[float, float], str]] = [
+            (13.5, (31.5, 36.5), "six"),
+            (10.5, near, "near"),
+            (10.5, far, "far"),
+            (15.0, (32.0, 36.0), "penalty"),
+            (17.5, (30.0, 38.0), "second"),
+            (25.0, (29.0, 39.0), "edge"),
+        ]
+
+        def aerial(p) -> float:
+            return (0.6 * getattr(p.dna.physical, "jumping", 60.0)
+                    + 0.4 * getattr(p.dna.technical, "heading", 60.0))
+
+        by_name = {p.name: p for p in att_players}
+        out: Dict[str, Tuple[float, float]] = {}
+
+        # 1. the receiver takes the slot the routine asked for
+        receiver_slot = next((s for s in slots if s[2] == zone), None) \
+            or slots[0]
+        if receiver is not None:
+            d, band, _ = receiver_slot
+            out[receiver.name] = at(d + random.uniform(-1.2, 1.2),
+                                    random.uniform(*band))
+
+        # 2. the best remaining aerial threats take the remaining slots
+        used = {receiver.name} if receiver is not None else set()
+        pool = sorted((p for p in att_players
+                       if getattr(p, "position", "") != "GK"
+                       and getattr(p, "name", "") not in used),
+                      key=lambda p: -aerial(p))
+        for p, (d, band, _lab) in zip(pool, [s for s in slots
+                                             if s is not receiver_slot]):
+            out[p.name] = at(d + random.uniform(-1.2, 1.2),
+                             random.uniform(*band))
+
+        # 3. every attacker in the box gets a defender GOAL-SIDE of him. This
+        #    is the part that actually suppresses corner goals: the header is
+        #    contested because somebody stands between the man and the goal,
+        #    not because a probability said so.
+        marked: set = set()
+
+        def mark(dname: str, aname: str) -> bool:
+            if dname in marked or dname in out or aname not in out:
+                return False
+            ax, ay = out[aname]
+            depth = abs(own_goal_x - ax)
+            out[dname] = at(max(1.5, depth - 1.4),
+                            ay + random.uniform(-1.2, 1.2))
+            marked.add(dname)
+            return True
+
+        # 3a. the marking grid's own assignments take precedence
+        for dname, aname in (getattr(marking, "assignments", None) or {}).items():
+            if aname in out:
+                mark(dname, aname)
+            else:                      # a zonal slot rather than a man
+                lab = str(aname).replace("_zone", "")
+                s = next((x for x in slots if x[2] == lab), None)
+                if s and dname not in out:
+                    out[dname] = at(s[0], random.uniform(*s[1]))
+                    marked.add(dname)
+
+        # 3b. then pair whatever is left, best aerial defenders first
+        def_pool = sorted((p for p in def_players
+                           if getattr(p, "position", "") != "GK"
+                           and getattr(p, "name", "") not in marked),
+                          key=lambda p: -aerial(p))
+        loose = [n for n in out
+                 if n not in marked
+                 and getattr(by_name.get(n), "position", "") != "GK"]
+        for d in def_pool:
+            if not loose:
+                break
+            mark(d.name, loose.pop(0))
+
+        return out
+
     @classmethod
     def _corner_chain(cls, minute, att_team, def_team,
                        att_players, def_players, state,
                        attacks_right=True, position_engine=None,
                        routine: Optional[SetPieceRoutine] = None,
                        delivery_origin: Optional[Tuple[float, float]] = None,
+                       is_corner: bool = True,
                        ) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
@@ -6484,12 +6885,21 @@ class SetPieceChain(BaseChain):
 
         corner_x = 105.0 if attacks_right else 0.0
         corner_y  = random.choice([1.0, 67.0])
-        corner_side = "right" if corner_y > 34 else "left"
         # Law 11 judgement origin: WHERE the ball is struck from. Defaults to
         # the corner arc; a crossed free kick passes its own spot instead.
         delivery_x, delivery_y = (
             delivery_origin if delivery_origin is not None else (corner_x, corner_y)
         )
+        # Which side the ball is delivered FROM follows the delivery spot, not
+        # the corner arc. It picks the taker (`_pick_sp_taker`), the corner-
+        # marking grid, and the in/out-swing sign below. Reading it off
+        # `corner_y` meant a crossed free kick on the left flank was struck
+        # from a RIGHT corner arc — a random one — while being offside-judged
+        # from the foul spot. Two origins for one delivery. For a real corner
+        # the two are the same value, so corners are unaffected.
+        # NOTE: the `random.choice` above is still drawn unconditionally so the
+        # football RNG stream is byte-identical to before this fix.
+        corner_side = "right" if delivery_y > 34 else "left"
         # Snapshot every player's position at the instant the ball is played
         # (the Law 11 judgement moment) — captured before any chain movement
         # or record_touch overwrites a position.
@@ -6538,13 +6948,19 @@ class SetPieceChain(BaseChain):
         # Corner taken event — outcome is determined by the aerial physics
         # below, not a pre-roll. Start as True; if no one wins it cleanly
         # we will re-evaluate after resolve_aerial.
-        result.add(cls.make_event(
+        # It carries NO end point. The delivery target is not known until the
+        # flight is built below, and the contact point is not known until the
+        # aerial resolves, so both are stamped afterwards onto this same event
+        # (`_stamp_delivery_endpoint`). Emitting it with an invented end here
+        # is what made every corner a zero-length "key pass".
+        corner_event = cls.make_event(
             minute, EventType.CORNER_TAKEN, att_team, taker.name,
             phase, gs,
-            location_x=corner_x, location_y=corner_y,
+            location_x=delivery_x, location_y=delivery_y,
             outcome=True,
             situation=SituationType.CORNER,
-        ))
+        )
+        result.add(corner_event)
 
         # ── PLAYER POSITIONING ─────────────────────────────────────
         # Use position_engine when available so players are near their
@@ -6630,6 +7046,71 @@ class SetPieceChain(BaseChain):
             gkx = 104.3 if attacks_right else 0.7
             gky = 34.0
 
+        # ── BOX OCCUPANCY: place the WHOLE unit, not three players ────────
+        # Applied AFTER the receiver/marker/GK writes above, so the pack wins
+        # any conflict, and BEFORE the 3D flight, so the aerial duel happens in
+        # the positions the marking grid asked for. Gated on `is_corner`: a
+        # crossed free kick reaches this function too (23 of the 28 calls in a
+        # typical match) and must NOT get a corner's box.
+        if is_corner:
+            try:
+                box = cls._corner_box_occupancy(
+                    attacks_right=attacks_right,
+                    corner_y=corner_y,
+                    zone=zone,
+                    marking=sp,
+                    receiver=receiver,
+                    att_players=att_players,
+                    def_players=def_players,
+                )
+            except Exception:
+                # A set piece must never take a match down with it. Falling
+                # back to the old three-player set-up is wrong but playable;
+                # crashing is neither.
+                box = {}
+            if box and position_engine is not None:
+                # NO PLACEMENT. The box is opened as a PENDING WINDOW and the
+                # players walk themselves into it over `SET_PIECE_JOSTLE_S`.
+                #
+                # Placing them here (the previous behaviour, via
+                # `set_piece_place`) meant they were ALREADY on their slots
+                # before the integrator's first tick, so the window was holding
+                # a position nobody had to move to: measured median distance
+                # from slot to player was 0.0 m across 156 slot-assignments in
+                # 12 corners, and 0.03 of them closed any ground at all. The
+                # window, the duration and the dead-ball run suppression were
+                # all live and all inert.
+                #
+                # `set_piece_place` is still the correct call for the free-kick
+                # WALL, where the men genuinely are standing still and the
+                # arrangement is the point. A corner box is a race, not a pose.
+                #
+                # `set_piece_place`'s own docstring is right that hiding the
+                # displacement would "move the lie to a different column" --
+                # it is not hidden, it is counted ONCE by
+                # `record_physics_distance` in `_offball_move_player`, now
+                # with real elapsed time and a real speed instead of a 30 m
+                # teleport in 0.0 s.
+                # Run them in FIRST, inside the chain, because the
+                # delivery below is resolved in this same call and a
+                # window opened for the post-chain integrator arrives
+                # too late to affect it -- the header would be contested
+                # by an empty box. `advance_to_slots` moves them at a
+                # sprint with real elapsed time and books the distance
+                # once, honestly.
+                position_engine.advance_to_slots(
+                    box, SET_PIECE_JOSTLE_S,
+                    exclude={getattr(taker, "name", None)})
+
+                # The window then HOLDS the box through the post-corner
+                # integration, so they are not immediately dragged back
+                # out to their shape anchors, and run sampling is
+                # suppressed while it is open.
+                position_engine.open_setpiece_window(
+                    box, SET_PIECE_JOSTLE_S)
+                if receiver is not None and receiver.name in box:
+                    rx, ry = box[receiver.name]
+
         # ── 3D FLIGHT ──────────────────────────────────────────────
         # The ball always leaves the taker's boot. Delivery quality is encoded
         # in the flight parameters, not a separate success roll.
@@ -6665,10 +7146,10 @@ class SetPieceChain(BaseChain):
         # is made deterministic per corner side; the RNG draw above is kept
         # for stream parity.
         if params.get("swing") == "out":
-            out_sign = -1.0 if corner_y < 34 else 1.0
+            out_sign = -1.0 if delivery_y < 34 else 1.0
             corner_spin = BallSpin(corner_spin.rate, corner_spin.kind, out_sign)
         flight = make_ballistic_flight(
-            Vec3(corner_x, corner_y, 0.05),
+            Vec3(delivery_x, delivery_y, 0.05),
             Vec3(target_x, target_y, corner_height),
             corner_speed,
             loft=0.0,
@@ -6681,14 +7162,65 @@ class SetPieceChain(BaseChain):
         defender_mp = _moving_player_local(defender.name) if defender else None
         gk_mp = _moving_player_local(gk.name) if gk else None
 
-        attackers = [attacker_mp] if attacker_mp else []
+        # EVERY player who reached the box, not just the receiver.
+        # This is step 3 and it is the step that makes steps 1 and 2 mean
+        # anything: until now the aerial duel was offered THREE players
+        # (receiver + one defender + keeper) while the box held thirteen,
+        # so the crowding and the running were cosmetic.
+        _arrived = (position_engine.arrived_setpiece_players(
+            SET_PIECE_ARRIVED_M) if position_engine is not None else set())
+
+        attackers = []
+        for _p in att_players:
+            if _p.name not in _arrived:
+                continue
+            _mp = _moving_player_local(_p.name)
+            if _mp is not None:
+                attackers.append(_mp)
+        if not attackers and attacker_mp is not None:
+            # Nobody made the box. Still resolve against the receiver rather
+            # than declaring the corner uncontested -- the ball was aimed at
+            # him and he still has to be beaten to win it.
+            attackers = [attacker_mp]
+
         defenders = []
-        if defender_mp:
+        for _p in def_players:
+            if _p.name in _arrived:
+                _mp = _moving_player_local(_p.name)
+                if _mp is not None:
+                    defenders.append(_mp)
+        if defender_mp is not None and defender_mp not in defenders:
             defenders.append(defender_mp)
         if gk_mp:
             defenders.append(gk_mp)
         episode.register(attackers + defenders)
         aerial = episode.resolve_aerial(flight, attackers, defenders)
+
+        # ── STAMP THE DELIVERY'S REAL ENDPOINT ─────────────────────
+        # The corner event was emitted above without one. Now that the flight
+        # exists, the delivery endpoint is the point the ball actually reached:
+        # the contact point if anyone got to it, otherwise the aimed target.
+        # Both are tracked physics, and `secondary_player` names the man the
+        # ball was aimed at — which is what lets the chance-creation ledger
+        # link a corner to a shot by that player instead of guessing.
+        _contact = getattr(aerial, "contact_point", None) if aerial else None
+        if _contact is not None:
+            _end_x, _end_y = _contact.x, _contact.y
+            _end_src = "contact"
+        else:
+            _end_x, _end_y = target_x, target_y
+            _end_src = "aimed_target"
+        corner_event.end_x = _end_x
+        corner_event.end_y = _end_y
+        if receiver is not None:
+            corner_event.secondary_player = receiver.name
+        corner_event.metadata = {
+            **(corner_event.metadata or {}),
+            "delivery_end_x": round(_end_x, 2),
+            "delivery_end_y": round(_end_y, 2),
+            "delivery_end_source": _end_src,
+            "delivery_target": receiver.name if receiver is not None else None,
+        }
 
         # Determine who won, if anyone.
         winner_name = ""
@@ -6701,11 +7233,20 @@ class SetPieceChain(BaseChain):
                 winner_team = def_team
 
         # outcome authority branches
+        # Who actually heads it. With a real box contested, that is
+        # whoever won the aerial -- not necessarily the player the
+        # routine aimed at. Requiring the winner to BE the receiver (the
+        # previous test) would have filed every other attacker header as a
+        # loose ball the moment step 3 let more than one attacker compete.
+        headerer = None
+        if winner_name and winner_team == att_team:
+            headerer = next((p for p in att_players
+                             if p.name == winner_name), None)
+        if headerer is None and attacker_mp is not None:
+            headerer = receiver
         att_wins = (
             aerial.outcome in ("controlled", "contested")
-            and attacker_mp is not None
-            and aerial.winner is not None
-            and getattr(aerial.winner.player, "name", "") == getattr(attacker_mp.player, "name", "")
+            and headerer is not None
         )
         def_wins = (
             aerial.outcome in ("controlled", "contested")
@@ -6757,7 +7298,7 @@ class SetPieceChain(BaseChain):
             position_engine.record_touch(winner_name, cx, cy, minute)
 
         # ── ATTACKER WINS → HEADER SHOT ───────────────────────────
-        if att_wins and receiver:
+        if att_wins and headerer:
             # Feature #3: a committed pile (six-yard / spotted crowd) raises
             # the odds of a BIG_CHANCE-grade header the same way numbers in
             # the box do in real football.
@@ -6772,14 +7313,15 @@ class SetPieceChain(BaseChain):
 
             shot_x = aerial.contact_point.x if aerial else target_x
             shot_y = aerial.contact_point.y if aerial else target_y
-            shot_x = max(85.0, min(102.0, shot_x + random.uniform(-2.0, 2.0)))
+            shot_x = cls.clamp_attack_x(
+                shot_x + random.uniform(-2.0, 2.0), 85.0, 102.0, attacks_right)
             shot_y = max(26.0, min(42.0, shot_y + random.uniform(-2.0, 2.0)))
 
             sot_prob = 0.30 + xg * 0.4
             if random.random() < sot_prob:
                 result.shot_on_target = True
                 result.add(cls.make_event(
-                    minute, EventType.SHOT_ON_TARGET, att_team, receiver.name,
+                    minute, EventType.SHOT_ON_TARGET, att_team, headerer.name,
                     phase, gs, xg=xg, body_part="head",
                     situation=SituationType.CORNER, outcome=True,
                     secondary_player=gk.name if gk else None,
@@ -6788,17 +7330,17 @@ class SetPieceChain(BaseChain):
                 ))
 
                 is_goal, positioning = GoalkeeperEngine.evaluate_save(
-                    xg, DNAFactory.get_shooter_quality(receiver.dna),
+                    xg, DNAFactory.get_shooter_quality(headerer.dna),
                     shot_x, shot_y, gk,
                     state.last_ball_x, state.last_ball_y
                 )
                 if is_goal:
                     result.goal_scored    = True
                     result.goal_team      = att_team
-                    result.goal_scorer    = receiver.name
+                    result.goal_scorer    = headerer.name
                     result.goal_assistant = taker.name
                     result.add(cls.make_event(
-                        minute, EventType.GOAL, att_team, receiver.name,
+                        minute, EventType.GOAL, att_team, headerer.name,
                         phase, gs, xg=xg, body_part="head",
                         situation=SituationType.CORNER, outcome=True,
                         secondary_player=taker.name,
@@ -6820,9 +7362,11 @@ class SetPieceChain(BaseChain):
                         ))
                     # ── REBOUND / SECOND BALL AFTER SAVE ──────────
                     if random.random() < 0.12:
-                        rebound_player = cls._pick_aerial_threat(att_players, exclude=receiver.name)
+                        rebound_player = cls._pick_aerial_threat(att_players, exclude=headerer.name)
                         if rebound_player:
-                            rebound_x = max(85.0, min(100.0, shot_x + random.uniform(-3.0, 3.0)))
+                            rebound_x = cls.clamp_attack_x(
+                                shot_x + random.uniform(-3.0, 3.0), 85.0, 100.0,
+                                attacks_right)
                             rebound_y = max(24.0, min(44.0, shot_y + random.uniform(-3.0, 3.0)))
                             result.add(cls.make_event(
                                 minute, EventType.BALL_RECOVERY, att_team, rebound_player.name,
@@ -6864,15 +7408,17 @@ class SetPieceChain(BaseChain):
                                     ))
             else:
                 result.add(cls.make_event(
-                    minute, EventType.SHOT_OFF_TARGET, att_team, receiver.name,
+                    minute, EventType.SHOT_OFF_TARGET, att_team, headerer.name,
                     phase, gs, xg=xg, outcome=False,
                     location_x=shot_x,
                     location_y=shot_y,
                 ))
                 if random.random() < 0.10:
                     second_attacker = cls._pick_aerial_threat(att_players, exclude=taker.name)
-                    if second_attacker and second_attacker != receiver:
-                        scramble_x = max(85.0, min(100.0, shot_x + random.uniform(-2.0, 2.0)))
+                    if second_attacker and second_attacker != headerer:
+                        scramble_x = cls.clamp_attack_x(
+                                shot_x + random.uniform(-2.0, 2.0), 85.0, 100.0,
+                                attacks_right)
                         scramble_y = max(24.0, min(44.0, shot_y + random.uniform(-2.0, 2.0)))
                         result.add(cls.make_event(
                             minute, EventType.BALL_RECOVERY, att_team, second_attacker.name,
@@ -6881,7 +7427,6 @@ class SetPieceChain(BaseChain):
                             outcome=True,
                             metadata={"loose_ball": True}
                         ))
-
         # ── DEFENDER WINS → CLEARANCE ─────────────────────────────
         elif def_wins and not gk_wins:
             # Route through DefensiveChain so the clearance gets the
@@ -6943,7 +7488,8 @@ class SetPieceChain(BaseChain):
 
         # ── NO CLEAR WINNER → BALL FALLS LOOSE ────────────────────
         else:
-            loose_x = max(85.0, min(100.0, target_x + random.uniform(-2.0, 2.0)))
+            loose_x = cls.clamp_attack_x(
+                target_x + random.uniform(-2.0, 2.0), 85.0, 100.0, attacks_right)
             loose_y = max(24.0, min(44.0, target_y + random.uniform(-2.0, 2.0)))
             result.add(cls.make_event(
                     minute, EventType.BALL_RECOVERY, att_team,
@@ -7002,7 +7548,142 @@ class SetPieceChain(BaseChain):
                             result.goal_scorer, _scorer_del_x, _scorer_del_y,
                         )
 
+        # The jostling window the players were walked in over. Reported
+        # so `_absorb_motion` integrates the box for that long instead of
+        # the synthesized ball-travel time; the measured dead time was
+        # 0.0 s, which is why they were being teleported into position.
+        result.sequence_duration_s = SET_PIECE_JOSTLE_S
         return result
+
+    # ── DIRECT FREE KICK WALL ─────────────────────────────────────────
+    # Law 12: the wall stands 9.15 m from the ball, between the ball and the
+    # goal, facing the kicker. Before this, `_freekick_chain`'s direct branch
+    # shot at an undefended goal — the wall was never built and the direct
+    # branch never ran at all (see the foul-awarded free kick award in
+    # match_engine.py; before it, 100% of free kicks came from the offside
+    # queue and every one became a cross).
+    #
+    # The men are the DEFENDING outfielders, chosen as the ones already
+    # nearest the ball, and they are placed by a BOUNDED approach: nobody
+    # covers more than `speed * APPROACH_S` from where he stands. A defender
+    # 40 m away genuinely cannot get into the wall, and the helper returns
+    # where each man actually ended up, so the blocker set handed to the
+    # geometry engine is the wall that exists, not the wall that was ordered.
+    #
+    # APPROACH_S is the dead-ball window, and 2.5 s was simply the wrong
+    # number: measured over 2 real matches it produced walls whose men sat a
+    # mean 17.2 m from the ball (median 16.7, only 25% inside 10.5 m) and
+    # spread 30.4 m laterally. A 30 m-wide "wall" is not a wall, and the
+    # 30 m came from the budget itself — a man who runs out of travel stops
+    # partway along the line from where he stood, and those partway points
+    # are scattered all over the pitch. So the defect was the budget, not the
+    # placement maths.
+    #
+    # Real direct free kicks get roughly 8-12 s of organisation: the referee
+    # signals, the taker steps back, defenders jog across and the wall forms.
+    # 9.0 s at the engine's own top speeds (5.0 + pace*0.042 m/s, 7.3-8.7 in
+    # practice) is a 65-78 m budget, which every outfielder comfortably
+    # covers from anywhere on the pitch — and that is the point. The bound is
+    # retained deliberately rather than removed: a keeper 60 m upfield
+    # genuinely cannot be in the wall, and the helper must keep reporting the
+    # wall that exists rather than the wall that was ordered. What changes is
+    # that for an ordinary dead ball, the honest answer is the full wall.
+    WALL_DISTANCE_M = 9.15
+    WALL_SETUP_S = 9.0
+    WALL_MIN_MEN = 4
+    # Shoulder-to-shoulder spacing. 0.55 m per man gives a 4-man wall about
+    # 1.65 m of face, which is what a real wall presents to a striker.
+    WALL_SPACING_M = 0.55
+
+    @classmethod
+    def _build_freekick_wall(cls, fk_x, fk_y, def_players, attacks_right,
+                             position_engine, minute, gk):
+        """Place the wall. Returns (wall_mps, gk_mp, reached) where `wall_mps`
+        are MovingPlayers at the positions they could actually reach."""
+        import math as _m
+
+        goal_x = 105.0 if attacks_right else 0.0
+        near_y = 30.34 if fk_y < 34 else 37.66
+        dx, dy = goal_x - fk_x, near_y - fk_y
+        length = _m.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+        # unit vector ALONG the wall face
+        px, py = -uy, ux
+
+        # Nearest outfielders make the wall, keeper excluded.
+        pool = [p for p in def_players
+                if getattr(p, "position", "") != "GK" and p is not gk]
+        def _dist(p):
+            if position_engine is None:
+                return 0.0
+            try:
+                ex, ey = position_engine.get_position(p.name)
+            except Exception:
+                return 1e9
+            return _m.hypot(ex - fk_x, ey - fk_y)
+        pool.sort(key=_dist)
+        men = pool[:max(cls.WALL_MIN_MEN, 4)]
+
+        wall_mps = []
+        # Centre the wall on the ball-to-near-post line, then fan the men out
+        # along the face at shoulder width. For 4 men this presents ~1.65 m
+        # of face; the target is a flat line, and a wide spread here would
+        # mean the men are not actually standing together.
+        n = len(men)
+        reach_log = []
+        for i, p in enumerate(men):
+            lateral = (i - (n - 1) / 2.0) * cls.WALL_SPACING_M
+            tx = fk_x + ux * cls.WALL_DISTANCE_M + px * lateral
+            ty = fk_y + uy * cls.WALL_DISTANCE_M + py * lateral
+            ty = max(1.0, min(67.0, ty))
+            if position_engine is not None:
+                try:
+                    sx, sy = position_engine.get_position(p.name)
+                except Exception:
+                    sx, sy = fk_x, fk_y
+                pace = float(getattr(getattr(p.dna, "physical", None),
+                                     "pace", 60.0))
+                top_speed = 5.0 + max(0.0, min(100.0, pace)) * 0.042
+                budget = top_speed * cls.WALL_SETUP_S
+                d = _m.hypot(tx - sx, ty - sy)
+                if d > budget and d > 0.0:
+                    # Cannot get there: stop at the edge of what he can cover.
+                    scale = budget / d
+                    tx, ty = sx + (tx - sx) * scale, sy + (ty - sy) * scale
+                reach_log.append(_m.hypot(tx - sx, ty - sy))
+                # set_piece_place, NOT record_touch: record_touch applies the
+                # wide-role flank hold and the GK box anchor after writing,
+                # and those corrections dismantle a wall (see
+                # PositionEngine.set_piece_place for the measurement).
+                position_engine.set_piece_place(p.name, tx, ty, minute)
+            wall_mps.append(cls._moving_player(p, position_engine))
+
+        # Keeper sets his line. Against a wall a keeper does NOT stand on his
+        # goal line — he comes off it and stands on the bisector of the angle
+        # between the two posts, which is the only spot from which he can see
+        # both the near post and the far post past the wall's edge. The
+        # bisector from the BALL to the goal-mouth centre is the same line by
+        # construction, so the keeper stands on it, just short of his line.
+        gk_mp = None
+        if gk is not None:
+            gk_line_x = 101.0 if attacks_right else 4.0
+            # Bisector: from the ball to the centre of the goal mouth.
+            bcx, bcy = fk_x, fk_y
+            gcx, gcy = gk_line_x, 34.0
+            bl = _m.hypot(gcx - bcx, gcy - bcy) or 1.0
+            bux, buy = (gcx - bcx) / bl, (gcy - bcy) / bl
+            # Stand 2.5 m off his line, toward the ball, i.e. forward of the
+            # posts but behind the wall's back (the wall is 9.15 m out).
+            gk_tx = gcx - bux * 2.5
+            gk_ty = max(6.0, min(62.0, gcy - buy * 2.5))
+            if position_engine is not None:
+                try:
+                    position_engine.set_piece_place(
+                        gk.name, gk_tx, gk_ty, minute)
+                except Exception:
+                    pass
+            gk_mp = cls._moving_player(gk, position_engine)
+        return wall_mps, gk_mp, reach_log
 
     @classmethod
     def _freekick_chain(cls, minute, att_team, def_team,
@@ -7058,66 +7739,146 @@ class SetPieceChain(BaseChain):
                 situation=SituationType.DIRECT_FREEKICK,
             )
             result.xg_generated = xg
-            sot_prob = 0.45 + taker.dna.technical.free_kick / 100.0 * 0.35
-            if random.random() < sot_prob:
+
+            # ── WALL, then GEOMETRY ──────────────────────────────────
+            # The wall is built and the ball is struck THROUGH it. The old
+            # branch rolled `sot_prob = 0.45 + fk/100*0.35` — 45-80% on
+            # target from a dead ball into an EMPTY goal — and decided the
+            # outcome with `GoalkeeperEngine.evaluate_save`, which knows
+            # nothing about a wall. Now the flight is aimed at the goal plane
+            # by `aim_shot_flight` and resolved against the keeper's dive
+            # envelope AND the wall's swept blocker envelope
+            # (`geometry_engine.resolve_shot`), so a ball driven into the
+            # wall is BLOCKED and one lifted over the top is not.
+            wall_mps, gk_mp, _reach = cls._build_freekick_wall(
+                fk_x, fk_y, def_players, attacks_right, position_engine,
+                minute, gk)
+
+            fk_episode = PossessionEpisode()
+            taker_mp = cls._moving_player(taker, position_engine)
+            fk_episode.register([taker_mp] + wall_mps
+                                + ([gk_mp] if gk_mp else []))
+            flight = aim_shot_flight(
+                taker.dna, fk_x, fk_y,
+                random.choice(["right_foot", "left_foot"]),
+                attacks_right, under_pressure=False,
+            )
+            shot_res = fk_episode.resolve_shot(
+                flight, gk_mp, blockers=wall_mps,
+                attacks_right=attacks_right)
+            outcome = shot_res.outcome
+            # The terminus rides on the event as end_x/end_y, so the shot map
+            # draws the real flight rather than reconstructing one.
+            end_x, end_y = shot_res.goal_point.x, shot_res.goal_point.y
+            _blk = getattr(shot_res, "blocker", None)
+            base_meta = {
+                "trajectory": "physics",
+                "wall_players": [getattr(m.player, "name", "") for m in wall_mps],
+                "wall_distance_m": cls.WALL_DISTANCE_M,
+                "flight_time_s": round(shot_res.flight_time, 3),
+                "shot_speed_mps": round(shot_res.ball_speed_at_contact, 2),
+                "resolution": outcome,
+            }
+
+            if outcome in ("goal", "saved"):
                 result.shot_on_target = True
-                # Bug fix: this SHOT_ON_TARGET never set a location either,
-                # defaulting to (50, 34). A direct free kick on target lands
-                # in the goal-mouth area, not midfield.
-                shot_x = cls.mirror_x(random.uniform(96, 104.3), attacks_right)
-                shot_y = random.uniform(26, 42)
                 result.add(cls.make_event(
                     minute, EventType.SHOT_ON_TARGET, att_team, taker.name,
                     phase, gs, xg=xg, outcome=True,
                     secondary_player=gk.name if gk else None,
-                    location_x=shot_x, location_y=shot_y,
+                    location_x=fk_x, location_y=fk_y,
+                    end_x=end_x, end_y=end_y, metadata=base_meta,
                 ))
-                is_goal, positioning = GoalkeeperEngine.evaluate_save(
-                    xg, DNAFactory.get_shooter_quality(taker.dna),
-                    shot_x, shot_y, gk, state.last_ball_x, state.last_ball_y
-                )
-                if is_goal:
-                    result.goal_scored  = True
-                    result.goal_team    = att_team
-                    result.goal_scorer  = taker.name
-                    result.add(cls.make_event(
-                        minute, EventType.GOAL, att_team, taker.name,
-                        phase, gs, xg=xg, outcome=True,
-                        situation=SituationType.DIRECT_FREEKICK,
-                        location_x=shot_x, location_y=shot_y,
-                    ))
-                elif gk:
-                    is_goalline_save = (
-                        positioning.get("start_x") is not None
-                        and positioning["start_x"] <= 2.0
-                    )
-                    result.add(cls.make_event(
-                        minute, EventType.SAVE, def_team, gk.name,
-                        phase, gs, xg=xg, outcome=True,
-                        location_x=shot_x, location_y=shot_y,
-                        metadata={"goalline_save": is_goalline_save}
-                    ))
-            else:
+            if outcome == "goal":
+                result.goal_scored  = True
+                result.goal_team    = att_team
+                result.goal_scorer  = taker.name
                 result.add(cls.make_event(
-                    minute, EventType.SHOT_OFF_TARGET, att_team, taker.name,
-                    phase, gs, xg=xg, outcome=False,
+                    minute, EventType.GOAL, att_team, taker.name,
+                    phase, gs, xg=xg, outcome=True,
+                    situation=SituationType.DIRECT_FREEKICK,
+                    location_x=fk_x, location_y=fk_y,
+                    end_x=end_x, end_y=end_y, metadata=base_meta,
                 ))
+            elif outcome == "saved" and gk:
+                result.add(cls.make_event(
+                    minute, EventType.SAVE, def_team, gk.name,
+                    phase, gs, xg=xg, outcome=True,
+                    location_x=fk_x, location_y=fk_y,
+                    metadata={
+                        "goalline_save": False,
+                        "trajectory": "physics",
+                        "gk_position_at_save": (
+                            [round(shot_res.gk_position_at_save.x, 2),
+                             round(shot_res.gk_position_at_save.y, 2)]
+                            if shot_res.gk_position_at_save else None),
+                        "gk_dive_time": round(shot_res.gk_dive_time, 3),
+                    },
+                ))
+            else:
+                # wide | blocked | woodwork. A ball into the wall is BLOCKED,
+                # which is a different event from a shot off target and is
+                # already a first-class type in this engine — collapsing the
+                # two would hide the single most important thing a wall does.
+                _blk_name = getattr(getattr(_blk, "player", None), "name", "")
+                result.add(cls.make_event(
+                    minute,
+                    (EventType.SHOT_BLOCKED if outcome == "blocked"
+                     else EventType.SHOT_OFF_TARGET),
+                    att_team, taker.name,
+                    phase, gs, xg=xg, outcome=False,
+                    location_x=fk_x, location_y=fk_y,
+                    end_x=end_x, end_y=end_y,
+                    metadata={**base_meta, "blocked_by": _blk_name},
+                ))
+
+            result.player_distance_stats = cls._accumulate_physics_stats(
+                fk_episode, position_engine, minute)
+            for _ev in result.events:
+                if _ev.event_type in SHOT_SPEED_EVENT_TYPES:
+                    _stamp_shot_speed(
+                        _ev, shot_res.ball_speed_at_contact,
+                        max(0.1, shot_res.flight_time))
         else:
             # Crossed free kick — becomes like a corner
-            result.add(cls.make_event(
+            fk_cross_event = cls.make_event(
                 minute, EventType.FREEKICK_CROSS, att_team, taker.name,
                 phase, gs, location_x=fk_x, location_y=fk_y,
                 metadata={"routine": routine.value} if routine is not None else {},
-            ))
+            )
+            result.add(fk_cross_event)
             # Resolve like a corner (Feature #3: the corner routine shapes the
             # crossed free kick too; the position engine stays threaded in).
+            # A crossed free kick is NOT a corner: same aerial duel, but
+            # no box to fill and a wall instead. `is_corner=False` keeps
+            # the corner crowding out of this path.
             sub = cls._corner_chain(minute, att_team, def_team, att_players,
                                     def_players, state, attacks_right,
                                     position_engine=position_engine,
                                     routine=routine,
-                                    delivery_origin=(fk_x, fk_y))
+                                    delivery_origin=(fk_x, fk_y),
+                                    is_corner=False)
             # Inherit events (minus the duplicate corner taken)
             result.events.extend(sub.events[1:])
+            # The sub-chain's own CORNER_TAKEN is discarded as a duplicate, but
+            # it is the one carrying the resolved delivery endpoint. Copy it
+            # across so the crossed free kick is a tracked delivery like every
+            # other pass, rather than an origin with no destination — which is
+            # what left every set-piece key pass zero-length.
+            if sub.events:
+                _sub_delivery = sub.events[0]
+                fk_cross_event.end_x = _sub_delivery.end_x
+                fk_cross_event.end_y = _sub_delivery.end_y
+                if _sub_delivery.secondary_player:
+                    fk_cross_event.secondary_player = _sub_delivery.secondary_player
+                fk_cross_event.metadata = {
+                    **(fk_cross_event.metadata or {}),
+                    "delivery_end_x": _sub_delivery.metadata.get("delivery_end_x"),
+                    "delivery_end_y": _sub_delivery.metadata.get("delivery_end_y"),
+                    "delivery_end_source": _sub_delivery.metadata.get(
+                        "delivery_end_source"),
+                    "delivery_target": _sub_delivery.metadata.get("delivery_target"),
+                }
             result.goal_scored    = sub.goal_scored
             result.goal_team      = sub.goal_team
             result.goal_scorer    = sub.goal_scorer
@@ -8497,6 +9258,8 @@ class ChainDispatcher:
         context_x=None, context_y=None,
         delayed_offside=False,
         attacks_right: bool = True,
+        shooter_name: str = "",
+        assister_name: str = "",
     ) -> ChainResult:
         res = AttackChain.generate(
             minute, att_team, def_team,
@@ -8505,6 +9268,8 @@ class ChainDispatcher:
             context_x=context_x, context_y=context_y,
             position_engine=position_engine,
             attacks_right=attacks_right,
+            shooter_name=shooter_name,
+            assister_name=assister_name,
         )
         res.delayed_offside = delayed_offside
         return res
@@ -9031,6 +9796,42 @@ class GoalkeeperEngine:
         
         # Compute save multiplier
         save_mult = GoalkeeperEngine._is_shot_savable(gk, shot_x, shot_y, positioning)
+        
+        # ── CONTINUOUS PHYSICS GATE (opt-in) ───────────────────────────
+        # The positioning model above is a good one — it bisects the angle,
+        # sets depth by distance to goal, and derives reaction time from
+        # reflexes and composure. What it cannot express is the BALL'S FLIGHT
+        # TIME. `effective_reach = reach * (0.8 + reaction_time * 0.4)` gives a
+        # keeper identical reach against a shot from 30 m as against one from
+        # 8 m, even though the first arrives in ~1.2 s and the second in
+        # ~0.35 s. A keeper beaten by a driven shot from 25 yards has usually
+        # not been beaten on reach — he has been beaten on time.
+        #
+        # So this attenuates save_mult when the physics say he cannot get a
+        # hand to it in the time the ball actually takes. It never adds credit.
+        # Because the caller already floors save_mult at 1.0, pushing it toward
+        # 1.0 converges on the raw xG — the engine's own documented safe
+        # fallback — so this cannot inflate scorelines the way the inverted
+        # multiplier described below once did.
+        #
+        # Inert unless MatchConfig.physics_enabled is True; the adapter slot is
+        # None otherwise, so this is one dict lookup on a path that already
+        # computes a save multiplier.
+        try:
+            from physics.adapter import active_adapter
+            _phys = active_adapter()
+        except Exception:
+            _phys = None
+        if _phys is not None:
+            try:
+                save_mult, _why = _phys.keeper_save_multiplier(
+                    save_mult, shot_x, shot_y, last_ball_x, last_ball_y,
+                    positioning)
+            except Exception:
+                # Physics is an enhancement. A keeper gate that cannot be
+                # evaluated leaves the engine's own multiplier exactly as it
+                # was — the shot is not re-decided, it just isn't adjusted.
+                pass
         
         # Base probability: this is the chance the ball goes in (goal happens)
         base_prob = min(0.99, xg * shooter_quality)

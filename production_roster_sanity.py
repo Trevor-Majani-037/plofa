@@ -169,7 +169,7 @@ def main():
 
     # ── VERIFY 1: every starter got a TRAINED on-ball brain ─────────────
     from brain_integration import _brain_registry, _pos_brain_cache
-    missing, randomed = [], []
+    missing, randomed, sub_notes = [], [], []
     checked = 0
     for name, squad in ((args.home, home_squad), (args.away, away_squad)):
         for p in squad["starters"]:
@@ -186,7 +186,9 @@ def main():
                 reg = _brain_registry.get(p.name)
                 trained = _pos_brain_cache.get(p.position)
                 if reg is None:
-                    missing.append(f"{p.name} ({p.position}, sub) — never decided")
+                    # Late substitute who never touched the ball — no decide
+                    # event, so there is nothing to verify.  Informational only.
+                    sub_notes.append(f"{p.name} ({p.position}, sub) — entered, never on ball")
                 elif trained is None or reg is not trained:
                     randomed.append(f"{p.name} ({p.position}, sub) — non-trained brain")
 
@@ -220,6 +222,8 @@ def main():
         print(f"      ⚠ {m}")
     for r in randomed:
         print(f"      ❌ {r}")
+    for n in sub_notes:
+        print(f"      · {n}")
     print(f"  team-press controller   : "
           f"{'PASS — g engaged (' + format(sum(g_vals)/len(g_vals), '.3f') + ' mean, '
             + str(len(g_vals)) + ' non-1.0 ticks)' if tp_active else 'FAIL — inert'}")

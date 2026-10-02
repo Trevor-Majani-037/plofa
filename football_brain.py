@@ -2,12 +2,19 @@
 
 Architecture
 ------------
-    Input(24) → Dense(32, ReLU) → Dense(32, ReLU) → Dense(10, Softmax)
+    Input(24 or 24+role_D) → Dense(32, ReLU) → Dense(32, ReLU) → Dense(10, Softmax)
 
 Each player owns a separate FootballBrain instance.  The weights are
 identical in *shape* across all players but differ in *value* — seeded
 by the player's DNA attributes and refined through evolutionary
 training (see brain_evolution.py).
+
+The input width is self-describing: a v1 brain consumes the shared 24-d
+vector (``INPUT_SIZE``); a schema-v2 "role_features" brain consumes the
+shared 24-d plus its role-family block (24 + 7 or 24 + 8).  ``random`` /
+``from_dna`` take ``input_size`` and ``serialize`` derives the declared
+``arch`` from the actual weight shapes, so loaders know exactly which
+sensor schema to feed.
 
 No gradient learning.  Pure numpy forward pass.  Evolution via
 genetic algorithm handles weight optimization.
@@ -30,12 +37,26 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from brain_schema import (
+    BRAIN_FORMAT_VERSION,
+    BRAINS_V2_DIR,
+    BrainSchemaError,
+    brain_meta_dict,
+    check_shapes,
+    validate as validate_schema,
+)
+
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
 INPUT_SIZE = 24
+# Off-ball press-gate input: the shared 24-d off-ball vector PLUS one
+# ball-certainty slot (slot 24) introduced by the perception-aware fitness
+# (2026-09-21).  The conscience now conditions press/hold on how sure the
+# runner is of the ball position.  TeamPressBrain keeps the 24-d TEAM feed.
+OFFBALL_INPUT_SIZE = 25
 HIDDEN_1 = 32
 HIDDEN_2 = 32
 OUTPUT_SIZE = 10
@@ -55,8 +76,11 @@ def _relu(x: np.ndarray) -> np.ndarray:
 
 
 def _softmax(x: np.ndarray) -> np.ndarray:
-    e = np.exp(x - np.max(x))
-    return e / e.sum()
+    if x.ndim == 1:
+        e = np.exp(x - np.max(x))
+        return e / e.sum()
+    e = np.exp(x - np.max(x, axis=-1, keepdims=True))
+    return e / e.sum(axis=-1, keepdims=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -72,6 +96,7 @@ def _he_init(fan_in: int, fan_out: int, rng: np.random.Generator) -> np.ndarray:
 def _dna_seeded_weights(
     vision: float, composure: float, decisions: float,
     rng: np.random.Generator,
+    n_in: int = INPUT_SIZE,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
            np.ndarray, np.ndarray]:
     """Generate initial weights biased by player DNA attributes.
@@ -80,12 +105,15 @@ def _dna_seeded_weights(
     on vision-related input rows).  Higher composure → smaller initial
     hidden-layer magnitudes (calmer internal state).  Higher decisions →
     slightly sharper output layer (more decisive softmax).
+
+    ``n_in`` is the input width — 24 for a v1 brain, or 24 + role block for
+    a schema-v2 role_features brain.
     """
     vision_scale = 0.8 + vision * 0.4
     composure_scale = 1.2 - composure * 0.4
     decisions_scale = 0.9 + decisions * 0.2
 
-    w1 = _he_init(INPUT_SIZE, HIDDEN_1, rng) * vision_scale
+    w1 = _he_init(n_in, HIDDEN_1, rng) * vision_scale
     b1 = np.zeros(HIDDEN_1, dtype=np.float64)
     w2 = _he_init(HIDDEN_1, HIDDEN_2, rng) * composure_scale
     b2 = np.zeros(HIDDEN_2, dtype=np.float64)
@@ -112,7 +140,7 @@ class FootballBrain:
     that varies per touch).
     """
 
-    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3", "_rng")
+    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3", "_rng", "meta")
 
     def __init__(
         self,
@@ -120,6 +148,7 @@ class FootballBrain:
         w2: np.ndarray, b2: np.ndarray,
         w3: np.ndarray, b3: np.ndarray,
         seed: Optional[int] = None,
+        meta: Optional[Dict[str, Any]] = None,
     ):
         self.w1 = w1
         self.b1 = b1
@@ -128,26 +157,34 @@ class FootballBrain:
         self.w3 = w3
         self.b3 = b3
         self._rng = np.random.default_rng(seed)
+        self.meta = meta
 
     # ── Forward pass ────────────────────────────────────────────
 
     def forward(self, sensors: np.ndarray) -> np.ndarray:
-        """Run the vision vector through the network.
+        """Run the vision vector(s) through the network.
 
         Parameters
         ----------
-        sensors : np.ndarray, shape (24,)
-            Normalised sensor vector from brain_sensors.extract_sensors().
+        sensors : np.ndarray
+            Either a single sensor vector of shape (24,) or a batch of
+            vectors of shape (N, 24).  Batch mode is a single vectorised
+            matmul — identical results per row, one numpy call.
 
         Returns
         -------
-        np.ndarray, shape (10,)
-            Softmax probability distribution over the 10 intents.
+        np.ndarray, shape (10,) for a single input or (N, 10) for a batch.
+            Softmax probability distribution(s) over the 10 intents.
         """
-        h = _relu(sensors @ self.w1 + self.b1)
+        single = sensors.ndim == 1
+        x = np.asarray(sensors, dtype=np.float64)
+        if single:
+            x = x[None, :]
+        h = _relu(x @ self.w1 + self.b1)
         h = _relu(h @ self.w2 + self.b2)
         logits = h @ self.w3 + self.b3
-        return _softmax(logits)
+        probs = _softmax(logits)
+        return probs[0] if single else probs
 
     def predict(self, sensors: np.ndarray) -> Tuple[int, float, np.ndarray]:
         """Forward pass + argmax.
@@ -161,7 +198,8 @@ class FootballBrain:
     # ── DNA seeding ─────────────────────────────────────────────
 
     @classmethod
-    def from_dna(cls, player: Any, seed: Optional[int] = None) -> FootballBrain:
+    def from_dna(cls, player: Any, seed: Optional[int] = None,
+                 input_size: int = INPUT_SIZE) -> FootballBrain:
         """Create a brain whose initial weights are biased by player DNA.
 
         Parameters
@@ -170,6 +208,8 @@ class FootballBrain:
             Must have .dna.mental.vision/composure/decisions.
         seed : int, optional
             RNG seed for reproducibility.
+        input_size : int
+            Input width — 24 (v1) or 24 + role block (schema v2).
         """
         dna = getattr(player, "dna", None)
         mental = getattr(dna, "mental", None)
@@ -187,7 +227,8 @@ class FootballBrain:
         decisions = _attr(mental, "decisions", 55.0) / 100.0
 
         rng = np.random.default_rng(seed)
-        w1, b1, w2, b2, w3, b3 = _dna_seeded_weights(vision, composure, decisions, rng)
+        w1, b1, w2, b2, w3, b3 = _dna_seeded_weights(
+            vision, composure, decisions, rng, n_in=input_size)
         return cls(w1, b1, w2, b2, w3, b3, seed=seed)
 
     # ── Evolution operators ─────────────────────────────────────
@@ -243,10 +284,18 @@ class FootballBrain:
     # ── Random brain (for initial population) ───────────────────
 
     @classmethod
-    def random(cls, seed: Optional[int] = None) -> FootballBrain:
-        """Create a brain with random He-initialized weights."""
+    def random(cls, seed: Optional[int] = None, input_size: int = INPUT_SIZE) -> FootballBrain:
+        """Create a brain with random He-initialized weights.
+
+        Parameters
+        ----------
+        seed : int, optional
+            RNG seed for reproducibility.
+        input_size : int
+            Input width — 24 (v1) or 24 + role block (schema v2).
+        """
         rng = np.random.default_rng(seed)
-        w1 = _he_init(INPUT_SIZE, HIDDEN_1, rng)
+        w1 = _he_init(input_size, HIDDEN_1, rng)
         b1 = np.zeros(HIDDEN_1, dtype=np.float64)
         w2 = _he_init(HIDDEN_1, HIDDEN_2, rng)
         b2 = np.zeros(HIDDEN_2, dtype=np.float64)
@@ -257,9 +306,24 @@ class FootballBrain:
     # ── Serialization ───────────────────────────────────────────
 
     def serialize(self) -> Dict[str, Any]:
-        """Pack weights into a JSON-serializable dict."""
+        """Pack weights into a JSON-serializable dict (v2 format).
+
+        The ``meta`` block (audit Step 2, brain versioning) is always
+        emitted so every NEW file carries its schema + lineage.  v1-era
+        files on disk (no ``meta`` key) still load fine as v1 (see
+        ``deserialize``).  ``meta`` may be overridden per-brain via the
+        ``meta`` constructor field (e.g. training lineage from evolution).
+        """
+        meta = self.meta or brain_meta_dict(training_method="unknown")
+        meta.setdefault("format_version", BRAIN_FORMAT_VERSION)
         return {
-            "arch": [INPUT_SIZE, HIDDEN_1, HIDDEN_2, OUTPUT_SIZE],
+            "arch": [
+                self.w1.shape[0],  # input width (24 or 24+role)
+                self.w1.shape[1],  # hidden 1
+                self.w2.shape[1],  # hidden 2
+                self.w3.shape[1],  # output (10)
+            ],
+            "meta": meta,
             "w1": self.w1.tolist(),
             "b1": self.b1.tolist(),
             "w2": self.w2.tolist(),
@@ -270,15 +334,25 @@ class FootballBrain:
 
     @classmethod
     def deserialize(cls, data: Dict[str, Any]) -> FootballBrain:
-        """Load a brain from a serialized dict."""
-        return cls(
+        """Load a brain from a serialized dict.
+
+        Schema-aware (brain_schema.validate): v1 files without a ``meta``
+        block are accepted as v1; any INCOMPATIBLE schema (unknown kind,
+        arch version, sensor/normalization/DNA schema, training method, or
+        an ``arch`` that does not match the kind) raises BrainSchemaError
+        loudly instead of silently loading a wrong-shaped net.
+        """
+        validate_schema(data)
+        arrays = [
             np.array(data["w1"], dtype=np.float64),
             np.array(data["b1"], dtype=np.float64),
             np.array(data["w2"], dtype=np.float64),
             np.array(data["b2"], dtype=np.float64),
             np.array(data["w3"], dtype=np.float64),
             np.array(data["b3"], dtype=np.float64),
-        )
+        ]
+        check_shapes(data, arrays)
+        return cls(*arrays, meta=data.get("meta"))
 
     def save(self, path: str) -> None:
         """Write brain weights to a JSON file."""
@@ -305,7 +379,8 @@ class FootballBrain:
     def __repr__(self) -> str:
         return (
             f"FootballBrain("
-            f"{INPUT_SIZE}>{HIDDEN_1}>{HIDDEN_2}>{OUTPUT_SIZE}, "
+            f"{self.w1.shape[0]}>{self.w1.shape[1]}>{self.w2.shape[1]}"
+            f">{self.w3.shape[1]}, "
             f"{self.param_count} params)"
         )
 
@@ -319,25 +394,35 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 class OffBallBrain:
-    """24->32->32->1 feedforward net that gates OFF-BALL press decisions.
+    """25->32->32->1 feedforward net that gates OFF-BALL press decisions.
 
-    Reads the same 24-d sensor vector (ball 0-1 / runner 2-3 decoupled) and
-    emits a single sigmoid logit: p(press).  The deterministic 10 Hz shape
-    integration in ``MatchEngine._offball_move_player`` stays authoritative;
-    this net only replaces the ``cst['allow'] = 1.0 if random < _PRESS_PROB[pos]
-    else -1.0`` Bernoulli (match_engine.py:1996).  Press when output > 0.5.
+    Reads the 25-d off-ball sensor vector (ball 0-1 / runner 2-3 decoupled,
+    ball-certainty slot 24) and emits a single sigmoid logit: p(press).
+    The deterministic 10 Hz shape integration in
+    ``MatchEngine._offball_move_player`` stays authoritative; this net only
+    replaces the ``cst['allow'] = 1.0 if random < _PRESS_PROB[pos] else -1.0``
+    Bernoulli (match_engine.py:1996).  Press when output > 0.5.
+
+    Since 2026-09-21 the net is EVOLVED on the honest feed (perceived ball
+    coords + certainty slot) with a certainty-aware fitness, so it learns to
+    press when it KNOWS where the ball is and contain when blind — the
+    perception seams get decision-level teeth.
 
     Evolved per position against the off-ball surrogate (offball_probe.
     OffBallSurrogate) — same GA operators as FootballBrain, no gradients.
     """
 
-    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3")
+    # v4_offball_cert: the 24-d vector + ball-certainty slot.
+    input_dim: int = OFFBALL_INPUT_SIZE
+
+    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3", "meta")
 
     def __init__(
         self,
         w1: np.ndarray, b1: np.ndarray,
         w2: np.ndarray, b2: np.ndarray,
         w3: np.ndarray, b3: np.ndarray,
+        meta: Optional[Dict[str, Any]] = None,
     ):
         self.w1 = w1
         self.b1 = b1
@@ -345,9 +430,10 @@ class OffBallBrain:
         self.b2 = b2
         self.w3 = w3
         self.b3 = b3
+        self.meta = meta
 
     def forward(self, sensors: np.ndarray) -> float:
-        """Sigmoid probability of pressing, given a 24-d off-ball vector."""
+        """Sigmoid probability of pressing, given a 25-d off-ball vector."""
         h = _relu(sensors @ self.w1 + self.b1)
         h = _relu(h @ self.w2 + self.b2)
         logit = float((h @ self.w3 + self.b3)[0])
@@ -396,7 +482,7 @@ class OffBallBrain:
     @classmethod
     def random(cls, seed: Optional[int] = None) -> "OffBallBrain":
         rng = np.random.default_rng(seed)
-        w1 = _he_init(INPUT_SIZE, HIDDEN_1, rng)
+        w1 = _he_init(cls.input_dim, HIDDEN_1, rng)
         b1 = np.zeros(HIDDEN_1, dtype=np.float64)
         w2 = _he_init(HIDDEN_1, HIDDEN_2, rng)
         b2 = np.zeros(HIDDEN_2, dtype=np.float64)
@@ -405,9 +491,13 @@ class OffBallBrain:
         return cls(w1, b1, w2, b2, w3, b3)
 
     def serialize(self) -> Dict[str, Any]:
+        meta = self.meta or brain_meta_dict(training_method="ga_offball")
+        meta.setdefault("format_version", BRAIN_FORMAT_VERSION)
+        meta["sensor_schema"] = "v4_offball_cert"
         return {
-            "arch": [INPUT_SIZE, HIDDEN_1, HIDDEN_2, 1],
+            "arch": [type(self).input_dim, HIDDEN_1, HIDDEN_2, 1],
             "kind": "offball_press_gate",
+            "meta": meta,
             "w1": self.w1.tolist(),
             "b1": self.b1.tolist(),
             "w2": self.w2.tolist(),
@@ -418,14 +508,17 @@ class OffBallBrain:
 
     @classmethod
     def deserialize(cls, data: Dict[str, Any]) -> "OffBallBrain":
-        return cls(
+        validate_schema(data)
+        arrays = [
             np.array(data["w1"], dtype=np.float64),
             np.array(data["b1"], dtype=np.float64),
             np.array(data["w2"], dtype=np.float64),
             np.array(data["b2"], dtype=np.float64),
             np.array(data["w3"], dtype=np.float64),
             np.array(data["b3"], dtype=np.float64),
-        )
+        ]
+        check_shapes(data, arrays)
+        return cls(*arrays, meta=data.get("meta"))
 
     def save(self, path: str) -> None:
         with open(path, "w") as f:
@@ -447,7 +540,7 @@ class OffBallBrain:
     def __repr__(self) -> str:
         return (
             f"OffBallBrain("
-            f"{INPUT_SIZE}>{HIDDEN_1}>{HIDDEN_2}>1, "
+            f"{type(self).input_dim}>{HIDDEN_1}>{HIDDEN_2}>1, "
             f"{self.param_count} params)"
         )
 
@@ -470,25 +563,35 @@ class TeamPressBrain(OffBallBrain):
     the right size: pressing is a unit act, not a per-shirt coin flip.
     Evolved against the TeamPressSurrogate (team-state bucket -> engagement
     band -> expected defensive-opportunity success).
+
+    The TEAM feed has no ball-certainty slot: ``input_dim`` stays 24 and the
+    declared sensor schema stays v1_24d (lineage-matching the team probe).
     """
+
+    input_dim: int = INPUT_SIZE
 
     def serialize(self) -> Dict[str, Any]:
         d = super().serialize()
         d["kind"] = "team_press_engagement"
+        if "meta" in d and isinstance(d["meta"], dict):
+            d["meta"]["sensor_schema"] = "v1_24d"
         return d
 
     @classmethod
     def load(cls, path: str) -> "TeamPressBrain":
         with open(path, "r") as f:
             data = json.load(f)
-        return cls(
+        validate_schema(data)
+        arrays = [
             np.array(data["w1"], dtype=np.float64),
             np.array(data["b1"], dtype=np.float64),
             np.array(data["w2"], dtype=np.float64),
             np.array(data["b2"], dtype=np.float64),
             np.array(data["w3"], dtype=np.float64),
             np.array(data["b3"], dtype=np.float64),
-        )
+        ]
+        check_shapes(data, arrays)
+        return cls(*arrays, meta=data.get("meta"))
 
 
 # Defensive action labels — output index order of DefensiveActionBrain.
@@ -520,13 +623,14 @@ class DefensiveActionBrain:
     DefensiveActionSurrogate), same GA operators as FootballBrain, numpy only.
     """
 
-    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3")
+    __slots__ = ("w1", "b1", "w2", "b2", "w3", "b3", "meta")
 
     def __init__(
         self,
         w1: np.ndarray, b1: np.ndarray,
         w2: np.ndarray, b2: np.ndarray,
         w3: np.ndarray, b3: np.ndarray,
+        meta: Optional[Dict[str, Any]] = None,
     ):
         self.w1 = w1
         self.b1 = b1
@@ -534,6 +638,7 @@ class DefensiveActionBrain:
         self.b2 = b2
         self.w3 = w3
         self.b3 = b3
+        self.meta = meta
 
     def forward(self, sensors: np.ndarray) -> np.ndarray:
         """Softmax probabilities over DEFENSIVE_ACTIONS (4-d, sums to 1)."""
@@ -596,9 +701,12 @@ class DefensiveActionBrain:
         return cls(w1, b1, w2, b2, w3, b3)
 
     def serialize(self) -> Dict[str, Any]:
+        meta = self.meta or brain_meta_dict(training_method="ga_defensive")
+        meta.setdefault("format_version", BRAIN_FORMAT_VERSION)
         return {
             "arch": [INPUT_SIZE, HIDDEN_1, HIDDEN_2, len(DEFENSIVE_ACTIONS)],
             "kind": "defensive_action",
+            "meta": meta,
             "w1": self.w1.tolist(),
             "b1": self.b1.tolist(),
             "w2": self.w2.tolist(),
@@ -609,14 +717,17 @@ class DefensiveActionBrain:
 
     @classmethod
     def deserialize(cls, data: Dict[str, Any]) -> "DefensiveActionBrain":
-        return cls(
+        validate_schema(data)
+        arrays = [
             np.array(data["w1"], dtype=np.float64),
             np.array(data["b1"], dtype=np.float64),
             np.array(data["w2"], dtype=np.float64),
             np.array(data["b2"], dtype=np.float64),
             np.array(data["w3"], dtype=np.float64),
             np.array(data["b3"], dtype=np.float64),
-        )
+        ]
+        check_shapes(data, arrays)
+        return cls(*arrays, meta=data.get("meta"))
 
     def save(self, path: str) -> None:
         with open(path, "w") as f:

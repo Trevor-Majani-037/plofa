@@ -112,6 +112,7 @@ STAT_GROUPS = {
     "Defending": [
         "tackles_won", "tackles_att", "tackle_success_pct",
         "interceptions", "clearances", "blocks",
+        "blocked_shots", "blocked_passes", "blocked_crosses",
         "aerial_duels_won", "aerial_duels_att",
         "recoveries", "ball_recoveries", "pressures",
     ],
@@ -461,6 +462,10 @@ def render_comparison_matrix(df, players, stat_category):
         "Tackles Won": "tackles_won",
         "Interceptions": "interceptions",
         "Clearances": "clearances",
+        "Blocks": "blocks",
+        "Blocked Shots": "blocked_shots",
+        "Blocked Passes": "blocked_passes",
+        "Blocked Crosses": "blocked_crosses",
         "Aerial Duels Won": "aerial_duels_won",
         "Sprints": "sprints",
         "Distance Covered": "distance_covered",

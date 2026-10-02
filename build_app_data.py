@@ -55,8 +55,15 @@ def discover_matches():
             continue
         for jf in match_dir.glob("*.json"):
             # Skip player CSV's json twin; only take the main match json
-            if "players" not in jf.name.lower():
-                matches.append(jf)
+            if "players" in jf.name.lower():
+                continue
+            try:
+                data = load_json(jf)
+                if "match" not in data:
+                    continue
+            except Exception:
+                continue
+            matches.append(jf)
     return matches
 
 # â”€â”€â”€ Parse one match JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -68,10 +75,10 @@ def parse_match(path: Path):
 
     home = info.get("home_team", "")
     away = info.get("away_team", "")
-    score_str = info.get("score", "0â€“0")
+    score_str = info.get("score", "0-0")
     
-    # Parse score â€” handles unicode dash variants
-    score_str_clean = score_str.replace("â€“", "-").replace("â€”", "-").replace("\u2013", "-")
+    # Parse score — handles unicode dash variants
+    score_str_clean = score_str.replace("\u2013", "-").replace("\u2014", "-")
     parts = score_str_clean.split("-")
     home_goals_count = int(parts[0].strip()) if len(parts) == 2 else 0
     away_goals_count = int(parts[1].strip()) if len(parts) == 2 else 0
@@ -223,6 +230,8 @@ def parse_match(path: Path):
 
 # â”€â”€â”€ Build League Table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def build_league_table(all_matches):
+    # Test-only clubs: never real fixtures, excluded from the published table.
+    TEST_CLUBS = frozenset({"Hartwell City", "Thornfield United"})
     table = {}
 
     def add_team(name):
@@ -237,6 +246,8 @@ def build_league_table(all_matches):
 
     for m in all_matches:
         home, away = m["home_team"], m["away_team"]
+        if home in TEST_CLUBS or away in TEST_CLUBS:
+            continue
         add_team(home)
         add_team(away)
 
@@ -379,6 +390,9 @@ def build_players(season_stats, season_state):
                 "interceptions": totals.get("interceptions", 0),
                 "clearances": totals.get("clearances", 0),
                 "blocks": totals.get("blocks", 0),
+                "blocked_shots": totals.get("blocked_shots", 0),
+                "blocked_passes": totals.get("blocked_passes", 0),
+                "blocked_crosses": totals.get("blocked_crosses", 0),
                 "aerial_duels_att": totals.get("aerial_duels_att", 0),
                 "aerial_duels_won": totals.get("aerial_duels_won", 0),
                 "pressures": totals.get("pressures", 0),
@@ -418,6 +432,9 @@ def build_players(season_stats, season_state):
                 "clearances_per90": safe_round(totals.get("clearances_per90", 0.0), 2),
                 "pressures_per90": safe_round(totals.get("pressures_per90", 0.0), 2),
                 "blocks_per90": safe_round(totals.get("blocks_per90", 0.0), 2),
+                "blocked_shots_per90": safe_round(totals.get("blocked_shots_per90", 0.0), 2),
+                "blocked_passes_per90": safe_round(totals.get("blocked_passes_per90", 0.0), 2),
+                "blocked_crosses_per90": safe_round(totals.get("blocked_crosses_per90", 0.0), 2),
                 "touches_per90": safe_round(totals.get("touches_per90", 0.0), 2),
                 "carries_per90": safe_round(totals.get("carries_per90", 0.0), 2),
                 "dribbles_comp_per90": safe_round(totals.get("dribbles_comp_per90", 0.0), 2),

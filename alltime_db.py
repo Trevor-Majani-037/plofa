@@ -37,6 +37,7 @@ python alltime_db.py alias add <alias> <canonical> [--apply] [--note text]
 python alltime_db.py alias scan
 python alltime_db.py alias list
 python alltime_db.py alias apply --all
+python alltime_db.py export app-json [--out dir]
 
 Run `sync` after every matchday you play to append new 26/27 matches to the
 warehouse (idempotent). `alias` handles player renames / spelling variants:
@@ -112,7 +113,9 @@ PLAYER_STAT_COLS = [
     ("setpiece_cc", "INTEGER"),
     ("tackles_att", "INTEGER"), ("tackles_won", "INTEGER"),
     ("interceptions", "INTEGER"), ("clearances", "INTEGER"),
-    ("blocks", "INTEGER"), ("recoveries", "INTEGER"),
+    ("blocks", "INTEGER"), ("blocked_shots", "INTEGER"),
+    ("blocked_passes", "INTEGER"), ("blocked_crosses", "INTEGER"),
+    ("recoveries", "INTEGER"),
     ("ball_recoveries", "INTEGER"),
     ("pressures", "INTEGER"), ("press_success", "INTEGER"),
     ("aerial_duels_att", "INTEGER"), ("aerial_duels_won", "INTEGER"),
@@ -159,6 +162,8 @@ TEAM_STAT_COLS = [
     ("pass_accuracy", "REAL"),
     ("tackles", "INTEGER"), ("interceptions", "INTEGER"),
     ("clearances", "INTEGER"), ("blocks", "INTEGER"),
+    ("blocked_shots", "INTEGER"), ("blocked_passes", "INTEGER"),
+    ("blocked_crosses", "INTEGER"),
     ("recoveries", "INTEGER"), ("pressures", "INTEGER"),
     ("fouls", "INTEGER"), ("yellow_cards", "INTEGER"),
     ("red_cards", "INTEGER"),
@@ -412,8 +417,31 @@ def init_schema(conn):
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
+    _ensure_new_stat_columns(conn)
     register_seasons(conn)
     conn.commit()
+
+
+def _ensure_new_stat_columns(conn):
+    """Backfill columns added after a DB file was created.
+
+    CREATE TABLE IF NOT EXISTS never alters existing tables, so veteran
+    alltime.db files lack newer stat columns and ingest would fail with
+    'no such column'. stats_json always carries the full dict, but the
+    typed columns need the ALTER.
+    """
+    for table in ("player_match_stats", "player_season_stats", "team_match_stats"):
+        try:
+            existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        except Exception:
+            continue
+        cols = PLAYER_STAT_COLS if "player" in table else TEAM_STAT_COLS
+        for name, typ in cols:
+            if name not in existing:
+                try:
+                    conn.execute(f'ALTER TABLE {table} ADD COLUMN "{name}" {typ}')
+                except Exception:
+                    pass
 
 
 def register_seasons(conn):
@@ -825,7 +853,9 @@ def ingest_match_package(conn, match_json_path, source=None):
         "passes_attempted": "passes_attempted", "passes_completed": "passes_completed",
         "tackles_won": "tackles",
         "interceptions": "interceptions", "clearances": "clearances",
-        "blocks": "blocks", "ball_recoveries": "recoveries",
+        "blocks": "blocks", "blocked_shots": "blocked_shots",
+        "blocked_passes": "blocked_passes", "blocked_crosses": "blocked_crosses",
+        "ball_recoveries": "recoveries",
         "pressures": "pressures",
         "fouls_committed": "fouls", "yellow_cards": "yellow_cards",
         "red_cards": "red_cards",
@@ -1086,6 +1116,155 @@ def import_legacy_xlsx(conn, path=None, dry_run=False):
     return stats
 
 
+# Stat columns that are rates or periodless model scores: average them across
+# games when rolling player lines up to season / career level (everything else
+# is a volume stat and is summed).
+_RATE_STAT_COLS = {
+    "pass_accuracy", "short_pass_acc", "long_pass_acc",
+    "dribble_success_pct", "tackle_success_pct", "aerial_success_pct",
+    "cross_acc", "shot_conversion", "save_pct", "rating",
+    "xT", "gpa", "pva", "epa",
+}
+_EXPORT_SEASONS = ("24/25", "25/26", "26/27")
+
+
+def _agg_select(alias):
+    parts = []
+    for name, _typ in PLAYER_STAT_COLS:
+        fn = "AVG" if name in _RATE_STAT_COLS else "SUM"
+        parts.append(f'{fn}(COALESCE({alias}."{name}", 0)) AS "{name}"')
+    return ", ".join(parts)
+
+
+def _export_block(row, source):
+    """One player-season-team block. Stat columns are 0-sums (a source that
+    did not record a column reads as 0, exactly like the warehouse); text
+    facts (team) stay None when unknown."""
+    block = {
+        "team": _txt(row["team"]),
+        "apps": row["apps"],
+        "starts": row["starts"],
+        "minutes_played": row["minutes_played"],
+        "source": source,
+    }
+    for name, _typ in PLAYER_STAT_COLS:
+        v = row[name]
+        block[name] = round(v, 3) if isinstance(v, float) else v
+    return block
+
+
+def export_app_json(conn, out_path=None):
+    """Write per-player, per-season + career stat JSON for the stats-hub web
+    app. Grouped by resolved player identity (aliases are rewireable onto one
+    canonical player). Per-season blocks come from player_match_stats, which
+    holds true per-match lines for all three seasons (legacy 24/25 & 25/26
+    plus live 26/27). NOTE: the legacy player_season_stats table is only an
+    'ALL-TIME' aggregate block, so it is deliberately not used here.
+
+    Output: <out>/player_history.json
+        {"generated_at", "schema", "seasons",
+         "players": { name: {player_id, aliases, position, current_team,
+                             last_season,
+                             seasons: {season: [team blocks]},
+                             career: {...}}}}
+    """
+    out = Path(out_path) if out_path else PLOFA_OUTPUT / "history"
+    out.mkdir(parents=True, exist_ok=True)
+
+    pms_sql = f"""
+        SELECT pms.player_id, pms.season, pms.team_id, t.name AS team,
+               COUNT(*) AS apps, SUM(COALESCE(pms.is_starter, 0)) AS starts,
+               SUM(COALESCE(pms.minutes_played, 0)) AS minutes_played,
+               {_agg_select("pms")}
+        FROM player_match_stats pms
+        LEFT JOIN teams t ON t.team_id = pms.team_id
+        GROUP BY pms.player_id, pms.season, pms.team_id"""
+
+    blocks = {}
+    for r in conn.execute(pms_sql):
+        blocks.setdefault((r["player_id"], r["season"]), []).append(
+            _export_block(r, "pms"))
+
+    player_rows = {r["player_id"]: r
+                   for r in conn.execute(
+                       "SELECT player_id, name, nationality, archetype "
+                       "FROM players")}
+    aliases_by_pid = {}
+    for a in conn.execute("SELECT alias, canonical_player_id FROM player_aliases"):
+        aliases_by_pid.setdefault(a["canonical_player_id"], []).append(a["alias"])
+    pos_modal = {}
+    for r in conn.execute(
+            """SELECT player_id, position, COUNT(*) AS games
+               FROM player_match_stats WHERE position IS NOT NULL
+               GROUP BY player_id, position"""):
+        if r["player_id"] not in pos_modal or r["games"] > pos_modal[r["player_id"]][1]:
+            pos_modal[r["player_id"]] = (r["position"], r["games"])
+
+    players = {}
+    for pid in sorted({pid for pid, _s in blocks}):
+        prow = player_rows.get(pid)
+        name = prow["name"] if prow else f"player-{pid}"
+        season_blocks = {}
+        for season in _EXPORT_SEASONS:
+            if (pid, season) in blocks:
+                season_blocks[season] = blocks[(pid, season)]
+        if not season_blocks:
+            continue  # only odd/ALL-TIME rows exist for this id - nothing to show
+        all_blocks = [b for bs in season_blocks.values() for b in bs]
+
+        career = {"apps": sum(b["apps"] or 0 for b in all_blocks),
+                  "starts": sum(b["starts"] or 0 for b in all_blocks),
+                  "minutes_played": sum(b["minutes_played"] or 0
+                                        for b in all_blocks)}
+        for cname, _typ in PLAYER_STAT_COLS:
+            if cname in _RATE_STAT_COLS:
+                num = den = 0.0
+                for b in all_blocks:
+                    w = b["apps"] or 0
+                    num += (b[cname] or 0) * w
+                    den += w
+                career[cname] = round(num / den, 3) if den else None
+            else:
+                total = sum(b[cname] or 0 for b in all_blocks)
+                career[cname] = (round(total, 3) if isinstance(total, float)
+                                 else total)
+
+        last_season = next((s for s in reversed(_EXPORT_SEASONS)
+                            if s in season_blocks), None)
+        finest = (season_blocks[last_season]
+                  if last_season else all_blocks)
+        current_team = max(finest, key=lambda b: b["apps"] or 0)["team"]
+        pos = pos_modal.get(pid, (None, 0))[0]
+
+        players[name] = {
+            "player_id": pid,
+            "aliases": sorted(aliases_by_pid.get(pid, [])),
+            "position": pos,
+            "nationality": (prow["nationality"]
+                            if prow and prow["nationality"] else None),
+            "archetype": (prow["archetype"]
+                          if prow and prow["archetype"] else None),
+            "current_team": current_team,
+            "last_season": last_season,
+            "seasons": season_blocks,
+            "career": career,
+        }
+
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "schema": "plofa_alltime_player_history_v1",
+        "seasons": list(_EXPORT_SEASONS),
+        "players": players,
+    }
+    dest = out / "player_history.json"
+    with open(dest, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=1)
+    print(f"export app-json: {len(players)} players -> {dest}")
+    for s in _EXPORT_SEASONS:
+        n = sum(1 for p in players.values() if s in p["seasons"])
+        print(f"  {s}: {n} players with stats")
+
+
 def report(conn):
     lines = []
     for season in SEASONS:
@@ -1124,6 +1303,30 @@ def report(conn):
     return "\n".join(lines)
 
 
+def _make_console_utf8_safe() -> bool:
+    """Let this CLI print the player names the warehouse actually contains.
+
+    Real PLOFA players carry characters outside cp1252 — 'ć', 'ķ', 'š' — and the
+    default Windows console codec cannot encode them, so `report` used to die
+    with a UnicodeEncodeError on a legitimate name (verified present in the
+    pre-migration backup, so this predates the competition keying).
+
+    Reconfigure to UTF-8 where possible; otherwise fall back to replacing
+    unencodable characters rather than aborting the whole command. Returns True
+    when full UTF-8 output is available.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+            return True
+        except (ValueError, OSError, AttributeError):
+            continue
+    return False
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="PLOFA all-time stats warehouse")
     ap.add_argument("--db", default=None, help="sqlite path (default alltime.db)")
@@ -1147,7 +1350,26 @@ def main(argv=None):
     asub.add_parser("list", help="show registered aliases")
     p_aapply = asub.add_parser("apply", help="rewire all registered aliases' stat rows")
     p_aapply.add_argument("--all", action="store_true", help="apply every registered alias")
+    p_export = sub.add_parser("export", help="export JSON for external apps")
+    esub = p_export.add_subparsers(dest="export_cmd", required=True)
+    p_app = esub.add_parser("app-json",
+                            help="per-player per-season + career stats for the stats-hub app")
+    p_app.add_argument("--out", default=None,
+                       help="output dir (default plofa_output/history)")
+    # ── audit §16 phase 7: competition keying ────────────────────────────
+    p_mig = sub.add_parser(
+        "migrate-competitions",
+        help="key every warehouse row by competition_id (additive, idempotent)")
+    p_mig.add_argument("--dry-run", action="store_true",
+                       help="report what would change and touch nothing")
+    p_mig.add_argument("--no-backup", action="store_true",
+                       help="skip the pre-migration copy (not advised)")
+    p_comp = sub.add_parser(
+        "competition-status",
+        help="show how rows are keyed by competition")
     args = ap.parse_args(argv)
+
+    _make_console_utf8_safe()
 
     conn = connect(args.db)
     if args.cmd == "init":
@@ -1200,6 +1422,47 @@ def main(argv=None):
             else:
                 print("alias apply: use --all to rewire every registered alias, or "
                       "re-run 'alias add ... --apply'")
+    elif args.cmd == "export":
+        init_schema(conn)
+        if args.export_cmd == "app-json":
+            export_app_json(conn, args.out)
+    elif args.cmd in ("migrate-competitions", "competition-status"):
+        # deliberately NO init_schema() here: a migration must see the database
+        # exactly as it is, never a half-created schema
+        from alltime_db_competitions import (
+            backup_database, competition_report, migrate_competitions,
+        )
+        if args.cmd == "competition-status":
+            print(competition_report(conn))
+            return 0
+
+        if not args.dry_run and not args.no_backup:
+            src = Path(args.db) if args.db else DEFAULT_DB
+            if src.exists():
+                made = backup_database(src)
+                print(f"backup: {made}")
+
+        st = migrate_competitions(conn, dry_run=args.dry_run)
+        if st.get("already_migrated"):
+            print("already migrated — nothing to do (this command is idempotent)")
+        elif args.dry_run:
+            print("dry run — nothing was changed")
+            print(f"  would rebuild (constraint widened): "
+                  f"{', '.join(st.get('planned_rebuild', []))}")
+            print(f"  would add competition_id column : "
+                  f"{', '.join(st.get('planned_column', []))}")
+            print(f"  rows in scope: {st['row_counts_before']}")
+        else:
+            print("migration complete")
+            print(f"  rebuilt (constraint widened): {', '.join(st['rebuilt'])}")
+            print(f"  column added               : {', '.join(st['column_added'])}")
+            print(f"  backfilled                 : {st['backfilled']}")
+            print(f"  indexes                    : {st['indexes']}")
+            print(f"  row counts preserved       : "
+                  f"{st['row_counts_before'] == st['row_counts_after']}")
+            print(f"  row content preserved      : {st['checksums_preserved']}")
+            print(f"  FK violations              : {st['foreign_key_violations']}")
+        print(competition_report(conn))
     return 0
 
 

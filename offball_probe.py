@@ -154,14 +154,31 @@ def _wrap_offball(self, pname: str, team: str, ball_x: float, ball_y: float,
             defenders.extend(views[ot][n] for n in names if n in views[ot])
         attacks_right = self.position_engine.team_attacks_right.get(team, True)
         runner_view = _View(pname, getattr(st, "position", "") if st else "")
+        # BALL-VISION at collection (2026-09-21): the probe records the SAME
+        # honest feed the press brains see in play — perceived ball coords
+        # and the runner's certainty (sigma) — so the sample pool and any
+        # future certainty-bucketed surrogate are consistent with deployment.
+        from perception import get_perception_config
+        cfg_bv = get_perception_config()
+        px, py = ball_x, ball_y
+        sigma = 0.0
+        if cfg_bv.ball_vision:
+            try:
+                from ball_vision import perceive_ball
+                px, py, _seen, sigma = perceive_ball(
+                    self, pname, runner_view, attacks_right, ball_x, ball_y,
+                    float(self.state.minute))
+            except Exception:
+                px, py, sigma = ball_x, ball_y, 0.0
         sensors = extract_offball_sensors(
-            runner_view, rx, ry, ball_x, ball_y,
+            runner_view, rx, ry, px, py,
             teammates=teammates, defenders=defenders,
             position_engine=self.position_engine,
             attacks_right=attacks_right,
             game_state=None,
             minute=float(self.state.minute),
             score_diff=self.state.home_goals - self.state.away_goals,
+            ball_sigma=sigma,
         )
         dist = ((ball_x - rx) ** 2 + (ball_y - ry) ** 2) ** 0.5
         _clock = self.state.match_clock_s

@@ -29,6 +29,8 @@ import numpy as np
 
 from brain_sensors import extract_offball_sensors
 from football_brain import OffBallBrain, INPUT_SIZE
+from perception import (get_perception_config, _mental_scale,
+                        _bearing_diff, _forward_angle)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -54,10 +56,19 @@ def random_offball_state(rng: random.Random, position: str) -> Dict[str, Any]:
     ry = rng.uniform(5, 63)
 
     attacks_right = rng.random() < 0.5
-    # Ball within trigger radius 12.5 m of the runner, in the general
-    # direction of the enemy goal.
+    # Ball within trigger radius 12.5 m of the runner.  ~40% of the time the
+    # ball is BEHIND the runner (the "arrived late / ball leaked behind"
+    # geometry) so the conscience actually trains on the phantom-chase
+    # population the diagnostic measured — a ball the runner presses without
+    # seeing (see perceive_ball: cone covers only +/-fov/2, bloat grows
+    # uncertainty ~8m/sim-minute for stale reads).  Without this oversample
+    # the cert axis is <9% of states and the 25th input is too sparse to
+    # learn.
     direction = 1.0 if attacks_right else -1.0
-    bx = rx + direction * rng.uniform(0, 12.0)
+    if rng.random() < 0.40:
+        bx = rx - direction * rng.uniform(0, 12.0)
+    else:
+        bx = rx + direction * rng.uniform(0, 12.0)
     by = ry + rng.uniform(-8, 8)
     bx = max(1.0, min(104.0, bx))
     by = max(1.0, min(67.0, by))
@@ -84,11 +95,60 @@ def random_offball_state(rng: random.Random, position: str) -> Dict[str, Any]:
         dy = max(0, min(68, by + rng.uniform(-12, 12)))
         defenders.append((dx, dy))
 
-    return {
+    cfg = get_perception_config()
+    st = {
         "rx": rx, "ry": ry, "bx": bx, "by": by,
         "attacks_right": attacks_right, "minute": minute,
         "game_state": game_state, "teammates": teammates, "defenders": defenders,
     }
+    px, py, sigma = _honest_ball_for(st, rng, cfg) if cfg.ball_vision \
+        else (st["bx"], st["by"], 0.0)
+    st["px"], st["py"], st["sigma"] = px, py, sigma
+    return st
+
+
+def _honest_ball_for(st: Dict[str, Any], rng: random.Random,
+                     cfg: Any) -> Tuple[float, float, float]:
+    """The PERCEIVED ball + running uncertainty (sigma, m) for a synthetic
+    state, mirroring ball_vision.perceive_ball against a DNA-less runner.
+
+    The evolution distribution now matches deployment: a runner inside his
+    view cone/range reads the TRUE ball with a small distance noise; a blind
+    runner reads his "last known" with uncertainty growing at
+    ball_stale_growth per out-of-sight minute (drawn 1..4 for the dense
+    blind population the diagnostic actually measured — ~66% of reads).
+
+    Returns ``(px, py, sigma)``.  sigma=0 for fresh reads (certainty 1).
+    """
+    rx, ry = st["rx"], st["ry"]
+    attacks_right = st.get("attacks_right", True)
+
+    power, acc = _mental_scale(_NO_DNA_VIEW)
+    radius = float(cfg.ball_radius) * (0.5 + 0.5 * power)
+    dist = float(np.hypot(st["bx"] - rx, st["by"] - ry))
+    fov_rad = np.deg2rad(float(cfg.ball_fov_deg))
+    bearing = _bearing_diff(rx, ry, st["bx"], st["by"],
+                            _forward_angle(attacks_right))
+    visible = (dist <= radius) and abs(bearing) <= fov_rad / 2.0
+
+    if visible:
+        sigma = float(cfg.ball_noise) * (1.0 - acc) * (0.4 + 0.6 * dist / max(radius, 1.0))
+        return st["bx"], st["by"], sigma
+
+    sigma = float(cfg.ball_noise) * (1.0 - acc) + \
+        float(cfg.ball_stale_growth) * rng.uniform(1.0, 4.0)
+    px = st["bx"] + rng.gauss(0.0, sigma)
+    py = st["by"] + rng.gauss(0.0, sigma)
+    return px, py, sigma
+
+
+class _NoDNAView:
+    """Synthetic runner with no DNA — mental helpers default to 60."""
+
+    dna = None
+
+
+_NO_DNA_VIEW = _NoDNAView()
 
 
 class _DummyPositionEngine:
@@ -124,10 +184,11 @@ def _sensors_for(state: Dict[str, Any], position: str) -> np.ndarray:
             self.dna = None
 
     return extract_offball_sensors(
-        _Runner(), state["rx"], state["ry"], state["bx"], state["by"],
+        _Runner(), state["rx"], state["ry"],
+        state["px"], state["py"],
         teammates=teammates, defenders=defenders, position_engine=pe,
         attacks_right=state["attacks_right"], game_state=state["game_state"],
-        minute=state["minute"],
+        minute=state["minute"], ball_sigma=state.get("sigma", 0.0),
     )
 
 
@@ -159,42 +220,73 @@ def synthetic_conscience_fitness(
 ) -> float:
     """Score a conscience brain over random off-ball defending states.
 
-    Evidence-gated reward (fixes the off-policy collapse where the old fitness
-    rewarded "press" in cells where the heuristic -- which pressed 67% of the
-    time -- created all the data):
+    Three weighted terms, all in [0, 1]:
 
-      * evidence cell (both press and hold >= _EVIDENCE_MIN samples):
-          reward = surrogate.expected_success(decided)
-        -> the net learns WHICH decision is genuinely better there.
-      * silent cell (no decision-local counterfactual):
-          reward = 1 - |p - _HEUR_PRESS_PROB[pos]|   (smooth, maximized at the
-          heuristic press frequency) -> the net reproduces the calibrated
-          heuristic instead of committing blindly.
+      1. Evidence term (40%): per-state surrogate credit, shaped by
+         CERTAINTY.  The certainty slot (1/(1+sigma)) tells the conscience
+         how sure the runner is, so evidence credit for PRESSING is gated on
+         knowing where the ball is:
+             press credit  ~ expected_success(press)
+                           * clamp((cert - 0.15)/0.4)   (blind -> ~0)
+             hold credit   ~ expected_success(hold) * (0.8 + 0.2*cert)
+         (pressing blind forfeits the evidence credit; holding blind is safe.)
 
-    Without a surrogate the reward is the neutral 0.5 for every state.
+      2. Calibration term (30%): the DECISION frequency over all states must
+         reproduce the calibrated heuristic press rate:
+             1 - |P(press) - _HEUR_PRESS_PROB[pos]|
+         (this replaces the old logit-mean penalty, which silently let nets
+         collapse to always/never while averaging p == heur).
+
+      3. Blind-cap term (30%): blind reads (cert < 0.35) must NOT press at
+         the omnisscient base rate — the phantom-chase artifact this whole
+         seam exists to kill.  Penalize every blind press above ~60% of the
+         calibrated rate:
+             1 - max(0, P(press | blind) - 0.6 * _HEUR_PRESS_PROB[pos])
+
+    Without a surrogate the evidence term degrades to the neutral 0.5.
     """
     rng = random.Random(seed)
     heur = _HEUR_PRESS_PROB.get(player_position, 0.6)
-    rewards: List[float] = []
+    heur = max(0.05, heur)
+    evidence_rewards: List[float] = []
+    decision_rows: List[Tuple[float, float]] = []  # (cert, press?1:0)
 
     for _ in range(n_states):
         st = random_offball_state(rng, player_position)
         sensors = _sensors_for(st, player_position)
         p = brain.forward(sensors)
-        decision = "press" if p > 0.5 else "hold"
+        cert_raw = st.get("sigma", 0.0)
+        cert = 1.0 if not cert_raw else 1.0 / (1.0 + cert_raw)
+        decision = 1.0 if p > 0.5 else 0.0
 
         if surrogate is not None and surrogate.is_evidence_cell(
             sensors, player_position, min_both=_EVIDENCE_MIN):
-            reward = surrogate.expected_success(sensors, decision, player_position)
-        elif surrogate is not None:
-            reward = 1.0 - abs(p - heur)
-        else:
-            reward = 0.5
-        rewards.append(reward)
+            reward = surrogate.expected_success(
+                sensors, "press" if decision else "hold", player_position)
+            if decision:
+                reward = reward * max(0.0, min(1.0, (cert - 0.15) / 0.4))
+            else:
+                reward = reward * (0.8 + 0.2 * cert)
+            evidence_rewards.append(reward)
+        elif surrogate is None:
+            evidence_rewards.append(0.5)  # evidence term degrades to neutral
+        # silent cells: no per-state reward; the batch terms handle them
+        decision_rows.append((cert, decision))
 
-    if not rewards:
-        return 0.0
-    return max(0.0, min(1.0, statistics.mean(rewards)))
+    if not decision_rows:
+        return 0.5
+
+    ev_mean = statistics.mean(evidence_rewards) if evidence_rewards else 0.5
+    freq_all = sum(d for _, d in decision_rows) / len(decision_rows)
+    calib = 1.0 - abs(freq_all - heur)
+
+    blind_rows = [d for c, d in decision_rows if c < 0.35]
+    freq_blind = sum(blind_rows) / len(blind_rows) if blind_rows else 0.0
+    blind_cap = 0.6 * heur
+    blind_term = 1.0 - max(0.0, freq_blind - blind_cap)
+
+    score = 0.4 * ev_mean + 0.3 * calib + 0.3 * blind_term
+    return max(0.0, min(1.0, score))
 
 
 # ─────────────────────────────────────────────────────────────

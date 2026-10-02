@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import match_engine as _match_engine
 from match_engine import TeamProfile, MatchState, TeamStyle
 from tactical_shapes import FormationStance, formation_stance_for
 
@@ -48,6 +49,12 @@ class EffectiveTactics:
     press_success_rate: float
     possession_target: float
 
+    # Checkpoint 30 — club-philosophy carry-over (None-safe neutral 0.0 when
+    # the profile has no philosophy).  Lever B/C read these off the live
+    # EffectiveTactics inside PossessionEngine.sequence_length.
+    patience: float = 0.0
+    starve: float = 0.0
+
     # Diagnostic tag so exports/commentary can say WHY (e.g. "chasing_2_late")
     posture: str = "baseline"
 
@@ -55,6 +62,166 @@ class EffectiveTactics:
     # (all-out chase shape, seeing it out, etc.). Read directly by the
     # PositionEngine / exports for this minute.
     stance: FormationStance = FormationStance.BASELINE
+
+
+def _effective_from_posture_pressing(
+    profile: TeamProfile,
+    state: MatchState,
+    team_name: str,
+    home_team: str,
+    red_cards_against: int,
+    avg_stamina: float,
+    posture: str,
+    pressing: float,
+) -> EffectiveTactics:
+    """Build EffectiveTactics from a posture + pressing pair.
+
+    Shared core for the live-brain path (which polls ``Manager.decide()``
+    first) and the stored-reading helpers (which reuse the manager's
+    current instruction without polling). Physical modifiers are shared:
+    man-down, cagey opening, fatigue are match FACTS, not choices.
+    """
+    press   = profile.press_intensity
+    tempo   = profile.tempo
+    direct  = profile.directness
+    def_line = profile.defensive_line
+    shots   = profile.shots_per_sequence
+    big_ch  = profile.big_chance_ratio
+    press_succ = profile.press_success_rate
+    poss_target = profile.possession_target
+
+    if posture == "ATTACK":
+        u = pressing
+        press = min(1.0, press * (1 + 0.35 * u))
+        tempo = min(1.0, tempo * (1 + 0.30 * u))
+        direct = min(1.0, direct * (1 + 0.40 * u))
+        def_line = min(1.0, def_line * (1 + 0.25 * u))
+        shots = shots * (1 + 0.45 * u)
+        big_ch = big_ch * (1 - 0.10 * u)   # more shots, lower avg quality
+        poss_target = min(75, poss_target * (1 + 0.15 * u))
+        posture_tag = "brain_ATTACK"
+        stance = FormationStance.ALL_OUT_CHASE
+    elif posture == "DEFEND":
+        c = pressing
+        press = press * (1 - 0.35 * c)
+        tempo = tempo * (1 - 0.30 * c)
+        direct = direct * (1 - 0.15 * c)   # keep the ball, don't rush
+        def_line = def_line * (1 - 0.30 * c)  # drop deeper
+        shots = shots * (1 - 0.35 * c)
+        poss_target = poss_target * (1 - 0.05 * c)
+        posture_tag = "brain_DEFEND"
+        stance = FormationStance.SEE_IT_OUT
+    else:  # BALANCED — mild modulation anchored at the authored profile
+        drift = (pressing - 0.5) * 0.10
+        press = min(1.0, press * (1 + drift))
+        tempo = min(1.0, tempo * (1 + drift))
+        posture_tag = "brain_BALANCED"
+        stance = FormationStance.BASELINE
+
+    # ── PHYSICAL MODIFIERS (shared with the static path) ─────────
+    if red_cards_against > 0:
+        man_down_factor = 1.0 - 0.12 * red_cards_against
+        press = press * man_down_factor
+        def_line = def_line * man_down_factor
+        tempo = tempo * man_down_factor
+        poss_target = poss_target * man_down_factor
+        posture_tag += "+man_down"
+    if state.minute <= 10:
+        press = press * 0.90
+        direct = direct * 0.92
+    if avg_stamina < 75.0:
+        fatigue_factor = min(1.0, (75.0 - avg_stamina) / 25.0)  # 0.0@75, 1.0@50
+        press = press * (1.0 - 0.40 * fatigue_factor)
+        tempo = tempo * (1.0 - 0.25 * fatigue_factor)
+        def_line = def_line * (1.0 - 0.30 * fatigue_factor)
+        posture_tag += "+fatigued"
+
+    return EffectiveTactics(
+        style=profile.style if hasattr(profile, 'style') else None,
+        press_intensity=round(min(1.0, max(0.05, press)), 4),
+        tempo=round(min(1.0, max(0.10, tempo)), 4),
+        directness=round(min(1.0, max(0.05, direct)), 4),
+        defensive_line=round(min(1.0, max(0.05, def_line)), 4),
+        shots_per_sequence=round(max(0.02, shots), 4),
+        big_chance_ratio=round(min(0.80, max(0.15, big_ch)), 4),
+        press_success_rate=round(min(0.55, max(0.05, press_succ)), 4),
+        possession_target=round(min(80, max(20, poss_target)), 2),
+        patience=round(float(getattr(profile, "patience", 0.0) or 0.0), 4),
+        starve=round(float(getattr(profile, "starve", 0.0) or 0.0), 4),
+        posture=posture_tag,
+        stance=stance,
+    )
+
+
+def _effective_from_brain_decision(
+    profile: TeamProfile,
+    state: MatchState,
+    team_name: str,
+    home_team: str,
+    red_cards_against: int,
+    avg_stamina: float,
+    manager,
+    engine,
+) -> EffectiveTactics:
+    """Build EffectiveTactics from a live Manager.decide() decision.
+
+    Phase 6 (opt-in USE_MANAGER_BRAIN): instead of the static posture
+    thresholds, the full decision-maker (manager_profile.Manager — brain +
+    mind + memory) announces a posture (DEFEND/BALANCED/ATTACK) and a
+    pressing intensity 0..1. We translate those into the same dials the
+    static path drives, so everything downstream (PossessionEngine,
+    AttackChain, exports) keeps consuming EffectiveTactics unchanged.
+    """
+    decision = manager.decide(engine, team_name)
+    posture = decision.get("posture", "BALANCED")
+    pressing = min(1.0, max(0.0, float(decision.get("pressing", 0.5))))
+    return _effective_from_posture_pressing(
+        profile, state, team_name, home_team,
+        red_cards_against, avg_stamina, posture, pressing,
+    )
+
+
+def brain_stored_possession_target(profile, manager) -> Optional[float]:
+    """Possession target under the manager's CURRENT stored instruction.
+
+    Phase 8: lets the live coach move the ball-share dial. Pure read of
+    ``manager._current_posture`` / ``_current_pressing`` — no ``decide()``
+    poll, so no dwell disturbance and no extra mind convictions. Uses the
+    SAME posture math as the brain path (ATTACK lifts, DEFEND drops,
+    BALANCED leaves the authored target alone).
+
+    Returns None when the brain path is off or no live manager is wired,
+    so flag-OFF callers stay byte-identical.
+    """
+    if not bool(getattr(_match_engine, "USE_MANAGER_BRAIN", False)):
+        return None
+    if manager is None or not hasattr(manager, "decide"):
+        return None
+    posture = getattr(manager, "_current_posture", None)
+    if posture not in ("ATTACK", "DEFEND", "BALANCED"):
+        return None
+    pressing = min(1.0, max(0.0, float(
+        getattr(manager, "_current_pressing", 0.5))))
+    base = float(profile.possession_target)
+    if posture == "ATTACK":
+        return min(75, base * (1 + 0.15 * pressing))
+    if posture == "DEFEND":
+        return base * (1 - 0.05 * pressing)
+    return base
+
+
+# ── MANAGER TRACE REMOVED (Phase 6) ─────────────────────────────
+# The Phase 0 temporary instrumentation (MANAGER_TRACE module list +
+# _manager_trace()) has been retired now that the Manager Brains wiring
+# lands — the brain path returns its own decision posture directly and
+# no longer needs a side-channel trace list.
+
+# ── MANAGER COLLECTION HOOK (Phase 7, opt-in) ────────────────────
+# Set by manager_collection.collect_manager_samples() to record the
+# STATIC manager's (sensors, posture) decisions as a training curriculum.
+# None (default) = zero engine impact. Callable(team_name, state,
+# posture, engine).
+_COLLECTION_HOOK = None
 
 
 class TacticalAI:
@@ -68,9 +235,23 @@ class TacticalAI:
     @staticmethod
     def adjust(profile: TeamProfile, state: MatchState, team_name: str,
                home_team: str, red_cards_against: int = 0, avg_stamina: float = 100.0,
-               manager=None) -> EffectiveTactics:
+               manager=None, engine=None) -> EffectiveTactics:
         gd = state.goal_difference if team_name == home_team else -state.goal_difference
         minute = state.minute
+
+        # ── MANAGER-BRAIN PATH (Phase 6, opt-in) ─────────────────
+        # Master switch ON + a real Manager (has .decide) + the engine
+        # supplied → the FULL decision-maker drives the dials. Polled at
+        # EVERY trigger event (not every minute); the 180 s posture dwell
+        # is enforced inside Manager.decide itself. Returns early so the
+        # static thresholds below are left untouched.
+        if (bool(getattr(_match_engine, "USE_MANAGER_BRAIN", False))
+                and engine is not None and manager is not None
+                and hasattr(manager, "decide")):
+            return _effective_from_brain_decision(
+                profile, state, team_name, home_team,
+                red_cards_against, avg_stamina, manager, engine,
+            )
 
         press   = profile.press_intensity
         tempo   = profile.tempo
@@ -95,13 +276,13 @@ class TacticalAI:
         protect_min = 70
         lead_min = 80
         risq = 0.0
-        if manager is not None:
+        if manager is not None and hasattr(manager, "chase_shift"):
             chase_min = max(45, 60 - manager.chase_shift())
             push_min = max(50, 70 - manager.chase_shift() * 0.7)
             protect_min = max(50, 70 - manager.protect_shift())
             lead_min = max(60, 80 - manager.protect_shift())
             # An attacking manager also pushes possession harder while chasing.
-            risq = max(0.0, min(1.0, manager.risk_tolerance))
+            risq = max(0.0, min(1.0, float(getattr(manager, "risk_tolerance", 0.0))))
 
         # ── CHASING THE GAME ────────────────────────────────────
         if gd <= -2 and minute >= chase_min:
@@ -177,6 +358,9 @@ class TacticalAI:
             profile, state, team_name, home_team, manager=manager
         )
 
+        if _COLLECTION_HOOK is not None:
+            _COLLECTION_HOOK(team_name, state, posture, engine)
+
         return EffectiveTactics(
             style=profile.style if hasattr(profile, 'style') else None,
             press_intensity=round(min(1.0, max(0.05, press)), 4),
@@ -187,6 +371,8 @@ class TacticalAI:
             big_chance_ratio=round(min(0.80, max(0.15, big_ch)), 4),
             press_success_rate=round(min(0.55, max(0.05, press_succ)), 4),
             possession_target=round(min(80, max(20, poss_target)), 2),
+            patience=round(float(getattr(profile, "patience", 0.0) or 0.0), 4),
+            starve=round(float(getattr(profile, "starve", 0.0) or 0.0), 4),
             posture=posture,
             stance=stance,
         )

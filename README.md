@@ -109,6 +109,22 @@ training layer.
 role behaviour modules (`striker_behavior.py`, `winger_behavior.py`,
 `midfielder_behavior.py`, `fullback_behavior.py`).
 
+**`physics/` — the continuous physical-time layer.** A standalone package with
+zero module-level imports from the live pipeline, so it can be built and
+calibrated without touching it. Off by default (`MatchConfig.physics_enabled`).
+When enabled it is consulted at four points in a live match:
+
+| Point | Where | What it adds |
+|---|---|---|
+| Pass block | `event_chain.py` — between `_pass_block_probability` and its dice roll | The engine asks *is he near the lane?*; this asks *can he get there before the ball does?* |
+| Keeper save | `event_chain.py` — between `_is_shot_savable` and the xG division | `effective_reach` has no flight time in it, so it cannot tell a shot from 30 m (1.20 s) from one at 8 m (0.27 s) |
+| Player movement | `match_engine.py` — after the off-ball step | Momentum, an acceleration limit on turning, and fatigue in the legs. The engine's shape logic still decides the target; the physics only decides how the body gets there |
+| Ball flight time | `event_chain.py` — the receiving event's timestamp | A 40 m ball in behind used to be logged arriving at the instant it was struck |
+
+The first two can only *remove* credit the physics cannot justify, never add
+any. The last two refine what the engine already computed. Full report,
+including what is deliberately **not** done: [`docs/PHYSICS-LAYER.md`](docs/PHYSICS-LAYER.md).
+
 ### Outputs & analysis
 
 `exporter.py` (`PLOFAExporter` — xlsx/csv/json/png), `pass_network.py`
@@ -209,6 +225,35 @@ Run from the repo root with the venv Python:
 | `tests/test_possession_causality.py` | Possession chain cause/effect |
 | `tests/test_checkpoint7_subsystems.py` | **New (P1–P7):** celebration emission + clock, injury-event ordering, training records/commitment, young-pro development, full-match smoke |
 | `test_decision_brain.py`, `test_width_changes.py` (root) | DecisionBrain behaviour, pitch-width fixes |
+| `tests/test_world_ids.py` | World identity: ID minting, name↔ID reversibility, collision loudness, live roster coverage |
+| `tests/test_world_model.py` | World schemas: JSON round trip, ID-only reference graph, per-season stadium capacity |
+| `tests/test_world_competition.py` | World competition: rules-as-data, additive context fragment, league + knockout progression |
+| `tests/test_world_calendar.py` | World calendar: **fixture-collision guarantee**, determinism, priority, rest, postponement |
+| `tests/test_world_ledger.py` | World ledger: **plan §18 one-continuous-state**, scoped vs carry-across, availability, 26/27 write guard |
+| `tests/test_world_ingest.py` | Engine→world crossing: verbatim pass-through, identity, and a **real simulated match** |
+| `tests/test_world_qualification.py` | Promotion/relegation + continental entry, all rules as data; a tie that was not played is never decided |
+| `tests/test_world_month.py` | Real 2026-27 dates and rules; the calendar against the real football schedule; the §18 continuity checker |
+| `tests/test_alltime_db_competitions.py` | Warehouse competition keying: additive, idempotent, checksum-verified, refuses unknown schemas |
+| `tests/test_extra_time.py` | **Extra time + penalty shootouts** (the engine-touching phase): the 26/27 gate, ET, the shootout, two-legged aggregates |
+
+### World-layer suites (audit §16, phases 1–8)
+
+```powershell
+# fast layer — no match simulation
+& ".\.venv\Scripts\python.exe" -m pytest tests\test_world_ids.py tests\test_world_model.py tests\test_world_competition.py tests\test_world_calendar.py tests\test_world_ledger.py tests\test_world_qualification.py tests\test_world_month.py tests\test_alltime_db_competitions.py tests\test_alltime_db.py -q
+
+# crossing layer — runs a real match, ~90s
+& ".\.venv\Scripts\python.exe" -m pytest tests\test_world_ingest.py -q
+
+# engine-touching phase — runs many real matches, ~10-15 min
+& ".\.venv\Scripts\python.exe" -m pytest tests\test_extra_time.py -q
+
+# the audit §20 proof harness
+& ".\.venv\Scripts\python.exe" -m world.proof
+```
+
+The world layer is imported by **nothing** in the live 26/27 pipeline — only by
+its own tests. See §11.
 
 ### Known pre-existing failure (do not "fix" blindly)
 
@@ -465,3 +510,371 @@ build-up keeper territory · `TURNOVER` ~140–165.
 > for reproducible comparisons (see §8). Run with the prev-generation brains
 > in `brains_switchfix/` via `PLOFA_BRAIN_DIR=<path>` if you ever need the A/B
 > baseline.
+
+---
+
+## 11. World layer (`world/`) — Phases 1–4
+
+The **world** is everything around the match: countries, cities, stadiums, clubs,
+people, competitions, and the calendar that decides *when* anyone plays. It is
+being built against the World Football plan and `PLOFA_WORLD_LAYER_AUDIT.md`,
+which audits the gap between today's single-league PLOFA and that plan.
+
+**The one invariant that never changes: no competition runs its own engine.**
+The world layer selects *which* match, *when*, and *under which rules*; every
+match still rounds-trips through the same `MatchEngine` (plan §10).
+
+### The isolation guarantee
+
+`world/` is imported by **nothing** in the live 26/27 pipeline — only by its own
+tests. It never writes to `season_state.json`, `season_stats.json`,
+`manager_state.json`, `referee_state.json` or `plofa_output/`, and it reaches the
+live types (`LeagueTable`, `FixtureList`, `MatchConfig`) only through lazy or
+duck-typed imports at call time. Both properties are enforced by tests, not by
+convention.
+
+### Modules
+
+| Module | Role |
+|---|---|
+| `world/ids.py` | Canonical ID minting + the reversible name↔ID adapter and alias layer |
+| `world/model.py` | Typed world schemas (Country, City, Stadium, Club, Player, Manager, Referee) + JSON (de)serialisation |
+| `world/competition.py` | `CompetitionRules` as data, the additive `MatchContextFragment`, `LeagueCompetition`, `KnockoutCompetition` |
+| `world/calendar.py` | Multi-competition fixture scheduler with a hard no-collision guarantee |
+| `world/ledger.py` | World-facing state store: one continuous player state across every competition |
+| `world/ingest.py` | Engine → world translator: real `MatchResult` → ledger, reusing the exporter's own lines |
+| `world/realworld.py` | **Real 2026-27 rules and published fixture dates** as data (PL, UCL, EFL Cup, FA Cup) |
+| `world/testworld.py` | The controlled test world built on those real rules and dates (plan §17) |
+| `world/month.py` / `world/runmonth.py` | The one-month integration test (plan §18) and its runner |
+| `world/proof.py` | The audit §20 proof harness (`python -m world.proof`) |
+
+### Identity
+
+IDs are **derived, never ordinal**: `mint_id(kind, key)` takes a crc32 of the
+canonical key and renders it base36, so `"Hartwell City"`, `"hartwell  city"`
+and `"  HARTWELL CITY "` are one identity, and inserting a new entity never
+renumbers the existing ones. Player identity is club-qualified
+(`player_key(club, name)`) so two players with the same name in different clubs
+never merge. Diacritics are preserved — a real identity never loses
+distinguishing marks.
+
+Three operations, deliberately separated so a merge can never be silent:
+
+- `register(...)` — attach a name to an ID. Idempotent for the same key;
+  **raises** if a *different* canonical key would land on an owned ID, including
+  when `id_override` supplies the ID explicitly.
+- `recannonicalise(...)` — the only way an existing identity's canonical name
+  changes (a real rename, e.g. `Victor James` → `Rayan Victor James`). The old
+  spelling keeps resolving by default, matching the `alltime_db.alias`
+  retro-compatibility rule.
+- `validate()` — the integrity gate: every registered name must reverse to its
+  own ID.
+
+The live 26/27 roster currently resolves to **18 clubs and 433 players**
+(`EXPECTED_CLUBS` / `EXPECTED_PLAYERS` in `tests/test_world_ids.py`), all names
+unique roster-wide. A sample of club digests is **frozen** in that suite — if the
+canonical-key rule or the digest ever changes, those flip and any world ledger
+already written stops resolving, so the change must be deliberate.
+
+### The calendar and its one hard invariant
+
+Plan §12: *"The system must not accidentally schedule the same team to play two
+matches at the same time."*
+
+`Calendar.build()` places every planned fixture from every competition and
+guarantees:
+
+1. **No club plays twice on one calendar day** — the hard invariant.
+2. **Minimum rest** (default 3 days) between any two of a club's fixtures,
+   overridable per competition.
+3. **One venue, one match, one day** — a stadium is a resource like a squad.
+4. **Contested dates go to the higher-priority competition**, so a cup tie is
+   never squeezed out by the league just because the league was generated first.
+   `continental_midweek` (300) > `cup_midweek` (200) > `league_saturday` (100).
+5. **Fully deterministic** — placement order is a total order over stable keys,
+   so a calendar is reproducible with no RNG and no dependence on dict/set
+   iteration order. `test_build_is_deterministic_across_processes` runs the
+   build in two fresh interpreters under *different* `PYTHONHASHSEED` values and
+   requires byte-identical output.
+
+A fixture that cannot be placed inside the horizon is reported as an
+`unscheduled` violation and left out — never silently dropped, and never allowed
+to break an invariant. `validate()` re-derives every invariant from the placed
+fixtures alone, independently of the placement code, because an invariant
+checked only by the code that enforces it is not checked at all.
+
+`postpone()` searches forward for the first date that satisfies every invariant
+rather than merely rolling to the next matching weekday — in a league where every
+club plays every week, no candidate weekday is ever free, so a naive
+postponement could never succeed. `reschedule()` refuses outright rather than
+applying a move that would create a collision.
+
+### The ledger — one continuous player state
+
+Plan §7 is the reason `world/ledger.py` exists:
+
+> A player's state must not reset simply because he moves from the league to a
+> cup or Champions League. […] The player entering the Champions League must
+> remember what happened on Saturday.
+
+The ledger is built around one distinction, and conflating these two is the bug
+the design exists to prevent:
+
+| | Lives where | Survives a competition boundary? |
+|---|---|---|
+| **Carry-across** — fatigue, fitness, injuries, suspensions, cards, confidence, form, workload, development | once per player, top level | **yes** — that is the point |
+| **Scoped** — appearances, minutes, goals, assists, shots, xG, cards | `per_season[season]["per_competition"][competition]` | no — league and continental rows *coexist* (plan §8) |
+
+Career totals are a **query** over the scoped lines, never a second counter that
+can drift; `SCOPED_TO_CARRY_ACROSS` declares which continuous field each scoped
+stat accumulates into, and the suite asserts the two lists cannot diverge.
+
+The ledger deliberately does **not** model fatigue, injury probability or
+development. Those belong to `squad_manager` / `training_system`, and plan §13
+is explicit that existing logic is reused rather than duplicated. Callers push
+engine-computed values in via `apply_post_match`; the ledger owns *scoping and
+continuity*, not physics.
+
+Suspension is resolved against the **competition's own** rule, because a
+five-yellows-in-six ban in the league need not apply in a cup with a different
+accumulation window. The window is counted in matches, not days, and every
+yellow is stamped with the match index at which it was earned — a card that is
+not recorded is a card the accumulation rule can never see.
+
+Injuries and suspensions expire on matchday boundaries via `settle()` /
+`advance_matchday()`. Without that step a player is unavailable **forever**,
+which silently ends a season; `record_matchday()` bundles record-then-advance as
+the safe default.
+
+**The 26/27 dual-write rule (audit §14).** The ledger refuses, in code, to open
+`season_state.json`, `season_stats.json`, `manager_state.json`,
+`referee_state.json` or `alltime.db` as its own store — a stray write there
+corrupts a season that cannot be replayed. `read_plofa_season_state()` reads the
+live ledger **read-only** and hands back copies; `import_plofa_season_state()`
+seeds only season-level facts, never duplicating per-player state that the live
+`SeasonState` remains authoritative for.
+
+### The crossing: real engine output → world ledger
+
+`world/ingest.py` is where the two halves of the world layer meet. Its one
+governing rule is that **the ledger never re-derives anything the engine already
+decided** — plan §13 requires existing squad/fitness logic to be reused, not
+duplicated, so this module is a translator and nothing more:
+
+| Value | Source | Treatment |
+|---|---|---|
+| per-player line (minutes, goals, assists, shots, xG, cards) | `exporter.PLOFAExporter.accumulator.stats` — the same dict the xlsx/csv/JSON use | verbatim, so the world and the published reports can never disagree |
+| fatigue / fitness | `squad_manager.SubstitutionController.stamina` | verbatim, with a lossless 0-100 → 0-1 unit mapping |
+| injuries | `PlayerStaminaState.is_injured` / `injury_type` / `injury_minute` | verbatim |
+| confidence / form | `SeasonState` (not on `MatchResult`) | caller-supplied; defaults to `None` = "engine did not say" |
+
+Two consequences worth knowing:
+
+- **`shots` is a definitional sum.** The exporter splits them into
+  `shots_on_target` / `shots_off_target` / `shots_blocked_att` and has no single
+  key, so the ledger's one field is their sum — pinned by name in
+  `world.ingest.SHOT_PARTS` so the choice is visible rather than buried.
+- **`MatchResult` does not carry the substitution controller.** Post-match
+  stamina lives on the `SubstitutionController` the caller created and passed to
+  `set_stamina_controller`, so `apply_result(..., sub_controller=...)` is
+  *required* for fatigue and injuries to cross. Omit it and those fields stay
+  absent — the ledger reads `None` as "keep what you had" rather than inventing
+  a plausible number. Found by the real-match test, not assumed.
+
+`apply_competition_context()` is the reverse direction and the only hand-off to
+the engine: it folds a competition's rules into a real `MatchConfig` and returns
+a **new** config, never mutating the input.
+
+### Competition keying in the warehouse (audit §16 phase 7)
+
+`alltime.db` assumed one competition per season. Three constraints encoded that,
+and each broke the moment the same two clubs could meet in a league *and* a cup:
+
+```
+matches             UNIQUE(season, matchday, home_team_id, away_team_id)
+player_match_stats  PRIMARY KEY (season, match_date, team_id, player_id)
+goals               UNIQUE(season, matchday, team_id, minute, scorer)
+```
+
+`player_season_stats` and `season_standings` had no competition dimension at
+all. SQLite cannot add a column to a PRIMARY KEY or UNIQUE constraint, so this is
+a controlled table rebuild in `alltime_db_competitions.py`:
+
+- **refuses to guess** — each rebuild declares the exact constraint text it
+  expects; an unrecognised schema aborts with nothing changed;
+- **preserves data** — row counts *and* per-table content checksums are compared
+  before/after, and a mismatch rolls back;
+- **respects foreign keys** — off during the rebuild, `foreign_key_check`
+  afterwards;
+- **is idempotent** — a second run reports "already migrated";
+- **backs up first** — `alltime.db.pre-competition-keying`, plus WAL sidecars.
+
+```powershell
+& ".\.venv\Scripts\python.exe" alltime_db.py migrate-competitions --dry-run
+& ".\.venv\Scripts\python.exe" alltime_db.py migrate-competitions
+& ".\.venv\Scripts\python.exe" alltime_db.py competition-status
+```
+
+**Applied 2026-09-25** to the live warehouse: 3 tables rebuilt, 2 columns added,
+19,467 rows backfilled to `competition_id='CMP-PLOFA'`, row counts and content
+checksums preserved, 0 FK violations, `integrity_check: ok`. A replay *within* a
+competition is still correctly refused — only cross-competition meetings are now
+legal. The rebuild left 138 MB of free pages, reclaimed with `VACUUM`.
+
+### Extra time & penalty shootouts (audit §16 phase 5)
+
+The only phase that touches the match engine, and therefore the one with the
+strictest gate. Everything is behind two `MatchConfig` flags that both default
+to `False`:
+
+```python
+MatchConfig(..., extra_time=True, penalties=True)   # a knockout tie
+```
+
+- **Extra time** runs through the *same* `_run_minute` closure as the first 90 —
+  there is no simplified "cup mode". Same brains, chains, physics and
+  substitutions, on tired legs. It ends the moment a side leads by two, or when
+  the 30 minutes are up, whichever comes first. The interval before the second
+  period buys 6% recovery against half-time's 18%.
+- **The shootout draws from `_COSMETIC_RNG`**, the dedicated cosmetic stream —
+  *not* the football RNG. A shootout is the resolution of a tie, not part of the
+  football; if it consumed the seeded sequence it would change every subsequent
+  event. This is the same discipline already used for goal-celebration durations,
+  and there is a test that asserts the football stream is untouched.
+- Kick order is outfielders → keeper → substitutes, and the shootout emits a
+  `PENALTY_SCORED` / `PENALTY_MISSED` event per kick. **A shootout is never a
+  match goal** — it appears in `MatchResult.shootout`, not in the scoreline.
+- `winner_team` is deliberately `""` for an ordinary league match: a league
+  match has no winner concept, and reporting the leader would leak knockout
+  semantics into every warehouse row.
+- Two-legged support: `MatchConfig.aggregate` carries the score *before* the leg
+  and the result reports the running total; `away_goals_rule` breaks a level leg
+  from the standing total. The leg result is always checked first — you cannot
+  lose a leg and advance.
+
+### The phase-5 gate, and why it counts executions
+
+The claim is "a 26/27 league match never executes a line of the new code". That
+is proved **runtime-verbatim**: the guard `if self.config.extra_time or
+self.config.penalties:` is asserted to exist and to sit after the 90 minutes, and
+a default match is asserted to leave every new state field at its neutral value
+with no shootout event on the timeline.
+
+It is deliberately **not** proved by comparing simulated output, because the live
+match is not reproducible from `random.seed()` — two fresh processes with the
+same seed and `PYTHONHASHSEED=0` produce different event timelines (verified
+2026-09-25, pre-existing, unrelated to this phase; the live path draws on an
+entropy-seeded source that `random.seed` and `np.random.seed` do not control).
+A fingerprint comparison would be a *false* gate: it would report "regression" on
+a green engine. Counting executions cannot lie.
+
+> **Open finding, pre-existing:** the live match is not seed-reproducible. Every
+> calibration number measured before this is suspect for the same reason. Worth
+> a dedicated investigation — it is not a phase-5 defect.
+
+### Real 2026-27 rules and fixture dates (`world/realworld.py`)
+
+An earlier version of the test world invented its own kickoff times, rest
+periods and matchday spacing. That proves the plumbing works and nothing else —
+it says nothing about whether the rules are right, and matching real football is
+the entire purpose of the simulator. `world/realworld.py` holds the **published**
+2026-27 calendar as data, with sources:
+
+- **Premier League** — 20 clubs, 38 matchdays, 3 relegated; 21 Aug 2026 – 30 May
+  2027; fixtures released 19 June; 33 weekend + 5 midweek rounds; **four**
+  international breaks including a three-week World Cup window.
+- **UEFA Champions League** — 36 clubs, 8 league-phase matchdays on the real
+  dates (8–10 Sep, 13/14 Oct, 20/21 Oct, 3/4 Nov, 24/25 Nov, 8/9 Dec, 19/20 Jan,
+  27 Jan 2027), top 8 direct to the R16; play-offs from 16/17 Feb through the
+  final on **5 June 2027 at the Metropolitano**; two-legged knockouts with extra
+  time and penalties; **no away-goals rule** (abolished 2021).
+- **EFL Cup** — real round dates, final Sunday 21 March 2027.
+- **FA Cup** — all 11 rounds on their published dates, fifth round 6 March 2027.
+
+**Rounds are placed on real dates, not derived ones.** `SchedulePattern` gained
+`fixed_round_dates` and `round_date_windows`, because a real competition
+announces a *set of days* ("8-10 September", or a Tue/Wed/Thu batch) and no tie
+is ever played on any other. A day-count slip invents dates nobody announced —
+which the suite caught: an early version drifted the EFL round onto a Saturday
+the EFL never listed.
+
+`SchedulePattern.round_date_windows` is the fix, and a moved round is now
+reported (`Calendar.slipped()`) rather than treated as either a violation or a
+silent success.
+
+### The controlled one-month integration test (audit §16 phase 10, plan §18)
+
+Plan §18 is the test the plan calls "extremely important":
+
+> Saturday domestic league → Wednesday Champions League → Saturday domestic
+> league → Wednesday domestic cup. […] **The same player must have one
+> continuous state throughout.**
+
+`world/runmonth.py` runs it for real — the calendar places the fixtures, the
+same `MatchEngine` simulates them, `world/ingest.py` translates the results,
+and `world/ledger.py` keeps the state. **24 real matches, five competitions,
+two federations, four weeks.**
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m world.runmonth     # ~10-20 min
+```
+
+`world/testworld.py` builds the test world per plan §17, on the **real** rules
+and dates above: the 18 real squads from the 26/27 roster in a Premier League
+shape, entering a real Champions League league phase and a real EFL Cup round.
+The one compromise is scale — 18 clubs against a real Premier League's 20 and
+the Champions League's 36 — and it is stated rather than padded with invented
+clubs. The squads are real because a test world with invented players could not
+run a real match, and running a real match is the point.
+
+The month is anchored on the **real** Champions League opening matchday, so what
+gets played is what UEFA and the Premier League actually scheduled. The test
+this produces is genuinely worth asking: **can the scheduler honour the real
+football calendar?** Real 2026-27 is congested — the EFL round and the European
+matchday overlap in September — and the world layer resolves it with the cup
+yielding to the higher-priority European night, exactly as it should.
+
+Two things the driver had to get right, both found by running it:
+
+- The month window is selected **per competition** and the leagues truncated to a
+  few real rounds. A full 18-club double round robin is 34 matchdays, which
+  saturates every midweek slot and leaves the cup tie nowhere legal to go.
+- The continuity checker is verified by **deliberately breaking the ledger six
+  different ways** and asserting the checker notices each one. A checker that has
+  never failed has not been tested.
+
+The checker verifies after *every matchday*: minutes/goals/appearances never go
+backwards, the continuous total equals the sum of the per-competition lines, no
+line claims more than the player actually played, appearances equal matches with
+minutes, and no club plays twice in a day.
+
+**Bug it found in the very first real match:** eight unused substitutes were being
+counted as appearances. The exporter emits a stat line for every *named* player,
+including subs who never came on, and the ledger counted all of them — which
+would have inflated every appearance total in the warehouse.
+
+### Current state and the next gate
+
+Phases 1–8 are complete, including phase 5. The whole world layer is now in
+place: identity, schemas, competitions, calendar, ledger, ingest, qualification
+and knockout resolution.
+
+`python -m world.proof` builds the plan §17 test world — 2 countries, 16 clubs,
+a Saturday league + Tuesday cup + Wednesday continental — and prints the
+collision report, the plan §12 week for one club, both tables, the cup bracket,
+and the plan §18 continuity check. Current result: **180 fixtures, 0 collisions,
+0 violations, one continuous state holds.**
+
+`tests/test_world_ingest.py` closes the loop with a **real simulated match**,
+asserting the ledger's totals equal the exporter's exactly.
+
+Open items, neither blocking:
+- the live match is not seed-reproducible (above) — this affects every
+  calibration measurement, not just the world layer;
+- `world_data/` JSON templates for the test world (audit §17) are still inline in
+  `world/proof.py` rather than as data files. Plan §21 puts data population
+  after the schema, and the schema is now complete, so this is unblocked.
+
+
+
+

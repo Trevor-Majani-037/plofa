@@ -240,6 +240,116 @@ def test_sensors_with_geometry():
     assert s[9] < 0.3, f"space_ahead should be low but is {s[9]}"
 
 
+def test_sensor_extraction_deterministic():
+    """Same visible world => identical sensor vector (no hidden RNG/time)."""
+    positions = {
+        "Carrier": (60, 30), "Fwd": (80, 34), "Deep": (20, 34),
+        "Def1": (63, 31), "Def2": (70, 45),
+    }
+    pe = FakePositionEngine(positions)
+    player = make_player("Carrier", "CM", vision=70, composure=60, decisions=65)
+    tm = [make_player("Fwd", "ST"), make_player("Deep", "CB")]
+    df = [make_player("Def1", "CDM"), make_player("Def2", "CB")]
+    kw = dict(x=60, y=30, teammates=tm, defenders=df, position_engine=pe,
+              under_pressure=True, attacks_right=True,
+              game_state=FakeGameState("HOME_AHEAD_1"), minute=55)
+    s1 = extract_sensors(player, **kw)
+    s2 = extract_sensors(player, **kw)
+    assert np.array_equal(s1, s2)
+
+
+def test_sensor_extraction_no_future_leak():
+    """Sensors must never read future/omniscient state.
+
+    Structural guard: the extraction source may not reference outcome /
+    timeline / xG / goal-scored / metadata symbols.  Behavioural guard:
+    mutating the *game outcome* (which is never an extraction input) must
+    not change a single sensor value.
+    """
+    import inspect
+    from brain_sensors import (
+        extract_sensors, extract_offball_sensors,
+        _nearest_defender_dist, _defenders_within, _teammate_openness,
+        _best_forward_teammate, _fatigue_estimate,
+    )
+    forbidden = {"outcome", "timeline", "metadata", "xg", "goal_scored",
+                 "soul", "personality", "confidence"}
+    for fn in (extract_sensors, extract_offball_sensors,
+               _nearest_defender_dist, _defenders_within,
+               _teammate_openness, _best_forward_teammate,
+               _fatigue_estimate):
+        src = inspect.getsource(fn)
+        src = src.replace("__future__", "____")      # from __future__ import
+        lowered = src.lower()
+        hit = [t for t in forbidden if t in lowered]
+        assert not hit, f"{fn.__name__} references future/outcome symbol(s): {hit}"
+
+    # Behavioural: mutate an outcome dict that a leaking sensor might read.
+    positions = {"Carrier": (60, 30), "Def1": (63, 31), "Fwd": (80, 34)}
+    pe = FakePositionEngine(positions)
+    player = make_player("Carrier", "CM")
+    tm = [make_player("Fwd", "ST")]
+    df = [make_player("Def1", "CDM")]
+    kw = dict(player=player, x=60, y=30, teammates=tm, defenders=df,
+              position_engine=pe, under_pressure=False, attacks_right=True,
+              game_state=FakeGameState("LEVEL"), minute=45)
+    s_before = extract_sensors(**kw)
+    fake_outcome = {"goal_scored": True, "xg": 0.9}
+    for o in ("_future_outcome", "metadata", "result"):
+        setattr(pe, o, fake_outcome)
+    s_after = extract_sensors(**kw)
+    assert np.array_equal(s_before, s_after), \
+        "sensor vector changed when future/outcome state was injected"
+
+
+def test_sensor_extraction_invariant_to_hidden_player_state():
+    """Perception depends only on documented inputs.
+
+    A player's confidence / opponent form must NOT move the sensors;
+    vision (a documented input) MUST move them.
+    """
+    positions = {"Carrier": (60, 30), "Def1": (63, 31), "Fwd": (80, 34)}
+    pe = FakePositionEngine(positions)
+    player = make_player("Carrier", "CM", vision=70)
+    tm = [make_player("Fwd", "ST")]
+    df = [make_player("Def1", "CDM")]
+    kw = dict(player=player, x=60, y=30, teammates=tm, defenders=df,
+              position_engine=pe, under_pressure=False, attacks_right=True,
+              game_state=FakeGameState("LEVEL"), minute=45)
+    s_base = extract_sensors(**kw)
+
+    player.dna.form.confidence = 95.0          # carrier confidence
+    df[0].dna.form.confidence = 5.0            # opponent confidence
+    tm[0].dna.form.confidence = 33.0           # teammate confidence
+    s_hidden = extract_sensors(**kw)
+    assert np.array_equal(s_base, s_hidden), \
+        "sensors must be invariant to hidden form/confidence state"
+
+    player.dna.mental.vision = 95.0            # documented input
+    s_visible = extract_sensors(**kw)
+    assert not np.array_equal(s_base, s_visible), \
+        "vision must change the sensor vector (documented DNA input)"
+
+
+def test_sensor_extraction_robustness_no_nan():
+    """Sensors are finite and in-range under adversarial geometry."""
+    edges = [(0, 0), (105, 0), (0, 68), (105, 68), (52.5, 34)]
+    for x, y in edges:
+        # coincident teammates + defenders, no position engine (fallbacks)
+        tm = [make_player("A", "CM"), make_player("B", "CM")]
+        df = [make_player("C", "CB"), make_player("D", "CB"), make_player("E", "CB")]
+        s = extract_sensors(make_player("P", "CAM"), x, y, tm, df,
+                            None, True, x > 50, FakeGameState("LEVEL"), 90)
+        assert s.shape == (INPUT_SIZE,)
+        assert np.all(np.isfinite(s)), f"NaN/Inf at ({x},{y}): {s}"
+        assert np.all((s >= 0.0) & (s <= 1.0)), f"out of range at ({x},{y}): {s}"
+    # GK-only defenders, empty teammates
+    gk = make_player("GK", "GK")
+    s = extract_sensors(make_player("P", "ST"), 80, 34, [], [gk],
+                        None, False, True, None, 30)
+    assert np.all(np.isfinite(s)) and np.all((s >= 0.0) & (s <= 1.0))
+
+
 # ─────────────────────────────────────────────────────────────
 # 6. brain_integration — decide() contract
 # ─────────────────────────────────────────────────────────────
@@ -424,6 +534,47 @@ def test_synthetic_fitness_accepts_surrogate():
     assert 0.0 <= f <= 1.0
 
 
+def test_synthetic_fitness_batched_matches_legacy():
+    """The vectorised batched path is numerically identical to the
+    sequential legacy path for the same corpus."""
+    from brain_evolution import synthetic_fitness, generate_state_corpus
+    from surrogate_collect import FitnessSurrogate
+    brain = FootballBrain.random(seed=21)
+    rng = np.random.RandomState(1)
+    data = []
+    for _ in range(40):
+        s = rng.rand(24)
+        data.append((s, _intent_list[rng.randint(0, OUTPUT_SIZE)],
+                     float(rng.rand() * 2.0), "CARRY", "CM"))
+    sur = FitnessSurrogate().fit(data)
+    pos, n, seed, gb = "CM", 120, 7, 0.25
+    corpus = generate_state_corpus(pos, n, seed, goal_bias=gb)
+    assert corpus.shape == (n, INPUT_SIZE)
+    # same corpus, same RNG, two APIs -> byte-identical scores
+    f_batch = synthetic_fitness(brain, pos, batched_sensors=corpus, surrogate=sur)
+    f_legacy = synthetic_fitness(brain, pos, n_states=n, seed=seed,
+                                 goal_bias=gb, surrogate=sur)
+    assert f_batch == f_legacy, f"batched {f_batch} != legacy {f_legacy}"
+    # and generation is deterministic
+    corpus2 = generate_state_corpus(pos, n, seed, goal_bias=gb)
+    assert np.array_equal(corpus, corpus2)
+
+
+def test_generate_state_corpus_scoring_bias():
+    """goal_bias states are realistically scoring-prone (x high, late game)."""
+    from brain_evolution import generate_state_corpus
+    n = 60
+    corpus = generate_state_corpus("ST", n, seed=11, goal_bias=0.5)
+    assert corpus.shape == (n, INPUT_SIZE)
+    # goal-bias states use x in 78..96 => goalscoring band
+    import random as _r
+    rng = _r.Random(11)
+    scored = sum(1 for _ in range(n) if rng.random() < 0.5)
+    assert scored > 0
+    # corpus rows include some high final-third states (slot 12)
+    assert corpus[:, 12].mean() > 0.4, corpus[:, 12].mean()
+
+
 _intent_list = [getattr(PlayerIntent, l) for l in INTENT_LABELS]
 
 
@@ -566,12 +717,18 @@ if __name__ == "__main__":
         test_crossover, test_blend, test_serialize_roundtrip,
         test_sensor_shape_and_range, test_sensor_final_third_flags,
         test_sensor_pressure_flag, test_sensors_with_geometry,
+        test_sensor_extraction_deterministic,
+        test_sensor_extraction_no_future_leak,
+        test_sensor_extraction_invariant_to_hidden_player_state,
+        test_sensor_extraction_robustness_no_nan,
         test_decide_returns_playerdecision, test_decide_valid_intents,
         test_decide_cache_fallback_when_unregistered, test_decide_trace,
         test_distinct_players_distinct_brains,
         test_temperature_sampling_variety, test_temperature_composure_effect,
         test_surrogate_bucket_roundtrip, test_surrogate_fit_and_query,
         test_surrogate_save_load, test_synthetic_fitness_accepts_surrogate,
+        test_synthetic_fitness_batched_matches_legacy,
+        test_generate_state_corpus_scoring_bias,
         test_defensive_action_brain_basic,
         test_defensive_action_sensors_shape,
         test_def_action_choice_heuristic_fallback,

@@ -39,7 +39,7 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from football_brain import INPUT_SIZE
+from football_brain import INPUT_SIZE, OFFBALL_INPUT_SIZE
 
 
 # ─────────────────────────────────────────────────────────────
@@ -249,15 +249,16 @@ def extract_offball_sensors(
     game_state: Any,
     minute: float = 45.0,
     score_diff: int = 0,
+    ball_sigma: Optional[float] = None,
 ) -> np.ndarray:
-    """Build the 24-float vision vector for a player NOT on the ball.
+    """Build the 25-float vision vector for a player NOT on the ball.
 
-    Layout is IDENTICAL to ``extract_sensors`` (slots 0..23) so the same
-    24->32->32->10 network architecture can be reused for the off-ball
-    "conscience" — only the semantics differ:
+    Layout shares slots 0..23 with ``extract_sensors`` (same 32-hidden
+    block can be shared); slot 24 is the ball-CERTAINTY introduced by the
+    perception-aware off-ball evolution (2026-09-21):
 
-        [ 0] ball_x             (real ball position, 0..1)
-        [ 1] ball_y             (real ball position, 0..1)
+        [ 0] ball_x             (perceived ball position, 0..1)
+        [ 1] ball_y             (perceived ball position, 0..1)
         [ 2] runner_x           (this player, 0..1)
         [ 3] runner_y           (this player, 0..1)
         [ 4] nearest_defender_dist  (defenders measured around the RUNNER)
@@ -280,6 +281,10 @@ def extract_offball_sensors(
         [21] player_vision
         [22] player_composure
         [23] player_decisions
+        [24] ball_certainty     1/(1+sigma) in 0..1 — how sure the runner is
+             of the ball position (sigma = ball-vision running uncertainty,
+             m).  1.0 when ball-vision is off or sigma is unknown (the old
+             omniscient feed).  This is the slot the conscience must learn.
 
     Because ball and runner are decoupled, the vector implicitly carries
     the runner-to-ball offset (slots 0-1 vs 2-3) that the on-ball net never
@@ -327,6 +332,9 @@ def extract_offball_sensors(
     composure = _clamp(_get_attr(mental, "composure", 55.0) / 100.0)
     decisions = _clamp(_get_attr(mental, "decisions", 55.0) / 100.0)
 
+    certain = 1.0 if (ball_sigma is None or ball_sigma <= 0.0) \
+        else _clamp(1.0 / (1.0 + ball_sigma))
+
     sensors = np.array([
         ball_xn, ball_yn, runner_xn, runner_yn,
         near_def_norm, def_5, def_10,
@@ -336,9 +344,10 @@ def extract_offball_sensors(
         1.0 if near_def is not None and near_def < 4.0 else 0.0,
         fatigue, sd, minute_n, 1.0,
         vision, composure, decisions,
+        certain,
     ], dtype=np.float64)
 
-    assert sensors.shape == (INPUT_SIZE,), (
-        f"Off-ball sensor vector shape mismatch: {sensors.shape} != ({INPUT_SIZE},)"
-    )
+    assert sensors.shape == (OFFBALL_INPUT_SIZE,), (
+        f"Off-ball sensor vector shape mismatch: {sensors.shape} != "
+        f"({OFFBALL_INPUT_SIZE},)")
     return sensors

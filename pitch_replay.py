@@ -353,10 +353,22 @@ def build_replay(result: Any) -> ReplayData:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def run_scratch_match(seed: int = 42, verbose: bool = True) -> Any:
+def run_scratch_match(seed: int = 42, verbose: bool = True,
+                      use_manager_brain: bool = False,
+                      brain_path: Optional[str] = None,
+                      persist_memory: bool = True) -> Any:
     """Simulate a real match using run_match.py's fixture.  Nothing is
-    exported, no season file is written — the result object is returned."""
+    exported, no season file is written — the result object is returned.
+
+    ``use_manager_brain=False`` (default) keeps the exact static /
+    ManagerProfile behaviour the baseline was captured against.
+    ``use_manager_brain=True`` wires live brain-managers (brain + mind +
+    per-club persisted memory from ``manager_brains/live/``) and flips
+    ``match_engine.USE_MANAGER_BRAIN`` for the duration of the match only,
+    restoring the module default afterwards.
+    """
     import run_match as RM
+    import match_engine as _me_module
     from match_engine import MatchEngine, MatchConfig
     from player_dna import SquadBuilder
     from squad_manager import SubstitutionController
@@ -406,8 +418,13 @@ def run_scratch_match(seed: int = 42, verbose: bool = True) -> Any:
         style_lookup={RM.HOME_TEAM: RM.HOME_STYLE.style.value,
                       RM.AWAY_TEAM: RM.AWAY_STYLE.style.value},
     )
-    home_mgr = mgr_pool.manager_for(RM.HOME_TEAM)
-    away_mgr = mgr_pool.manager_for(RM.AWAY_TEAM)
+    if use_manager_brain:
+        from manager_profile import brain_manager_for, save_live_manager
+        home_mgr = brain_manager_for(RM.HOME_TEAM, brain_path=brain_path)
+        away_mgr = brain_manager_for(RM.AWAY_TEAM, brain_path=brain_path)
+    else:
+        home_mgr = mgr_pool.manager_for(RM.HOME_TEAM)
+        away_mgr = mgr_pool.manager_for(RM.AWAY_TEAM)
 
     sub_controller = SubstitutionController(
         home_team=RM.HOME_TEAM,
@@ -426,8 +443,17 @@ def run_scratch_match(seed: int = 42, verbose: bool = True) -> Any:
     engine.set_stamina_controller(sub_controller)
     engine.set_managers(home_manager=home_mgr, away_manager=away_mgr)
 
-    t0 = time.time()
-    result = engine.simulate()
+    prev_flag = _me_module.USE_MANAGER_BRAIN
+    _me_module.USE_MANAGER_BRAIN = bool(use_manager_brain)
+    try:
+        t0 = time.time()
+        result = engine.simulate()
+    finally:
+        _me_module.USE_MANAGER_BRAIN = prev_flag
+    if use_manager_brain and persist_memory:
+        from manager_profile import save_live_manager as _save_live
+        _save_live(home_mgr, RM.HOME_TEAM)
+        _save_live(away_mgr, RM.AWAY_TEAM)
     if verbose:
         print(f"[sim] {result.summary()}  ({time.time() - t0:.1f}s wall, "
               f"{result.match_clock_s:.0f}s match clock)")

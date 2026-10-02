@@ -40,8 +40,11 @@ import numpy as np
 
 from decision_brain import DecisionBrain, PlayerIntent
 from brain_sensors import extract_sensors
-from brain_integration import NeuralDecisionBrain, _INTENT_BY_INDEX
+from brain_integration import (
+    NeuralDecisionBrain, _INTENT_BY_INDEX, _score_diff_of,
+)
 from football_brain import INPUT_SIZE
+from perception import get_perception_config, perceive
 
 
 # ─────────────────────────────────────────────────────────────
@@ -64,7 +67,17 @@ _SAVED_DECIDE = None
 
 
 def _snapshot_decide(player, *args, **kwargs):
-    """Patch that records (sensor, intent) then calls the real brain."""
+    """Patch that records (sensor, intent) then calls the real brain.
+
+    Sensors are the PERCEIVED vector — the state the brain actually saw
+    (perception layer applied, which is the production default).  The
+    perception noise draw is deterministic per snapshot
+    (perception.py ``_ident``), so recomputing ``perceive`` here with the
+    same global config reproduces the exact vector ``_decide_core`` fed the
+    network.  When perception is disabled (identity regime) ``perceive``
+    delegates to ``extract_sensors`` and this is byte-identical to the
+    old collector.
+    """
     global _CALL_ORDER
     d = _SAVED_DECIDE(player, *args, **kwargs)
     # reconstruct sensors from the real args (same positional layout as
@@ -83,10 +96,11 @@ def _snapshot_decide(player, *args, **kwargs):
     minute = args[10] if len(args) > 10 else kwargs.get("minute", 45.0)
     team_possession = True  # on-ball carrier is by definition in possession
 
-    sensors = extract_sensors(
+    sensors = perceive(
         player, x, y, teammates, defenders, position_engine,
         under_pressure, attacks_right, game_state, minute,
-        team_possession=team_possession, score_diff=0,
+        team_possession=team_possession, score_diff=_score_diff_of(game_state),
+        config=get_perception_config(),
     )
     _COLLECTOR.append(DecisionRecord(
         player=getattr(player, "name", ""),

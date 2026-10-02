@@ -30,7 +30,6 @@ Philosophy:
 """
 
 from __future__ import annotations
-import math
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -55,10 +54,6 @@ def _stamina_mult(stamina_pct: float) -> float:
         return 0.75 + (s - 20) / 20 * 0.13
     else:
         return 0.60 + (s / 20) * 0.15
-
-
-def _attacks_right_goal_x(attacks_right: bool) -> float:
-    return PITCH_X if attacks_right else 0.0
 
 
 # ─────────────────────────────────────────────
@@ -87,6 +82,13 @@ class StrikerSpatialProfile:
     press_instinct: float = 0.40
     aerial_instinct: float = 0.50
 
+    # ── RUN GEOMETRY ──────────────────────────────────────
+    # How far BEYOND the offside line an in-behind run is aimed. Deliberately
+    # small: a 2 m lead reads as "decisively past the line" to the flag
+    # discipline (~3% call) instead of "sat there offside all half" (6%), and
+    # a real striker times the run to arrive level, not to stand offside.
+    RUN_BEHIND_LEAD_M: float = 2.0
+
     # ── GEOMETRY ──────────────────────────────────────────
 
     def in_final_third(self, x: float, attacks_right: bool) -> bool:
@@ -95,45 +97,82 @@ class StrikerSpatialProfile:
     def in_box(self, x: float, attacks_right: bool) -> bool:
         return x > BOX_ENTRY_X_ATT if attacks_right else x < (PITCH_X - BOX_ENTRY_X_ATT)
 
+    def offside_line_nx(
+        self, attacks_right: bool, defenders: Optional[List], position_engine,
+    ) -> Optional[float]:
+        """Where the OFFSIDE LINE sits, in the normalized attacking frame.
+
+        Normalized frame: ``nx`` runs 0 -> 105 from the ATTACKING team's own
+        goal toward the opponent's, so the value is direction-agnostic and
+        every comparison below is valid whichever way the team attacks.
+
+        Law 11: the line is formed by the SECOND-deepest defender. The
+        deepest man is on his own keeper's side of the line and is excluded,
+        as is the goalkeeper — so this is the second-deepest OUTFIELD
+        defender, not the deepest.
+
+        Returns None when the line cannot be formed (fewer than two known
+        outfield defenders), which the callers treat as "no information".
+        """
+        if position_engine is None or not defenders:
+            return None
+        nxs: List[float] = []
+        for d in defenders:
+            if getattr(d, "position", None) == "GK":
+                continue
+            dname = getattr(d, "name", None)
+            if dname is None:
+                continue
+            try:
+                dx, _dy = position_engine.get_position(dname)
+            except Exception:
+                continue
+            if dx is None:
+                continue
+            nxs.append(float(dx) if attacks_right else PITCH_X - float(dx))
+        if len(nxs) < 2:
+            return None
+        nxs.sort(reverse=True)   # deepest (closest to the defending goal) first
+        return nxs[1]             # second-deepest outfield defender = the line
+
     def last_line_gap(
         self, x: float, y: float, attacks_right: bool,
         defenders: Optional[List], position_engine,
     ) -> float:
         """
-        How much room is BEHIND the last defender for an in-behind run?
+        How much room is AHEAD of the offside line for an in-behind run?
         1.0 = massive channel, 0.0 = no gap (offside trap tight).
-        Uses the second-last-defender x (the offside line).
+
+        Measured against the second-last defender, which is what Law 11
+        actually calls the line. Measuring against the DEEPEST defender
+        overstates the channel by a full defender, so the run fires when
+        there is genuinely no space behind the line.
         """
-        if position_engine is None or not defenders:
+        line_nx = self.offside_line_nx(attacks_right, defenders, position_engine)
+        if line_nx is None:
             return 0.5
-        goal_x = _attacks_right_goal_x(attacks_right)
-        # Find the deepest defender (closest to his own goal) apart from GK.
-        deepest = float("inf")
-        for d in defenders:
-            if getattr(d, "position", None) in ("GK",):
-                continue
-            dname = getattr(d, "name", None)
-            if dname is None:
-                continue
-            dx, _ = position_engine.get_position(dname)
-            # "deepest" for the defending team = smallest distance to their goal
-            dist_to_goal = abs(goal_x - dx)
-            if dist_to_goal < deepest:
-                deepest = dist_to_goal
-        if deepest == float("inf"):
-            return 0.5
-        # The offside line sits at `deepest`; gap = how far ahead of it the
-        # striker currently is (positive = onside channel to exploit).
-        offside_line_x = goal_x - math.copysign(deepest, 1.0)  # mirror by side
-        gap = abs(x - offside_line_x)
+        nx = x if attacks_right else PITCH_X - x
+        gap = nx - line_nx
         # Normalise: a 15m+ onside channel is a clear run; <3m is nothing.
         return max(0.0, min(1.0, gap / 15.0))
 
-    def run_behind_target(self, attacks_right: bool, anchor_y: float) -> Tuple[float, float]:
-        """Destination of an in-behind run: high + wide of the last line."""
-        sign = 1.0 if attacks_right else -1.0
-        tx = 92.0 if attacks_right else PITCH_X - 92.0
-        # Stay on the touchline side he's already on (split the CBs out wide).
+    def run_behind_target(
+        self, attacks_right: bool, anchor_y: float,
+        line_nx: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """Destination of an in-behind run: just beyond the offside line,
+        on the touchline side he is already on (splitting the CBs wide).
+
+        The lead is taken off the LINE, not off a fixed x. A fixed 92 m
+        target is 14 m beyond a defence sitting at 78 m — a permanent
+        offside position and a pass the chooser should never make — while
+        against a high line at 60 m it is needlessly short. Siting the run
+        relative to the line is what makes one number work for both.
+        """
+        if line_nx is None:
+            line_nx = 92.0
+        nx = min(100.0, line_nx + self.RUN_BEHIND_LEAD_M)
+        tx = nx if attacks_right else PITCH_X - nx
         ty = anchor_y + ((CENTER_Y - anchor_y) * 0.4)
         return tx, ty
 
@@ -165,6 +204,7 @@ class StrikerBehaviorEngine:
         x: float, y: float, attacks_right: bool,
         defenders: Optional[List] = None, position_engine=None,
         anchor_y: float = CENTER_Y, stamina_pct: float = 100.0,
+        rng=None,
     ) -> bool:
         """Time a run in behind the last line."""
         stam = _stamina_mult(stamina_pct)
@@ -174,14 +214,14 @@ class StrikerBehaviorEngine:
         if gap < 0.30:
             return False
         prob = (profile.run_behind_instinct * 0.7 + gap * 0.25) * stam
-        return random.random() < prob
+        return (rng or random.random)() < prob
 
     @staticmethod
     def should_hold_up(
         profile: StrikerSpatialProfile,
         x: float, y: float, attacks_right: bool,
         ball_x: float, ball_y: float,
-        in_possession: bool = True,
+        in_possession: bool = True, rng=None,
     ) -> bool:
         """Drop off the front to link play (target man / DLS)."""
         if not in_possession:
@@ -190,7 +230,7 @@ class StrikerBehaviorEngine:
         if profile.in_final_third(ball_x, attacks_right):
             return False
         prob = profile.hold_up_instinct * 0.6
-        return random.random() < prob
+        return (rng or random.random)() < prob
 
     @staticmethod
     def should_pin_last_line(
@@ -208,6 +248,7 @@ class StrikerBehaviorEngine:
         in_possession: bool = True,
         defenders: Optional[List] = None, position_engine=None,
         anchor_y: float = CENTER_Y, stamina_pct: float = 100.0,
+        rng=None,
     ) -> Optional[str]:
         """
         Which run does this striker make?
@@ -215,19 +256,31 @@ class StrikerBehaviorEngine:
             "hold"    — drop to link
             "box"     — attack a post channel (ball wide/in box)
             None      — hold the line / no committed run
+
+        ``rng`` is a zero-argument callable returning [0,1). It defaults to
+        ``random.random`` so the standalone demo and the per-minute drift path
+        behave exactly as before, but the live 10 Hz loop injects a
+        counter-based deterministic stream instead. See
+        ``striker_run_targets`` for why: drawing from the global stream would
+        shift every downstream draw in the match, and the project's own
+        highest-value open bug is that a match is not reproducible from its
+        seed. A new consumer makes that worse, so this one is free.
         """
         if not in_possession:
             return None
+        _rng = rng or random.random
         stam = _stamina_mult(stamina_pct)
         if StrikerBehaviorEngine.should_run_behind(
                 profile, x, y, attacks_right, defenders=defenders,
                 position_engine=position_engine, anchor_y=anchor_y,
-                stamina_pct=stamina_pct):
+                stamina_pct=stamina_pct, rng=_rng):
             return "behind"
         if profile.in_box(ball_x, attacks_right) and profile.in_final_third(ball_x, attacks_right):
-            if random.random() < (profile.near_post_instinct * 0.5 + profile.far_post_instinct * 0.5) * stam:
+            if _rng() < (profile.near_post_instinct * 0.5 + profile.far_post_instinct * 0.5) * stam:
                 return "box"
-        if StrikerBehaviorEngine.should_hold_up(profile, x, y, attacks_right, ball_x, ball_y, in_possession=True):
+        if StrikerBehaviorEngine.should_hold_up(
+                profile, x, y, attacks_right, ball_x, ball_y,
+                in_possession=True, rng=_rng):
             return "hold"
         return None
 

@@ -39,7 +39,9 @@ from match_engine import (
     MatchEngine, MatchConfig, MatchState, TeamProfile, TeamStyle,
     PlayingStyle, Intensity, EventType,
 )
-from event_chain import ChainDispatcher
+from event_chain import ChainDispatcher, SituationType
+from brain_integration import NeuralDecisionBrain
+from decision_brain import PlayerDecision, PlayerIntent
 from position_engine import PositionEngine
 from player_dna import PlayerProfile, SquadBuilder, DNAFactory
 from attacking_matrix import (
@@ -475,7 +477,10 @@ def test_reference_angle_constant():
 
 # ── P13: POSSESSION CHAIN SHOOT HAND-OFF ─────────────────────────
 
-def test_possession_chain_shoot_handoff():
+def test_possession_chain_policy_shoot_handoff(monkeypatch):
+    """A feasible policy SHOOT must hand off even when the matrix advises
+    a recycle.  The matrix supplies feasibility; it cannot choose instead
+    of the player policy."""
     random.seed(11)
     att = _make_squad("Att FC")
     d = _make_squad("Def FC")
@@ -486,6 +491,23 @@ def test_possession_chain_shoot_handoff():
     _place(pe, att, {st.name: (98, 34)})
     for tm in _outfield_teammates(att, st):
         _place(pe, att, {tm.name: (60, 34)})
+
+    policy_shoot = PlayerDecision(
+        intent=PlayerIntent.SHOOT, action="PASS", confidence=0.95,
+        reason="policy shoot", risk_level=0.4, decision_quality=0.9,
+        evaluation_error=0.0, is_error=False,
+    )
+    monkeypatch.setattr(
+        NeuralDecisionBrain, "decide", staticmethod(lambda *args, **kwargs: policy_shoot)
+    )
+    monkeypatch.setattr(
+        AttackingMatrix, "decide", staticmethod(
+            lambda *args, **kwargs: AttackingDecision(
+                action="RECYCLE_PASS", shot_score=0.90,
+                reason="matrix recommendation only",
+            )
+        ),
+    )
 
     res = ChainDispatcher.possession(
         30, "Att FC", att, prof, state, 3,
@@ -503,6 +525,49 @@ def test_possession_chain_shoot_handoff():
     assert not res.possession_lost
     # The shot itself is NOT generated here — it hands off to AttackChain
     assert not any(e.event_type == EventType.SHOT_ATTEMPT for e in res.events)
+    handoff = next(e for e in res.events if (e.metadata or {}).get("shot_intent"))
+    assert handoff.metadata["decision_authority"] == "player_policy"
+    assert handoff.metadata["active_brain"]["intent"] == "SHOOT"
+
+
+def test_possession_chain_policy_target_beats_matrix_target(monkeypatch):
+    """The matrix may score alternatives, but it cannot replace the
+    receiver selected by a pass-like player policy."""
+    random.seed(17)
+    att = _make_squad("Att FC")
+    d = _make_squad("Def FC")
+    pe, prof = _make_engine(att, d)
+    selected = []
+
+    def policy(player, x, y, teammates, *args, **kwargs):
+        target = next(t for t in teammates if t.position != "GK")
+        selected.append(target.name)
+        return PlayerDecision(
+            intent=PlayerIntent.SAFE_PASS, action="PASS", confidence=0.95,
+            reason="policy safe outlet", risk_level=0.1,
+            decision_quality=0.9, evaluation_error=0.0, is_error=False,
+            target=target,
+        )
+
+    def matrix(player, teammates, *args, **kwargs):
+        alternate = next(t for t in reversed(teammates) if t.position != "GK")
+        return AttackingDecision(
+            action="KEY_PASS", target=alternate, target_x=95.0,
+            target_y=34.0, reason="matrix alternative",
+        )
+
+    monkeypatch.setattr(NeuralDecisionBrain, "decide", staticmethod(policy))
+    monkeypatch.setattr(AttackingMatrix, "decide", staticmethod(matrix))
+    res = ChainDispatcher.possession(
+        30, "Att FC", att, prof, MatchState(), 1,
+        defending_players=d, position_engine=pe,
+        context_x=55.0, context_y=34.0, attacks_right=True,
+    )
+
+    passes = [e for e in res.events if e.event_type == EventType.PASS]
+    assert passes, "policy SAFE_PASS should resolve to a pass"
+    assert passes[0].secondary_player == selected[0]
+    assert passes[0].metadata["decision_authority"] == "player_policy"
 
 
 # ── P14: NO POSITION ENGINE -> FALLBACK ──────────────────────────
@@ -566,6 +631,86 @@ def test_possession_chain_unchanged_without_position_engine():
 
 
 # ── P15: FULL MATCH SMOKE TEST ───────────────────────────────────
+
+_SHOT_EVENTS = {
+    EventType.SHOT_ON_TARGET,
+    EventType.SHOT_OFF_TARGET,
+    EventType.HIT_WOODWORK,
+    EventType.GOAL,
+    EventType.SAVE,
+}
+
+
+def test_shot_origin_binds_to_shooter_real_position():
+    """P16: With a position engine wired in and no context anchor, the shot
+    starts at the shooter's ACTUAL tracked coordinates, not a calibrated
+    `_shot_location` draw. The old code teleported the origin to a fresh
+    3-32m from-goal sample; the strike-pocket modifier only nudges the real
+    position 0.5-2.5m forward toward goal."""
+    random.seed(5)
+    att = _make_squad("Att FC")
+    d = _make_squad("Def FC")
+    pe, prof = _make_engine(att, d)
+
+    st = _player(att, "ST")
+    # Deep but shootable: x=80 is 25m from goal, y=34 central => "shoot" per
+    # the geometry gate. The old open-play draw would land 3-32m out (x in
+    # 73-102); the new one must hug x=80 +/- the strike pocket.
+    _place(pe, att, {st.name: (80.0, 34.0)})
+    for tm in _outfield_teammates(att, st):
+        _place(pe, att, {tm.name: (45.0, 34.0)})
+    # Keep the defenders far away so pressure stays off and the shot survives.
+    _place(pe, d, {_player(d, "ST").name: (20.0, 34.0)})
+
+    res = ChainDispatcher.attack(
+        30, "Att FC", "Def FC", att, d, prof,
+        TeamProfile("Def FC", TeamStyle.BALANCED, PlayingStyle.MIXED,
+                    Intensity.MEDIUM),
+        MatchState(), SituationType.OPEN_PLAY,
+        position_engine=pe, attacks_right=True,
+    )
+
+    shot_events = [e for e in res.events if e.event_type in _SHOT_EVENTS]
+    assert shot_events, "Attack should produce a shot event even from a no-context origin"
+    # First shot event carries the origin; all shot-derived events share it via
+    # the SHOT_ATTEMPT anchor, so any occurrence proves the bind.
+    ev = shot_events[0]
+    assert 79.0 <= ev.location_x <= 84.0, (
+        f"Shot origin should hug the shooter's real x=80 (0.5-2.5m strike "
+        f"pocket), got location_x={ev.location_x}"
+    )
+    assert 32.0 <= ev.location_y <= 36.0, (
+        f"Shot origin y should hug shooter's real y=34, got location_y={ev.location_y}"
+    )
+
+
+def test_shot_origin_falls_back_to_draw_without_position_engine():
+    """P16b: No position engine => the calibrated `_shot_location` distribution
+    still runs (legacy/test call sites), so neither origin extraction nor old
+    callers break."""
+    random.seed(5)
+    att = _make_squad("Att FC")
+    d = _make_squad("Def FC")
+    prof = TeamProfile("Att FC", TeamStyle.BALANCED, PlayingStyle.MIXED,
+                       Intensity.MEDIUM)
+    dprof = TeamProfile("Def FC", TeamStyle.BALANCED, PlayingStyle.MIXED,
+                        Intensity.MEDIUM)
+    state = MatchState()
+
+    res = ChainDispatcher.attack(
+        30, "Att FC", "Def FC", att, d, prof, dprof, state,
+        SituationType.OPEN_PLAY, position_engine=None, attacks_right=True,
+    )
+
+    # No position engine, no context => nothing to bind. The chain may or may
+    # not produce a shot (random draw + geometry), but it must not crash and
+    # any shot it emits must be inside the pitch with a sane zone.
+    assert res.xg_generated >= 0.0
+    for e in res.events:
+        if e.event_type in _SHOT_EVENTS:
+            assert 0.0 < e.location_x < 105.0
+            assert 0.0 < e.location_y < 68.0
+
 
 def test_back_to_keeper_intense_pressure_and_no_forward_open():
     random.seed(7)

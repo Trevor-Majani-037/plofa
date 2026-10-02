@@ -37,8 +37,9 @@ Philosophy:
 from __future__ import annotations
 import random
 import math
+import zlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
 from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_X, PITCH_Y, CENTER_Y
@@ -511,6 +512,26 @@ class PlayerSpatialState:
         return max(0.08, 0.55 * (0.5 ** (excess / tol)))
 
 
+class _ShapeShim:
+    """Minimal duck-type for the live off-ball loop.
+
+    The behaviour engines (striker/winger/midfielder) were written against
+    PlayerProfile objects and read only ``.name`` and ``.position``. The 10 Hz
+    loop has spatial states instead, so it hands them this rather than either
+    growing a real player reference into a hot function or teaching the
+    engines about PlayerEngine. Same name, same slots, nothing else.
+    """
+
+    __slots__ = ("name", "position")
+
+    def __init__(self, name: str, position: str) -> None:
+        self.name = name
+        self.position = position
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"_ShapeShim({self.name!r}, {self.position!r})"
+
+
 # ─────────────────────────────────────────────
 # LAYER 3 — POSITION ENGINE
 # Owns all spatial states for both teams. Called by MatchEngine/event_chain.
@@ -573,6 +594,9 @@ class PositionEngine:
         self._applied_stance_key: Dict[str, tuple] = {}
         self._applied_pattern: Dict[str, Optional[AttackPattern]] = {}
         self._applied_coach_width: Dict[str, float] = {}
+        # Pending set-piece slots; see open_setpiece_window.
+        self._setpiece_targets: Dict[str, Tuple[float, float]] = {}
+        self._setpiece_remaining_s: float = 0.0
 
     def set_block_context(self, home_block, away_block) -> None:
         """Refresh the per-minute block shapes used by drift_minute's magnet."""
@@ -887,6 +911,174 @@ class PositionEngine:
             if jump > state.minute_peak_touch_jump:
                 state.minute_peak_touch_jump = jump
 
+    # ── PENDING SET-PIECE TARGET WINDOW (2026-10-02) ───────────────────────
+    #
+    # A set piece is the one situation where a player's target is NOT a function
+    # of the ball and his shape anchor. During a corner the box arrangement IS
+    # the position: a centre-back's job is to stand between his man and the
+    # goal, which is 20 m from his shape anchor and 30 m from where the shape
+    # layer would otherwise pull him.
+    #
+    # Without this, giving a corner any elapsed time makes things WORSE — the
+    # integrator integrates toward `home_anchor + ball compaction`, which sits
+    # OUTSIDE the box, so players jog away from their slot for the whole
+    # jostling period. The window is opened by the set-piece chain and consumed
+    # by the integrator itself (`tick_setpiece`), so no caller has to remember
+    # to close it and an exception mid-chain cannot leave it stuck on.
+    SET_PIECE_ACTIVE: bool = True
+
+    def advance_to_slots(self, targets: Dict[str, Tuple[float, float]],
+                         seconds: float,
+                         exclude: Optional[set] = None) -> float:
+        """RUN the named players to their slots over `seconds`. Returns metres.
+
+        Synchronous, because the delivery it precedes is resolved in the same
+        call: a set-piece window opened for the post-chain integrator cannot
+        influence the header it was opened for. See the module note on the
+        ordering defect.
+
+        Speed eases in and out -- a man does not accelerate from a standing
+        start to a sprint inside one tick, and he decelerates into his slot
+        rather than oscillating through it, because the target is re-read from
+        the same table on every step.
+        """
+        import math as _m
+
+        exclude = exclude or set()
+        budget = max(0.0, float(seconds))
+        step_dt = 0.1
+        steps = max(1, int(round(budget / step_dt)))
+        total = 0.0
+        for pname, (gx, gy) in (targets or {}).items():
+            if pname in exclude:
+                continue
+            st = self.states.get(pname)
+            if st is None or st.current_x is None or st.current_y is None:
+                continue
+            top = float(getattr(st, "physics_top_speed_mps", 0.0) or 0.0)
+            if top <= 1.0:
+                # Not yet measured by the physics layer this minute, so fall
+                # back to the engine's own band: a corner run-in is a sprint,
+                # not the 1.5-1.9 m/s shape-holding trot.
+                top = 6.0
+            top = min(max(top, 3.0), 7.5)
+            cx, cy = float(st.current_x), float(st.current_y)
+            travelled = 0.0
+            sprint_s = 0.0
+            for _ in range(steps):
+                dx, dy = gx - cx, gy - cy
+                dist = _m.hypot(dx, dy)
+                if dist <= 0.4:
+                    break
+                # ease in over the first 40% of a second and out inside 2 m
+                v = top
+                if travelled < top * 0.4:
+                    v = top * max(0.35, travelled / max(top * 0.4, 1e-6))
+                if dist < 2.0:
+                    v = min(v, dist / 0.4)
+                adv = min(v * step_dt, dist)
+                cx += dx / dist * adv
+                cy += dy / dist * adv
+                travelled += adv
+                if v >= 5.5:
+                    sprint_s += step_dt
+            st.current_x, st.current_y = cx, cy
+            if travelled <= 0.0:
+                continue
+            total += travelled
+            self.record_physics_distance(
+                pname, distance_m=travelled, duration_s=budget,
+                speed_mps=travelled / max(budget, 1e-6),
+                sprint_time_s=sprint_s, sprint_count=1,
+                high_speed_sprint_count=1 if sprint_s > 0.0 else 0,
+                top_speed_mps=top)
+        return total
+
+    def open_setpiece_window(self, targets: Dict[str, Tuple[float, float]],
+                             seconds: float) -> None:
+        """Hold these targets for `seconds` of integrated off-ball time."""
+        if not self.SET_PIECE_ACTIVE:
+            return
+        self._setpiece_targets = dict(targets or {})
+        self._setpiece_remaining_s = max(0.0, float(seconds))
+
+    def setpiece_target(self, player_name: str
+                        ) -> Optional[Tuple[float, float]]:
+        """The pending slot for this player, or None if he is free."""
+        if self._setpiece_remaining_s <= 0.0:
+            return None
+        return self._setpiece_targets.get(player_name)
+
+    def arrived_setpiece_players(self,
+                              max_gap_m: float = 3.0) -> set:
+        """Names of pending-slot holders who actually got there.
+
+        Measured against the slot, not the goal: a player is 'in the box'
+        only if he reached the position he was assigned. Measured in 12
+        corners, 62% of assignments arrived and 26% were still >15 m
+        away at the cross -- and those men are genuinely not in the duel.
+        """
+        if self._setpiece_remaining_s <= 0.0:
+            return set()
+        import math as _m
+        got = set()
+        for name, (gx, gy) in self._setpiece_targets.items():
+            st = self.states.get(name)
+            if st is None or st.current_x is None or st.current_y is None:
+                continue
+            if _m.hypot(gx - float(st.current_x),
+                       gy - float(st.current_y)) <= max_gap_m:
+                got.add(name)
+        return got
+
+    def tick_setpiece(self, seconds: float) -> None:
+        """Consume the window. Called by the integrator with the time it ran."""
+        if self._setpiece_remaining_s <= 0.0:
+            return
+        self._setpiece_remaining_s -= max(0.0, float(seconds))
+        if self._setpiece_remaining_s <= 0.0:
+            self._setpiece_targets = {}
+
+    def setpiece_active(self) -> bool:
+        return self._setpiece_remaining_s > 0.0
+
+    def set_piece_place(self, player_name: str, x: float, y: float,
+                        minute: int):
+        """Place a player for a SET PIECE, honoured verbatim.
+
+        `record_touch` is the right call for a ball touch: after planting the
+        player it applies the wide-role flank hold (Checkpoint 21d) and the
+        goalkeeper's own-box anchor, because in open play a winger who is
+        dragged 20 m infield genuinely has drifted off his flank.
+
+        Those corrections are WRONG for a wall. A wall is an ordered
+        geometric arrangement, and measured on 3 real matches the corrections
+        quietly dismantled it: 13 of 14 walls were wider than the men in them
+        could possibly produce (expected 1.65 m of face for 4 men, measured up
+        to 40.5 m), and individual men ended up 3.0 m and 4.0 m from the ball
+        when the wall distance is 9.15 m. The men were being pulled to their
+        shape anchors after being placed, so the blocker set handed to
+        `resolve_shot` was a scatter of bodies rather than a screen.
+
+        So this writes the position EXACTLY, and still books the displacement
+        into `minute_touch_distance` so the distance-covered accounting stays
+        honest — a man who jogs 20 m to the wall has covered 20 m, and hiding
+        that would just move the lie to a different column.
+        """
+        if x is None or y is None:
+            return
+        state = self.states.get(player_name)
+        if not state:
+            return
+        start_x, start_y = state.current_x, state.current_y
+        state.touch_at(x, y, minute)   # exact write, clamped to the pitch
+        jump = ((state.current_x - start_x) ** 2 +
+                (state.current_y - start_y) ** 2) ** 0.5
+        state.minute_touch_distance += jump
+        state.minute_touch_count += 1
+        if jump > state.minute_peak_touch_jump:
+            state.minute_peak_touch_jump = jump
+
     def _anchor_gk_in_own_box(self, state: PlayerSpatialState):
         """Keep a goalkeeper's live position inside his own defensive third.
 
@@ -919,6 +1111,42 @@ class PositionEngine:
     # off-ball movement phase with a before/after snapshot diff. This
     # measures the true net distance each player moved that minute from
     # every off-ball source combined, with zero risk of missing a site.
+
+    def enforce_gk_anchor(self, team_name: str) -> int:
+        """Re-apply the goalkeeper's own-box anchor to every keeper on a team.
+
+        `_anchor_gk_in_own_box` only runs inside `record_touch`, so it covers
+        the one path that plants a keeper at the ball. It does NOT cover the
+        dozens of off-ball shape writes that mutate `current_x` directly
+        (`drift_minute`, `defensive_block`, the press pulls, the run targets),
+        and a keeper written upfield by any of those is never pulled back.
+
+        Measured on a real match: 168 of 325 keeper position writes in a
+        single match landed at x >= 40, peaking at 80-105, i.e. the keeper
+        spent most of the match at the far end of the pitch. That is a
+        PRE-EXISTING hole — the anchor was simply never applied on those
+        paths — but the foul-awarded free kick (match_engine) gives it many
+        more chances to bite, because every restart runs the off-ball phase
+        again with the ball deep in the defending third.
+
+        Enforcing it as a single invariant at the end of the off-ball phase is
+        the right shape of fix: it is one choke point instead of ~30 write
+        sites, and it cannot be bypassed by a shape rule added later. A
+        keeper may step out to receive a back-pass (the anchor allows
+        x <= 28) but never follows play upfield.
+
+        Returns the number of keepers clamped, so a caller can assert on it.
+        """
+        n = 0
+        for name in self.team_rosters.get(team_name, []):
+            st = self.states.get(name)
+            if st is None or getattr(st, "position", "") != "GK":
+                continue
+            before = st.current_x
+            self._anchor_gk_in_own_box(st)
+            if st.current_x != before:
+                n += 1
+        return n
 
     def snapshot_positions(self, team_name: str) -> Dict[str, Tuple[float, float]]:
         """Capture each player's current (x, y) — call BEFORE the
@@ -1538,6 +1766,291 @@ class PositionEngine:
                 st.current_x = sx + dx * f
                 st.current_y = sy + dy * f
 
+    # ── LOW BLOCK ─────────────────────────────────────────────────────
+    # PITCH bounds, named because the low-block geometry below is expressed
+    # relative to them and bare 105.0/68.0/34.0 literals in a formula that
+    # reads "half the pitch" are how a pitch-length change gets missed.
+    PITCH_X_MAX = 105.0
+    PITCH_Y_MAX = 68.0
+    PITCH_Y_MID = 34.0
+
+    # A low block is a SHAPE, not a press intensity. `pressing_profiles`
+    # already models how hard such a team presses; these model where its
+    # three lines stand and how narrow the unit gets.
+    #
+    # Every value is metres from own goal, or metres either side of the
+    # touchline. They are tactical choices, and the reasoning is in
+    # `low_block_target` — briefly:
+    #
+    #   back four  19 m   inside the own third, which is the definition of
+    #                       the shape. PLOFA had them at 42.5 m, i.e. past
+    #                       halfway, in the opponent's half.
+    #   midfield   31 m   a genuinely separate line 12 m behind the front of
+    #                       the defence. PLOFA had a 0.7 m gap, which is one
+    #                       flat eight-man wall rather than three lines.
+    #   front two  37 m   HIGH on purpose, ~6 m ahead of the midfield. A
+    #                       deep regain needs an outlet immediately, and this
+    #                       is the post's "platform to attack".
+    LB_BACK_DEPTH = 19.0
+    LB_MID_DEPTH = 31.0
+    LB_FRONT_DEPTH = 37.0
+    #: The block sinks a little further the wider the ball is, because a wide
+    #: ball pulls the defensive line across and back. 4 m at the extreme flank.
+    LB_FRONT_DROP = 4.0
+
+    #: Half-widths. The midfield line is NARROWER than the back four, which is
+    #: the real geometry of a low block: the wide midfielders tuck in to cut
+    #: the half-space, and the fullbacks alone hold the width.
+    LB_BACK_HALF_WIDTH = 20.0
+    LB_MID_HALF_WIDTH = 16.0
+    LB_FRONT_HALF_WIDTH = 11.0
+
+    #: How far toward the ball the whole unit slides. Partial on purpose: a
+    #: block that tracks the ball exactly has been stretched by it, and one
+    #: that does not move is not compact. The generic shape target uses 0.07,
+    #: which is far too little to be a block at all.
+    LB_SHIFT = 0.42
+    #: Half-width of the "spine" — within this of the centre line, the block
+    #: starts squeezing.
+    LB_CENTRAL_BAND_M = 12.0
+    #: Fraction of the half-width lost at dead centre. 0.30 puts the back four
+    #: at ~28 m of block width with the ball central, against ~40 m when it is
+    #: wide: narrow enough to close the middle, wide enough that the fullbacks
+    #: can still defend the touchline.
+    LB_CENTRAL_SQUEEZE = 0.30
+    #: Steer weight toward the block target. High, because the point is that a
+    #: low block holds a shape rather than drifting between generic anchors —
+    #: but still a steer, so the engine's own shaping layers keep priority.
+    LB_ALPHA = 0.85
+
+    def low_block_target(
+        self, player_name: str, ball_x: float, ball_y: float,
+        attacks_right: bool,
+    ) -> Optional[Tuple[float, float, float]]:
+        """The shape a LOW BLOCK holds: three lines, narrow, deep, front two high.
+
+        Returns ``(alpha, tx, ty)`` to steer this player's off-ball target
+        toward, or ``None`` if he is not part of the block.
+
+        Why this exists
+        ---------------
+        Measured against the shape a real low block holds
+        (``scripts/physics/probe_low_block.py``), PLOFA's ``park_the_bus`` was
+        recognisably low but wrong in three specific ways:
+
+        ==========================  ========  ==================
+        metric (metres from own goal)  PLOFA   real low block
+        ==========================  ========  ==================
+        back four                       42.5    15-20
+        back four -> midfield gap        0.7    10-15
+        block width, ball central        50.7   narrows
+        ==========================  ========  ==================
+
+        The third row is the one that matters. A low block works by denying
+        the middle: the block is compact, so there is nothing to play into
+        centrally, and possession is forced wide where it is easier to defend.
+        PLOFA's block sat 50.7 m wide on a 68 m pitch with the ball central —
+        both half-spaces open. It was not compact; it was spread.
+
+        The cause is visible in the generic shape target the off-ball machine
+        builds for every team::
+
+            tx = ax + (ball_x - ax) * 0.14
+            ty = ay + (ball_y - ay) * 0.07
+
+        A 7% lateral response means the block barely moves when the ball moves
+        sideways, and the fullbacks hold their touchline channel regardless. That
+        is the right default for most teams and the wrong one here.
+
+        The three lines
+        ---------------
+        Depths are measured from own goal so they read the same whichever way
+        the team attacks. The front pair is deliberately placed HIGH, ~16 m
+        ahead of the midfield: the post's point is that the block is also a
+        platform, and a deep regain needs an outlet immediately.
+
+        Width narrows when the ball is central
+        --------------------------------------
+        ``NARROW_WHEN_CENTRAL_M`` is the half-width the block collapses to
+        around the spine, and the reduction is applied to the *whole unit*
+        rather than to individuals — which is what "all eleven defend as one
+        unit" means geometrically.
+        """
+        state = self.states.get(player_name)
+        if state is None:
+            return None
+        pos = state.position
+        if pos == "GK":
+            return None
+
+        depth = self._low_block_depth(pos)
+        if depth is None:
+            return None
+        base_depth, half_width = depth
+
+        # Lateral centre: the unit shifts toward the ball side, but only
+        # partially. A block that tracks the ball exactly has been stretched
+        # by it; a block that does not move at all is not compact either.
+        rel_ball_y = ball_y if attacks_right else (self.PITCH_Y_MAX - ball_y)
+        centre = self.PITCH_Y_MID + (rel_ball_y - self.PITCH_Y_MID) * self.LB_SHIFT
+
+        # ...and it narrows around the spine, which is the whole point.
+        off_spine = abs(rel_ball_y - self.PITCH_Y_MID)
+        if off_spine < self.LB_CENTRAL_BAND_M:
+            squeeze = 1.0 - self.LB_CENTRAL_SQUEEZE * (
+                1.0 - off_spine / self.LB_CENTRAL_BAND_M)
+            half_width = half_width * squeeze
+
+        # Keep the player on his own side of the block's centre; without this
+        # the two fullbacks cross over and the block inverts.
+        sign = 1.0 if state.current_y >= centre else -1.0
+        ty = centre + sign * half_width
+        ty = max(0.0, min(self.PITCH_Y_MAX, ty))
+
+        depth_from_own = base_depth + self.LB_FRONT_DROP * (
+            off_spine / (self.PITCH_Y_MAX * 0.5))
+        tx = (self.PITCH_X_MAX - depth_from_own if attacks_right
+              else depth_from_own)
+
+        return (self.LB_ALPHA, tx, ty)
+
+    def _low_block_depth(self, position: str) -> Optional[Tuple[float, float]]:
+        """(depth from own goal, lateral half-width) for a role, or None."""
+        table = {
+            # back four — deepest line, widest, still inside own third
+            "CB": (self.LB_BACK_DEPTH, self.LB_BACK_HALF_WIDTH),
+            "LB": (self.LB_BACK_DEPTH, self.LB_BACK_HALF_WIDTH),
+            "RB": (self.LB_BACK_DEPTH, self.LB_BACK_HALF_WIDTH),
+            "LWB": (self.LB_BACK_DEPTH, self.LB_BACK_HALF_WIDTH),
+            "RWB": (self.LB_BACK_DEPTH, self.LB_BACK_HALF_WIDTH),
+            # midfield line — a genuine separate line, not level with the back four
+            "CDM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "CM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "CAM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "LCM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "RCM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "LM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "RM": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            # wide forwards sit with the midfield line, not high and wide
+            "LW": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            "RW": (self.LB_MID_DEPTH, self.LB_MID_HALF_WIDTH),
+            # front pair — HIGH, and the outlet on a regain
+            "ST": (self.LB_FRONT_DEPTH, self.LB_FRONT_HALF_WIDTH),
+            "CF": (self.LB_FRONT_DEPTH, self.LB_FRONT_HALF_WIDTH),
+        }
+        return table.get(position)
+
+    # ── DEFENSIVE BLOCKS ───────────────────────────────────────────
+    # A defensive block is a SHAPE, not a press intensity.
+    # `pressing_profiles` models how hard a team presses; these model where
+    # its three lines stand, how narrow the unit gets, and how big the gaps
+    # between the lines are.
+    #
+    # THREE PRESETS, ONE DISCIPLINE. The rule is the same at every height:
+    #
+    #     if you do not have the ball, do not leave a space you can be
+    #     put into.
+    #
+    # What changes is only the AREA of the pitch the shape occupies, which is
+    # the entire difference between a low block and a high one.
+    #
+    #            back   mid  front | backHW midHW frontHW | shift squeeze
+    BLOCK_PRESETS: Dict[str, Tuple[float, ...]] = {
+        "low":  (19.0, 31.0, 37.0,  20.0, 16.0, 11.0,  0.42, 0.30),
+        "mid":  (30.0, 42.0, 48.0,  22.0, 18.0, 13.0,  0.45, 0.24),
+        "high": (42.0, 54.0, 60.0,  24.0, 20.0, 15.0,  0.50, 0.18),
+    }
+    #: An unfamiliar block height degrades to the middle rather than crashing.
+    BLOCK_DEFAULT = "mid"
+
+    #: How much further the block sinks the wider the ball is: 4 m at the
+    #: extreme flank, because a wide ball drags the line across and back.
+    BLOCK_FRONT_DROP = 4.0
+    #: Half-width of the "spine". Within this of the centre line the block
+    #: starts squeezing — the mechanism by which the middle is denied.
+    BLOCK_CENTRAL_BAND_M = 12.0
+    #: Steer weight toward the block target. High, because the point is that a
+    #: team HOLDS a shape rather than drifting between generic anchors — but
+    #: still a steer, so the engine's own shaping layers keep priority.
+    BLOCK_ALPHA = 0.85
+
+    def defensive_block_target(
+        self, player_name: str, ball_x: float, ball_y: float,
+        attacks_right: bool, preset: str = BLOCK_DEFAULT,
+    ) -> Optional[Tuple[float, float, float]]:
+        """The shape this team holds while defending.
+
+        Returns ``(alpha, tx, ty)`` for this player's off-ball target, or
+        ``None`` if he is not part of the block.
+
+        Three lines, and the gaps between them are the whole point
+        --------------------------------------------------------
+        A block denies the middle because the unit is compact, so there is
+        nothing to play into centrally and possession is forced wide. Measured
+        against a real low block (``scripts/physics/probe_low_block.py``),
+        PLOFA's ``park_the_bus`` sat 49.6 m wide on a 68 m pitch with the ball
+        central — spread, not compact, with both half-spaces open.
+
+        But compactness alone is not enough, and this is the part a naive
+        "get closer together" fix gets wrong. Three lines held at ONE depth are
+        not compact, they are a queue: a flat wall with a pocket on each
+        shoulder and no pressure on the ball carrier. ``back_d``, ``mid_d`` and
+        ``front_d`` are therefore separate depths, and the difference between
+        them is deliberate:
+
+          * back four behind midfield  — the pass has to travel *through* the
+            midfield to reach a defender, so the receiver is never free;
+          * midfield behind the front two — the front pair can screen the
+            pass without dropping into their own defender's shadow.
+
+        And the front two must be genuinely AHEAD. That is the counter-attack:
+        a deep regain needs an outlet immediately, and a block whose front pair
+        are level with its back four has none. The same three numbers serve
+        both halves of the problem, which is why they cannot be tuned apart.
+        """
+        state = self.states.get(player_name)
+        if state is None:
+            return None
+        pos = state.position
+        if pos in ("GK", "GKC"):
+            return None
+
+        p = (self.BLOCK_PRESETS.get(preset)
+             or self.BLOCK_PRESETS[self.BLOCK_DEFAULT])
+        (back_d, mid_d, front_d, back_hw, mid_hw, front_hw,
+         shift, squeeze) = p
+
+        if pos in ("CB", "LB", "RB", "LWB", "RWB", "FB"):
+            base_depth, half_width = back_d, back_hw
+        elif pos in ("ST", "CF", "SS"):
+            base_depth, half_width = front_d, front_hw
+        else:
+            base_depth, half_width = mid_d, mid_hw
+
+        # Lateral centre: the unit shifts toward the ball side, but only
+        # partially. A block that tracks the ball exactly has been stretched by
+        # it; one that does not move at all is not compact.
+        rel_ball_y = ball_y if attacks_right else (self.PITCH_Y_MAX - ball_y)
+        centre = self.PITCH_Y_MID + (rel_ball_y - self.PITCH_Y_MID) * shift
+
+        off_spine = abs(rel_ball_y - self.PITCH_Y_MID)
+        if off_spine < self.BLOCK_CENTRAL_BAND_M:
+            hw = half_width * (1.0 - squeeze * (
+                1.0 - off_spine / self.BLOCK_CENTRAL_BAND_M))
+        else:
+            hw = half_width
+
+        # Each player stays on his own side of the block's centre, or the two
+        # fullbacks cross over and the block inverts.
+        sign = 1.0 if state.current_y >= centre else -1.0
+        ty = max(0.0, min(self.PITCH_Y_MAX, centre + sign * hw))
+
+        depth = base_depth + self.BLOCK_FRONT_DROP * (
+            off_spine / (self.PITCH_Y_MAX * 0.5))
+        tx = (self.PITCH_X_MAX - depth if attacks_right else depth)
+
+        return (self.BLOCK_ALPHA, tx, ty)
+
     def wide_stretch_blend(
         self, player_name: str, ball_y: float,
     ) -> float:
@@ -1807,6 +2320,227 @@ class PositionEngine:
                 newy += (cy - st.current_y) * push
         return max(0.0, min(105.0, newx)), max(0.0, min(68.0, newy))
 
+    # ── REST DEFENCE (positional play) ────────────────────────────────
+    #
+    # The last of the four superiority types with no representation here, and
+    # the only one that is a CONSTRAINT rather than a preference.
+    #
+    # "Rest defence" is not a weight and must not be implemented as one. A
+    # weight says "prefer holding a rest position"; a constraint says "you may
+    # not leave the pitch entirely committed", which is a different claim, and
+    # the same distinction the defensive-action brain drew when feasibility was
+    # made a physics grip instead of a bonus (see AGENTS.md). Nothing in the
+    # existing shape chain expresses it: every rule here is a *preference*
+    # toward a socket, so a team whose preferences happen to all point upfield
+    # legally ends up with ten men ahead of the ball and no way back.
+    #
+    # The invariant: WHILE IN POSSESSION, at least REST_DEFENCE_MIN_BEHIND
+    # outfield players remain BEHIND the ball. Not a cap on how many may be
+    # ahead — that would be wrong, because in the final third most of the team
+    # SHOULD be ahead of the ball, and capping it would fight the box crash and
+    # the striker. Only the degenerate case, the whole team beyond the ball, is
+    # unreachable.
+    #
+    # Deliberately a BACKSTOP, not a constant force. In a normal shape the two
+    # centre-backs and the pivot are behind the ball and this returns None, so
+    # the rule costs nothing and perturbs nothing; it binds only when the shape
+    # has genuinely broken. A rule that acted every tick would be a second
+    # opinion fighting eleven tuned ones.
+    #
+    # Returns the name of the ONE player who must be held back, or None. The
+    # shallowest player ahead of the ball is chosen because holding him costs
+    # the attack the least — he is the closest to being a rest defender already.
+    # The caller resolves this ONCE PER TICK (positions move as the tick
+    # integrates, so resolving it per player could pick a different victim
+    # mid-tick and pull back two men).
+    REST_DEFENCE_ENABLED: bool = True
+    REST_DEFENCE_MIN_BEHIND: int = 2
+    REST_DEFENCE_TOUCH_M: float = 1.0   # level with the ball counts as behind
+
+    def rest_defence_violator(
+        self, team_name: str, ball_x: Optional[float], has_ball: bool,
+        attacks_right: bool = True,
+    ) -> Optional[str]:
+        """Name of the outfield player who must be held behind the ball, or None.
+
+        None means the invariant already holds (or does not apply). Kept
+        separate from the clamp so the decision — which is a TEAM judgement —
+        is made once per tick, and the per-player effect is a pure geometric
+        clamp with no knowledge of teammates.
+        """
+        if not self.REST_DEFENCE_ENABLED or not has_ball:
+            return None
+        if ball_x is None:
+            return None
+        ball_nx = ball_x if attacks_right else PITCH_X - ball_x
+        behind: List[str] = []
+        ahead: List[Tuple[float, str]] = []
+        for n in self.team_rosters.get(team_name, []):
+            st = self.states.get(n)
+            if st is None or getattr(st, "position", "") == "GK":
+                continue
+            if st.current_x is None:
+                continue
+            nx = st.current_x if attacks_right else PITCH_X - st.current_x
+            if nx < ball_nx - self.REST_DEFENCE_TOUCH_M:
+                behind.append(n)
+            else:
+                ahead.append((nx, n))
+        if len(behind) >= self.REST_DEFENCE_MIN_BEHIND:
+            return None
+        if not ahead:
+            return None
+        ahead.sort()   # shallowest first: least advanced = cheapest to hold
+        return ahead[0][1]
+
+    REST_DEFENCE_GAP_M: float = 12.0   # metres behind the ball he is pinned
+
+    def rest_defence_clamp(
+        self, tx: float, ty: float, ball_x: float, attacks_right: bool,
+    ) -> Tuple[float, float]:
+        """Pin a target behind the ball. Pure depth clamp; y is left alone.
+
+        Leaving y untouched is the point. The constraint is about DEPTH — "a
+        body between the ball and our goal" — so re-stamping his lateral
+        position would be a second, unrequested opinion about shape, and would
+        collapse the width that CK35 spends its life re-asserting.
+        """
+        nx = tx if attacks_right else PITCH_X - tx
+        ball_nx = ball_x if attacks_right else PITCH_X - ball_x
+        rest_nx = ball_nx - self.REST_DEFENCE_GAP_M
+        if nx <= rest_nx:
+            return tx, ty
+        clamped = rest_nx if attacks_right else PITCH_X - rest_nx
+        return max(0.0, min(PITCH_X, clamped)), ty
+
+    # ── STRIKER RUNS, WIRED LIVE ──────────────────────────────────────
+    #
+    # striker_behavior.py was fully built and never reachable from a match:
+    # its only consumer, _striker_run_step, is called from drift_minute, and
+    # MatchEngine never calls drift_minute. So the three striker principles the
+    # positional-play book is most specific about — run in behind, drop to
+    # link, attack a post channel — had no effect on a single match, and the
+    # striker's only live contribution was the false-nine RECEIVE bonus in
+    # attacking_matrix (a pass-value term, not movement).
+    #
+    # What it needs from the live loop that it did not have:
+    #   * a TARGET, not a position write. _striker_run_step assigns
+    #     state.current_x directly, which is a per-minute net delta and would
+    #     fight the 10 Hz integrator if driven at tick rate. Here it is a
+    #     target steer, exactly like CK36/CK37/CK38, and the integrator
+    #     pace-caps the travel.
+    #   * a decision cadence slower than the tick. decide_run draws from
+    #     random; at 10 Hz that is a coin flip ten times a second, the run mode
+    #     would flicker, and the RNG stream would be consumed ~10x per player
+    #     per second. The caller caches per (team, minute) — the same
+    #     granularity _striker_run_step used via last_active_minute.
+    STRIKER_RUNS_LIVE: bool = True
+    STRIKER_RUN_BLEND: float = 0.30   # target steer weight
+
+    @staticmethod
+    def _deterministic_rng(*parts) -> Callable[[], float]:
+        """A counter-based [0,1) stream keyed on ``parts``.
+
+        The run decision is made once a minute, but it still needs a coin flip,
+        and ``random.random()`` is the wrong coin: every draw taken here shifts
+        the football stream, and the project's own top open bug is that a match
+        is not reproducible from ``random.seed`` (AGENTS.md). Adding a consumer
+        makes that worse, so this layer takes none.
+
+        crc32 rather than ``hash()`` because builtin string hashing is salted
+        per process - the same rule the world layer follows for exactly this
+        reason (``world/squads.py``, ``world/proof.py``). The counter keeps
+        successive calls distinct, so a single decision can draw three times
+        and still be reproducible.
+        """
+        key = "|".join(str(p) for p in parts)
+        counter = [0]
+
+        def _next() -> float:
+            v = zlib.crc32(f"{key}#{counter[0]}".encode("utf-8"))
+            counter[0] += 1
+            return v / 4294967296.0
+
+        return _next
+
+    def _opponent_shape_shims(self, team_name: str) -> List:
+        """Opponent players as the minimal duck-type StrikerBehaviorEngine reads.
+
+        ``last_line_gap`` needs only ``.name`` and ``.position``; the live loop
+        has spatial states, not PlayerProfile objects. Built here so the engine
+        stays ignorant of which of the two it was handed.
+        """
+        other = next((t for t in self.team_rosters if t != team_name), None)
+        if other is None:
+            return []
+        out = []
+        for n in self.team_rosters.get(other, []):
+            st = self.states.get(n)
+            if st is None:
+                continue
+            out.append(_ShapeShim(n, getattr(st, "position", "")))
+        return out
+
+    def striker_run_targets(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+        stamina_pct: float = 100.0, minute: Optional[int] = None,
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """{name: (blend, tx, ty)} for each ST/CF committing to a run.
+
+        Empty when out of possession (decide_run declines anyway) or when no
+        ball, so a stale call cannot steer a striker at a remembered position.
+
+        ``minute`` keys the decision's RNG so the flip is reproducible per
+        (team, striker, minute) and consumes nothing from the global stream.
+
+        Returns {name: (blend, tx, ty, mode)}. The MODE is the decision the
+        engine actually made ("behind" / "hold" / "box") and used to be
+        dropped here, leaving only a position delta downstream - which cannot
+        tell an instructed in-behind run from a shape-compaction drift.
+        """
+        if not self.STRIKER_RUNS_LIVE or not has_ball:
+            return {}
+        if ball_x is None or ball_y is None:
+            return {}
+        defenders = self._opponent_shape_shims(team_name)
+        out: Dict[str, Tuple[float, float, float, str]] = {}
+        for name in self.team_rosters.get(team_name, []):
+            st = self.states.get(name)
+            if st is None or getattr(st, "position", "") not in ("ST", "CF"):
+                continue
+            prof = self.striker_registry.get(name)
+            if prof is None:
+                continue
+            m = StrikerBehaviorEngine.decide_run(
+                prof, st.current_x, st.current_y, attacks_right, ball_x, ball_y,
+                in_possession=True, defenders=defenders, position_engine=self,
+                anchor_y=st.home_y, stamina_pct=stamina_pct,
+                rng=self._deterministic_rng(team_name, name, minute),
+            )
+            if m is None:
+                continue
+            if m == "behind":
+                line = prof.offside_line_nx(attacks_right, defenders, self)
+                target = prof.run_behind_target(attacks_right, st.home_y, line)
+            elif m == "hold":
+                target = prof.hold_up_target(ball_x, ball_y, attacks_right)
+            else:   # "box"
+                target = prof.box_arrival_target(ball_x, ball_y, attacks_right)
+            tx, ty = target
+            # Same pressure-bend the per-minute step used: a run into a
+            # pressed pocket is abandoned for the safer anchor, so a striker
+            # does not jog into three men every time the channel is nominally open.
+            press = self._opponent_pressure_at(
+                tx, ty, defenders, ball_x, ball_y, attacks_right)
+            if press > 0.55:
+                tx += (st.home_x - tx) * 0.35
+                ty += (st.home_y - ty) * 0.30
+            out[name] = (self.STRIKER_RUN_BLEND,
+                         max(0.0, min(PITCH_X, tx)), max(0.0, min(PITCH_Y, ty)),
+                         m)
+        return out
+
     GK_BUILD_UP_LOW_NX: float = 22.0    # below this the ball is in the keeper's
                                         # dead-zone — hold near the line
     GK_BUILD_UP_ADVANCE_NX: float = 55.0  # beyond this the attacking-crash
@@ -1887,41 +2621,95 @@ class PositionEngine:
                 s += (18.0 - db) / 18.0 * 0.6
         return min(1.0, s / 2.5)
 
-    def _wide_run_step(
-        self,
-        team_name: str, minute: int,
-        ball_x: Optional[float], ball_y: Optional[float],
+    # ── LIVE RUN TARGETS (wide / CM / CAM), and the striker layer above ──
+    #
+    # The three dormant run-steps decided real football — byline drive, cut
+    # inside, box entry, overlap, underlap, tuck, drop to receive, carry, late
+    # arrival, orbit, #10 pocket roam — and MatchEngine never called
+    # drift_minute, so none of it happened in a match. What DID happen is the
+    # passing half of positional play: attacking_matrix rewards a receiver in a
+    # half-space and the triangle rule steers toward a passing socket. The ball
+    # was offered the pocket and the pocket was empty. This is the movement half.
+    OFFBALL_RUNS_LIVE: bool = True
+    OFFBALL_RUN_BLEND_WIDE: float = 0.30
+    OFFBALL_RUN_BLEND_MID: float = 0.28
+    # The CAM's own dormant pull was 0.40 + an awareness bonus, and the pocket
+    # roam is the least replaceable movement in the sim (he is the hub), so his
+    # weight is used as-is rather than re-tuned down.
+
+    def offball_run_targets(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+        opp_block=None, minute: Optional[int] = None,
+    ) -> Dict[str, Tuple[float, float, float, str]]:
+        """{name: (blend, tx, ty, mode)} for every non-striker run, live.
+
+        Merges the wide (incl. FULLBACK advance), CM and CAM decisions. The
+        striker layer is a separate method so its Law-11 offside logic and its
+        deterministic coin stay together; the caller merges the two.
+
+        In-possession only: all three engines assume a team that has the ball,
+        and steering a runner while defending is the shape layer's job.
+        """
+        if not self.OFFBALL_RUNS_LIVE or not has_ball:
+            return {}
+        if ball_x is None or ball_y is None:
+            return {}
+        out: Dict[str, Tuple[float, float, float, str]] = {}
+        defenders = self._opponent_shape_shims(team_name)
+        # Snapshot/restore so the engines' internal random.random() calls do
+        # not advance the football stream. See the module note above.
+        rng_state = random.getstate()
+        try:
+            for name, (mode, tx, ty) in self._wide_run_targets(
+                    team_name, ball_x, ball_y, attacks_right, defenders).items():
+                out[name] = (self.OFFBALL_RUN_BLEND_WIDE, tx, ty, mode)
+            for name, (mode, tx, ty) in self._midfield_run_targets(
+                    team_name, ball_x, ball_y, attacks_right, defenders,
+                    opp_block).items():
+                out[name] = (self.OFFBALL_RUN_BLEND_MID, tx, ty, mode)
+            if minute is not None:
+                for name, (weight, tx, ty) in self._cam_pocket_targets(
+                        team_name, ball_x, ball_y, attacks_right, minute).items():
+                    out[name] = (weight, tx, ty, "roam")
+        finally:
+            random.setstate(rng_state)
+        # The MODE is carried through so the caller can record the DECISION,
+        # not merely its positional effect. It used to be dropped here, which
+        # is why the exporter could only guess at runs from geometry.
+        return {
+            name: (blend, max(0.0, min(PITCH_X, tx)), max(0.0, min(PITCH_Y, ty)), mode)
+            for name, (blend, tx, ty, mode) in out.items()
+        }
+
+    def _wide_run_targets(
+        self, team_name: str, ball_x: float, ball_y: float,
         attacks_right: bool, opponent_players: Optional[List],
-    ) -> None:
-        """
-        Checkpoint 32b — CONTINUOUS, SHAPE-AWARE wide runs.
+    ) -> Dict[str, Tuple[str, float, float]]:
+        """{name: (mode, tx, ty)} for LW/RW/LB/RB runs - DECISION ONLY.
 
-        For each winger/fullback NOT just involved this minute, decide a
-        run target from the behavior engines (winger: byline drive / cut
-        inside / box entry; fullback: overlap / underlap / tuck). The
-        target is cached on the player's spatial state and the player
-        travels toward it at a pace-capped rate (top_speed_mpm), so a run
-        unfolds as a smooth trajectory across minutes instead of jumping.
-        If the target cell sits under opponent pressure (a counter-press
-        trap), the target is bent back toward home/width so the runner
-        checks his run rather than sprinting into pressure.
+        Split out of _wide_run_step so the live 10 Hz loop can consume the same
+        decisions as a TARGET STEER rather than as a position write. The step's
+        write is a once-per-minute net delta; the live loop's own integrator
+        does the travel and needs the decision available on its own cadence.
 
-        Runs are only FIRED on a genuine behavior-engine decision; when no
-        run is on, the cached target is cleared and the player simply
-        settles via the normal flank/forward/home pulls — so static
-        circulation is untouched.
+        This carries the FULLBACK advance modes as well as the winger's - they
+        lived in the same method, so overlap / underlap / tuck were dead in a
+        match for the same reason the winger's were.
+
+        Deliberately has no `last_active_minute` guard: that guard exists to
+        protect RECORDED TOUCH COORDINATES, which is the step's business. The
+        live loop has a stronger equivalent already - it returns early for
+        anyone in _on_ball_this_minute.
         """
+        out: Dict[str, Tuple[str, float, float]] = {}
+        if ball_x is None or ball_y is None:
+            return out
         sign = 1.0 if attacks_right else -1.0
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
             if state is None or state.position not in ("LW", "RW", "LB", "RB"):
                 continue
-            if state.last_active_minute == minute:
-                continue  # touch coordinates are authoritative
-            if ball_x is None or ball_y is None:
-                state.run_mode = None
-                continue
-
             anchor_y = state.home_y
             pos = state.position
             target = None
@@ -1980,7 +2768,6 @@ class PositionEngine:
                             )
 
             if target is None:
-                state.run_mode = None
                 continue
 
             # ── SHAPE-AWARE: bend the run off a counter-press trap ──
@@ -1991,12 +2778,52 @@ class PositionEngine:
                 tx = tx + (state.home_x - tx) * 0.35
                 ty = ty + (anchor_y - ty) * 0.30
                 target = (tx, ty)
+            out[name] = (mode, tx, ty)
+        return out
 
-            # ── CONTINUITY: pace-capped travel toward cached target ──
+    def _wide_run_step(
+        self,
+        team_name: str, minute: int,
+        ball_x: Optional[float], ball_y: Optional[float],
+        attacks_right: bool, opponent_players: Optional[List],
+    ) -> None:
+        """
+        Checkpoint 32b - CONTINUOUS, SHAPE-AWARE wide runs.
+
+        For each winger/fullback NOT just involved this minute, decide a run
+        target from the behavior engines (winger: byline drive / cut inside /
+        box entry; fullback: overlap / underlap / tuck), then walk toward it at
+        a pace-capped rate so a run unfolds as a trajectory rather than a jump.
+        A target sitting under a counter-press trap is bent back toward
+        home/width so the runner checks his run instead of sprinting in.
+
+        Runs fire only on a genuine behavior-engine decision; with no run on,
+        the cached target is cleared and the player settles via the normal
+        pulls, so static circulation is untouched.
+
+        The DECISION lives in _wide_run_targets; this method only walks.
+        """
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position not in ("LW", "RW", "LB", "RB"):
+                continue
+            if state.last_active_minute == minute:
+                continue  # touch coordinates are authoritative
+            if ball_x is None or ball_y is None:
+                state.run_mode = None
+                continue
+            entry = self._wide_run_targets(
+                team_name, ball_x, ball_y, attacks_right, opponent_players
+            ).get(name)
+            if entry is None:
+                state.run_mode = None
+                continue
+            mode, tx, ty = entry
+            # - CONTINUITY: pace-capped travel toward cached target -
             state.run_target_x, state.run_target_y, state.run_mode = (
-                target[0], target[1], mode)
-            dx = target[0] - state.current_x
-            dy = target[1] - state.current_y
+                tx, ty, mode)
+            dx = tx - state.current_x
+            dy = ty - state.current_y
             dist = math.hypot(dx, dy)
             if dist < 1e-4:
                 continue
@@ -2004,37 +2831,40 @@ class PositionEngine:
             state.current_x += dx / dist * step
             state.current_y += dy / dist * step
 
-    def _midfield_run_step(
-        self,
-        team_name: str, minute: int,
-        ball_x: Optional[float], ball_y: Optional[float],
+    # How far a midfielder may sit from the ball's side and still drop into the
+    # central build-up pocket. The drop pocket is BETWEEN THE CENTRE-BACKS, so
+    # dropping a far-side midfielder is a long lateral slide toward the ball -
+    # it collapses exactly the width CK35 works to hold, and it broke
+    # test_triangle_support ("Far CM should not drift toward the ball side").
+    # Dropping is for the midfielder who is already on the ball's side, where
+    # "come short and central" is a couple of metres, not fourteen.
+    CM_DROP_SIDE_TOL_M: float = 18.0
+
+    def _midfield_run_targets(
+        self, team_name: str, ball_x: float, ball_y: float,
         attacks_right: bool, opponent_players: Optional[List],
-        opp_block=None,
-    ) -> None:
-        """
-        Checkpoint 33 — CONTINUOUS, SHAPE-AWARE central-midfield runs (CM).
+        opp_block=None, key: Optional[tuple] = None,
+    ) -> Dict[str, Tuple[str, float, float]]:
+        """{name: (mode, tx, ty)} for CM runs - DECISION ONLY.
 
-        CMs decide a run from the MidfielderBehaviorEngine: drop to receive
-        (pivot), carry forward through the lines, a late box arrival, or
-        drift to the far-side open channel (orbit).  The target is cached
-        and travelled at a pace-capped rate (same machinery as the wide
-        runs), bending off opponent pressure.
+        Split out of _midfield_run_step for the live 10 Hz loop, exactly as
+        _wide_run_targets was. Without this the CM had no live run behaviour
+        at all: drop-to-receive, carry forward, late box arrival and orbit all
+        lived only under drift_minute, which MatchEngine never calls.
 
-        CAMs are NOT handled here — their between-the-lines movement is
-        owned by _cam_pocket_roam (made registry-aware below), to avoid
-        double-moving them.
+        `committed_carry` lives HERE, not in the write loop: it is a team-level
+        rule (only one midfielder may vacate the pivot at a time) and the helper
+        is what the live path calls exactly once per team per decision.
         """
+        out: Dict[str, Tuple[str, float, float]] = {}
+        if ball_x is None or ball_y is None:
+            return out
         sign = 1.0 if attacks_right else -1.0
         committed_carry = False
         block_channels = getattr(opp_block, "channels", None) if opp_block else None
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
             if state is None or state.position != "CM":
-                continue
-            if state.last_active_minute == minute:
-                continue
-            if ball_x is None or ball_y is None:
-                state.run_mode = None
                 continue
             prof = self.midfield_registry.get(name)
             if prof is None:
@@ -2054,6 +2884,17 @@ class PositionEngine:
             # the pivot isn't vacated by two runners at once.
             if m == "carry" and committed_carry:
                 m = None
+            # A midfielder more than CM_DROP_SIDE_TOL_M from the ball's side is
+            # the FAR-SIDE player, and his only run is orbit. drop, carry and
+            # late all steer toward the ball's side, so letting the far man take
+            # any of them collapses the width CK35 exists to hold - which is what
+            # the triangle suite caught (far CM 24.0 -> 26.3). A drop-only guard
+            # did not fix it: `carry` was doing the pulling.
+            _bside = 1.0 if ball_y >= CENTER_Y else -1.0
+            _pside = 1.0 if y >= CENTER_Y else -1.0
+            if _bside != _pside and abs(y - ball_y) > self.CM_DROP_SIDE_TOL_M:
+                if m != "orbit":
+                    m = None
             if m == "drop":
                 target = prof.drop_target(attacks_right, anchor_y)
                 mode = "drop"
@@ -2074,7 +2915,6 @@ class PositionEngine:
                 mode = "orbit"
 
             if target is None:
-                state.run_mode = None
                 continue
 
             tx, ty = target
@@ -2084,11 +2924,50 @@ class PositionEngine:
                 tx = tx + (state.home_x - tx) * 0.35
                 ty = ty + (anchor_y - ty) * 0.30
                 target = (tx, ty)
+            out[name] = (mode, tx, ty)
+        return out
 
+    def _midfield_run_step(
+        self,
+        team_name: str, minute: int,
+        ball_x: Optional[float], ball_y: Optional[float],
+        attacks_right: bool, opponent_players: Optional[List],
+        opp_block=None,
+    ) -> None:
+        """
+        Checkpoint 33 - CONTINUOUS, SHAPE-AWARE central-midfield runs (CM).
+
+        CMs decide a run from the MidfielderBehaviorEngine: drop to receive
+        (pivot), carry forward through the lines, a late box arrival, or drift
+        to the far-side open channel (orbit). The target is cached and travelled
+        at a pace-capped rate, bending off opponent pressure.
+
+        CAMs are NOT handled here - their between-the-lines movement is owned by
+        _cam_pocket_roam, to avoid double-moving them.
+
+        The DECISION lives in _midfield_run_targets; this method only walks.
+        """
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position != "CM":
+                continue
+            if state.last_active_minute == minute:
+                continue
+            if ball_x is None or ball_y is None:
+                state.run_mode = None
+                continue
+            entry = self._midfield_run_targets(
+                team_name, ball_x, ball_y, attacks_right, opponent_players,
+                opp_block,
+            ).get(name)
+            if entry is None:
+                state.run_mode = None
+                continue
+            mode, tx, ty = entry
             state.run_target_x, state.run_target_y, state.run_mode = (
-                target[0], target[1], mode)
-            dx = target[0] - state.current_x
-            dy = target[1] - state.current_y
+                tx, ty, mode)
+            dx = tx - state.current_x
+            dy = ty - state.current_y
             dist = math.hypot(dx, dy)
             if dist < 1e-4:
                 continue
@@ -2305,39 +3184,31 @@ class PositionEngine:
         (-10.0, 14.0),   # deep drop, wide right (rotate out)
     )
 
-    def _cam_pocket_roam(
+    def _cam_pocket_targets(
         self, team_name: str, ball_x: float, ball_y: float,
         attacks_right: bool, minute: int,
-    ):
-        """
-        Checkpoint 31b — #10 pocket roaming in possession.
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """{name: (weight, tx, ty)} for CAM pocket roaming - DECISION ONLY.
 
-        A CAM doesn't hold a fixed post: he floats in the pockets between
-        the opponent's midfield and defensive lines, one passing tier
-        (~13m) ahead of the carrier, switching half-spaces as the ball
-        moves. Without this the CAM sat glued to his static home marker
-        (66,34) — by far the lowest-movement outfielder in the sim, since
-        his home is already where the ball usually is (the proximity band
-        alone has nothing to correct).
+        Split out of _cam_pocket_roam for the live 10 Hz loop, as with the wide
+        and CM runs. The weight is returned rather than applied: the roam uses a
+        fractional pull, not pace-capped travel, so the caller decides how hard
+        to pull (and the dormant path still halves it on a touched minute).
 
-        Targets are deterministic per (minute, player) so runs stay
-        reproducible under a fixed seed.
+        This is the piece that gives a #10 actual between-the-lines movement.
+        Without it live, the CAM sat on his static home marker while
+        attacking_matrix kept PREFERRING to pass to the half-space - the ball
+        was offered a pocket nobody occupied.
         """
+        out: Dict[str, Tuple[float, float, float]] = {}
+        if ball_x is None or ball_y is None:
+            return out
         dir_x = 1.0 if attacks_right else -1.0
         patterns = self.CAM_ROAM_PATTERNS
         for name in self.team_rosters.get(team_name, []):
             state = self.states.get(name)
             if state is None or state.position != "CAM":
                 continue
-            # Checkpoint 31b — a #10 who just released the ball starts his
-            # next run IMMEDIATELY; don't fully exempt touched minutes or
-            # the hub of a possession team never roams at all. Half strength
-            # keeps the recorded touch coordinates dominant while still
-            # modelling the after-release movement.
-            if state.last_active_minute == minute:
-                pull_mult = 0.5
-            else:
-                pull_mult = 1.0
             seed_v = sum((i + 1) * ord(c) for i, c in enumerate(name))
             dx_ahead, dy = patterns[(minute + seed_v) % len(patterns)]
             tx = max(25.0, min(94.0, ball_x + dir_x * dx_ahead))
@@ -2354,8 +3225,41 @@ class PositionEngine:
                     cam_prof, ball_x, ball_y, attacks_right)
                 tx = tx * 0.45 + ptx * 0.55
                 ty = ty * 0.45 + pty * 0.55
-            awareness_bonus = max(0.0, min(0.12, (state.geometric_awareness - 50.0) / 350.0))
-            pull = (0.40 + awareness_bonus) * pull_mult
+            awareness_bonus = max(0.0, min(                0.12, (state.geometric_awareness - 50.0) / 350.0))
+            out[name] = (0.40 + awareness_bonus, tx, ty)
+        return out
+
+    def _cam_pocket_roam(
+        self, team_name: str, ball_x: float, ball_y: float,
+        attacks_right: bool, minute: int,
+    ):
+        """
+        Checkpoint 31b - #10 pocket roaming in possession.
+
+        A CAM doesn't hold a fixed post: he floats in the pockets between the
+        opponent's midfield and defensive lines, one passing tier (~13m) ahead
+        of the carrier, switching half-spaces as the ball moves.
+
+        A #10 who just released the ball starts his next run IMMEDIATELY; the
+        pull is halved rather than skipped on a touched minute, so recorded
+        touch coordinates stay dominant while the after-release movement is
+        still modelled.
+
+        Targets are deterministic per (minute, player). The DECISION lives in
+        _cam_pocket_targets; this method only applies it.
+        """
+        decided = self._cam_pocket_targets(
+            team_name, ball_x, ball_y, attacks_right, minute)
+        for name in self.team_rosters.get(team_name, []):
+            state = self.states.get(name)
+            if state is None or state.position != "CAM":
+                continue
+            entry = decided.get(name)
+            if entry is None:
+                continue
+            weight, tx, ty = entry
+            pull_mult = 0.5 if state.last_active_minute == minute else 1.0
+            pull = weight * pull_mult
             state.current_x += (tx - state.current_x) * pull
             state.current_y += (ty - state.current_y) * pull
 
@@ -3330,6 +4234,19 @@ class PositionEngine:
         state = self.states.get(player_name)
         if state is None:
             return (50.0, 34.0)
+        return (state.current_x, state.current_y)
+
+    def tracked_position(self, player_name: str) -> Optional[Tuple[float, float]]:
+        """The player's last TRACKED position, or None if never tracked.
+
+        `get_position` answers (50.0, 34.0) for a player it has no state for —
+        the centre spot, which reads as a real coordinate. Any caller that is
+        about to WRITE a coordinate into an event must use this instead, so an
+        untracked player yields an honest absence rather than a plausible lie.
+        """
+        state = self.states.get(player_name)
+        if state is None:
+            return None
         return (state.current_x, state.current_y)
 
     def get_home_position(self, player_name: str) -> Tuple[float, float]:

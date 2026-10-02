@@ -26,6 +26,7 @@ import json
 import time
 
 from brain_evolution import evolve
+from football_brain import INPUT_SIZE
 
 
 ALL_POSITIONS = ["GK", "CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST", "CF"]
@@ -61,6 +62,11 @@ def parse_args():
     p.add_argument("--matches", type=int, default=1,
                    help="Number of real matches per position when validating. "
                         "CAUTION: each real match takes ~15-20s.")
+    p.add_argument("--outcome", action="store_true",
+                   help="Score evolved brains by the engine's own outcomes "
+                        "(xG diff, turnover rate, chance creation) instead of "
+                        "the intention-quality baseline.  Implies --validate "
+                        "for the requested positions.")
     p.add_argument("--surrogate", type=str, default=None,
                    help="Path to a trained FitnessSurrogate JSON. When provided, "
                         "evolution scores brains against the learned expected-success "
@@ -70,6 +76,24 @@ def parse_args():
                         "(final third, goal-close, central). 0.0 = pure random states "
                         "like the v3 retrain; >0.25 keeps rare scoring intents "
                         "(SHOOT/cross/through-ball) in the argmax.")
+    p.add_argument("--role-features", action="store_true",
+                   help="Evolve a schema-v2 role-features brain (24 + role block "
+                        "inputs instead of 24). Gives each family its structured "
+                        "position menu (GK/CB/FB/DM/CM 31-d, AM/WING/ST 32-d).")
+    p.add_argument("--tactics-context", action="store_true",
+                   help="Evolve a schema-v3 tactics-context brain (24 + role "
+                        "block + 12 manager-instruction dials). Implies "
+                        "--role-features: the context block ONLY makes sense "
+                        "stacked on top of the role tail (ST 44-d, DM 43-d).")
+    p.add_argument("--perception", action="store_true",
+                   help="Train THROUGH imperfect perception: synthetic states are "
+                        "generated via the perception layer (range/FOV/noise), so "
+                        "the challenger learns on the world it will actually see. "
+                        "Requires --role-features to be meaningful (perception "
+                        "degrades the shared block only).")
+    p.add_argument("--perception-roles", action="store_true",
+                   help="With --perception, also enable per-role perception "
+                        "profiles (relevance top-k etc.) during training.")
     return p.parse_args()
 
 
@@ -89,6 +113,27 @@ def main():
         positions = ALL_POSITIONS
 
     # ── Validation / A-B mode ─────────────────────────────────
+    # ── Outcome-driven scoring (engine reality) ─────────────────
+    if args.outcome:
+        try:
+            from match_probe import run_outcome_validation, _slot_for_position
+        except ImportError as e:
+            print(f"  ! cannot import match_probe: {e}")
+            return
+        targets = None
+        if args.position:
+            pos = args.position.strip().upper()
+            targets = [(_slot_for_position(pos), pos)]
+        n_matches = max(3, args.matches)
+        print(f"\n=== Outcome-scoring evolved brains (engine reality, {n_matches} matches each) ===")
+        print("Signals: xG diff, turnover rate, chance creation, possession, goal diff.")
+        res = run_outcome_validation(
+            targets=targets, brains_dir=args.out,
+            n_matches=n_matches, seed=args.seed,
+        )
+        print(json.dumps(res, indent=2))
+        return
+
     if args.validate or args.ab:
         try:
             from match_probe import run_neural_validation, ab_compare
@@ -125,10 +170,34 @@ def main():
     # optional surrogate drives fitness instead of the reward table
     surrogate = None
     if args.surrogate:
-        from surrogate_collect import FitnessSurrogate
-        surrogate = FitnessSurrogate.load(args.surrogate)
+        from critic_surrogate import load_any_surrogate
+        surrogate = load_any_surrogate(args.surrogate)
+        nbins = len(getattr(surrogate, "table", {})) if surrogate is not None else 0
         print(f"Using fitness surrogate: {args.surrogate}"
-              f" ({len(surrogate.table)} situation bins)")
+              f" ({nbins or 'value_critic'} situation bins)")
+
+    # role-features width per family; None when --role-features is OFF
+    role_width = None
+    if args.role_features:
+        from role_features import V2_INPUT_D
+        role_width = V2_INPUT_D
+        print(f"Role features ON: {role_width}")
+
+    # schema-v3 tactics-context width per family (stacked on role tail)
+    tactics_width = None
+    if args.tactics_context:
+        from tactics_context import V3_INPUT_D
+        tactics_width = V3_INPUT_D
+        print(f"Tactics-context ON: {V3_INPUT_D}")
+
+    # perception config (train-through-imperfect-perception)
+    perception_cfg = None
+    if args.perception:
+        from perception import PerceptionConfig
+        perception_cfg = PerceptionConfig(
+            enabled=True, role_blocks=args.perception_roles, seed=args.seed)
+        print(f"Perception mode ON (role_blocks={args.perception_roles}, "
+              f"seed={args.seed})")
 
     # maintain a running index so differing positions with the same seed
     # still diverge
@@ -139,7 +208,22 @@ def main():
             print(f"  ! unknown position '{pos}', skipping. Valid: {ALL_POSITIONS}")
             continue
 
-        print(f"\n=== Evolving {pos} brain ===")
+        # resolve per-position role width
+        if tactics_width is not None:
+            from role_features import _role_family
+            fam = _role_family(pos)
+            input_size = tactics_width.get(fam, INPUT_SIZE) if fam else INPUT_SIZE
+            schema_label = "v3_tactics_context" if input_size != INPUT_SIZE else "v1_24d"
+        elif role_width is not None:
+            from role_features import _role_family
+            fam = _role_family(pos)
+            input_size = role_width.get(fam, INPUT_SIZE) if fam else INPUT_SIZE
+            schema_label = "v2_role_features" if input_size != INPUT_SIZE else "v1_24d"
+        else:
+            input_size = INPUT_SIZE
+            schema_label = "v1_24d"
+
+        print(f"\n=== Evolving {pos} brain {'(role D=' + str(input_size-INPUT_SIZE) + ')' if input_size != INPUT_SIZE else ''} ===")
         start = time.time()
         res = evolve(
             position=pos,
@@ -150,6 +234,8 @@ def main():
             verbose=True,
             surrogate=surrogate,
             goal_bias=args.goal_bias,
+            input_size=input_size,
+            perception_config=perception_cfg,
         )
         elapsed = time.time() - start
 
@@ -162,6 +248,8 @@ def main():
             "seed": args.seed,
             "elapsed_s": round(elapsed, 1),
             "saved_to": path,
+            "input_size": input_size,
+            "sensor_schema": schema_label,
         }
         print(f"  {pos}: fitness={res.best_fitness:.4f} ({elapsed:.1f}s) -> {path}")
 
@@ -173,6 +261,10 @@ def main():
             "generations": args.generations,
             "population": args.population,
             "states": args.states,
+            "role_features": args.role_features,
+            "tactics_context": args.tactics_context,
+            "perception": args.perception,
+            "perception_roles": args.perception_roles,
             "results": results,
         }, f, indent=2)
     print(f"\nSummary written to {manifest}")

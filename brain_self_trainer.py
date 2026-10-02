@@ -118,17 +118,23 @@ def _run_xi(brains_dir: str, home_style: str, away_style: str, seed: int):
 
 def gate(work: str, challenger_dir: str, incumbent_dir: str, n_matches: int,
          seed: int, home_style: str, away_style: str) -> dict:
-    """Challenger vs INCUMBENT in real matches (same seeds, both XIs neural)."""
+    """Challenger vs INCUMBENT in real matches (identical seeds per arm —
+    _run_neural does NOT seed internally, so the caller MUST random.seed()
+    before each arm or the gate is non-deterministic noise)."""
+    import random
+
     print(f"\n[4/6] GATE    challenger vs INCUMBENT, {n_matches} matches "
           f"(seed {seed}, {home_style} vs {away_style})...")
     c_fits, i_fits = [], []
     t0 = time.time()
     for m in range(n_matches):
         s = seed + m * 100
+        random.seed(s)
         result_c, c = _run_xi(challenger_dir, home_style, away_style, s)
         print(f"       chal m{m+1}: {result_c.score_str}  fit={c['fitness']:.3f}  "
               f"goals={c['goals']}  poss={c.get('possession_pct')}")
-        result_i, i = _run_xi(incumbent_dir, home_style, away_style, s + 7)
+        random.seed(s)
+        result_i, i = _run_xi(incumbent_dir, home_style, away_style, s)
         print(f"       inc  m{m+1}: {result_i.score_str}  fit={i['fitness']:.3f}  "
               f"goals={i['goals']}  poss={i.get('possession_pct')}")
         c_fits.append(c)
@@ -242,6 +248,17 @@ def main():
         args.states = 40
         args.workers = 2
         args.goal_bias = 0.25
+        # SMOKE MUST NEVER TOUCH PRODUCTION.  A 2-gen random challenger can
+        # win a single lucky gate match and get promoted.  Run the gate and
+        # the promotion TARGET against a throwaway copy of the incumbent so
+        # brains/ can never be overwritten by a plumbing test.
+        smoke_dir = os.path.join(args.work, "smoke_incumbent")
+        if os.path.isdir(smoke_dir):
+            shutil.rmtree(smoke_dir)
+        shutil.copytree(args.brains, smoke_dir)
+        args.brains = smoke_dir
+        print(f"[SMOKE] gate + promotion run against COPY {smoke_dir}; "
+              f"production brains/ is untouched")
 
     os.makedirs(args.work, exist_ok=True)
     os.makedirs(args.brains, exist_ok=True)
@@ -277,6 +294,10 @@ def main():
 
     summary = gate(args.work, challenger_dir, args.brains, args.gate_matches,
                    args.seed, args.home_style, args.away_style)
+    if args.gate_matches < 4:
+        print(f"! WARNING: {args.gate_matches} gate match(es) is noisy — a "
+              f"lucky challenger can pass the promote gate by variance. "
+              f"Prefer --gate-matches 4+ before trusting a promotion.")
 
     promoted = promote(args.work, challenger_dir, args.brains, args.brains,
                        summary)

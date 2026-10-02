@@ -8,10 +8,17 @@ Two evaluation modes:
   1. SYNTHETIC (default, fast)  — scores a brain against thousands of
      random-but-realistic match states generated from geometric
      priors.  No full match engine needed.  Great for fast iteration.
-  2. FULL_MATCH                  — hooks into the real MatchEngine for a
-     more accurate but far slower fitness signal.  Call
-     ``evaluate_full_match(brain, ...)`` yourself with your own
-     engine wiring; the population runner here stays pluggable.
+  2. FULL_MATCH (outcome-driven) — hooks into the real MatchEngine for an
+     accurate but far slower fitness signal measured from the ENGINE'S OWN
+     OUTCOMES: team xG difference, goal difference, possession, the target
+     player's turnover rate and his own chance production.  NO hand-authored
+     intention rewards — the brain is scored by what actually happens on the
+     pitch as the engine's calibrated probability model decides it.  Fitness
+     functions: ``extract_outcome_signals`` + ``outcome_fitness``, averaged
+     by ``evaluate_full_match``.  Supply your own engine wiring via
+     ``build_engine(brain) -> MatchResult`` (see match_probe.build_probe_engine),
+     or hand ``outcome_fitness`` to ``evolve(..., fitness_fn=...)`` for a short
+     in-engine refinement loop.
 
 Design
 ------
@@ -43,6 +50,11 @@ import numpy as np
 from football_brain import FootballBrain, INPUT_SIZE, OUTPUT_SIZE
 from decision_brain import PlayerIntent
 from brain_sensors import extract_sensors
+from perception import perceive, PerceptionConfig
+from role_features import V2_INPUT_D, _role_family, build_v2_vector, role_block
+from tactics_context import (
+    V3_INPUT_D, build_v3_vector, random_tactics_context,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -142,6 +154,11 @@ def _context_reward(intent: PlayerIntent, position: str,
 # SYNTHETIC GAME-STATE GENERATION
 # ─────────────────────────────────────────────────────────────
 
+class GameState:
+    __slots__ = ('name',)
+    def __init__(self, name):
+        self.name = name
+
 def random_game_state(rng: random.Random, position: str) -> Dict[str, Any]:
     """Generate a random-but-realistic match state for a given position.
 
@@ -164,7 +181,7 @@ def random_game_state(rng: random.Random, position: str) -> Dict[str, Any]:
     minute = rng.uniform(0, 90)
     game_state_names = ["LEVEL", "HOME_AHEAD_1", "AWAY_AHEAD_1",
                         "HOME_CRUISE", "AWAY_CRUISE", "LEVEL"]
-    game_state = type("GS", (), {"name": rng.choice(game_state_names)})()
+    game_state = GameState(rng.choice(game_state_names))
 
     # teammates -- position-correct density
     n_teammates = rng.randint(3, 8)
@@ -214,7 +231,7 @@ def random_game_state_scoring(rng: random.Random, position: str) -> Dict[str, An
     under_pressure = rng.random() < 0.45   # slightly more pressure near goal
     minute = rng.uniform(55, 90)           # attacking phase
     game_state_names = ["LEVEL", "HOME_AHEAD_1", "AWAY_AHEAD_1", "HOME_CRUISE", "AWAY_CRUISE", "LEVEL"]
-    game_state = type("GS", (), {"name": rng.choice(game_state_names)})()
+    game_state = GameState(rng.choice(game_state_names))
 
     # teammates: mix of support (behind) and runners (ahead in the box)
     n_teammates = rng.randint(3, 6)
@@ -248,12 +265,62 @@ class _DummyPositionEngine:
         return self.positions.get(name, (50.0, 34.0))
 
 
+def _clone_brain(brain: FootballBrain) -> FootballBrain:
+    """Copy a brain by cloning its weight arrays (no schema round-trip).
+
+    The GA only needs a weight copy for the "best of generation" snapshot.
+    A serialize→deserialize round-trip would validate the mid-run brain
+    against its *declared* meta: a schema-v2 role-features chromosome
+    (32-wide input) carries the default v1_24d meta until the final result
+    is stamped, so validating at this point wrongly rejects it.
+    """
+    return FootballBrain(
+        brain.w1.copy(), brain.b1.copy(),
+        brain.w2.copy(), brain.b2.copy(),
+        brain.w3.copy(), brain.b3.copy(),
+    )
+
+
+class _FakePlayer:
+    def __init__(self, name: str, position: str):
+        self.name = name
+        self.position = position
+
+
 def _coords_to_players(coords: List[Tuple[float, float]], prefix: str):
-    class FakePlayer:
-        def __init__(self, name, position):
-            self.name = name
-            self.position = position
-    return [FakePlayer(f"{prefix}{i}", "CM") for i, (x, y) in enumerate(coords)]
+    """v1-style fake players — every actor labelled 'CM' (legacy behaviour).
+
+    Kept byte-identical to the historic corpus generator so a v1 evolution
+    run reproduces exactly; role-labelled actors are only used for the
+    schema-v2 role-feature corpus (see ``_role_coords_to_players``)."""
+    return [_FakePlayer(f"{prefix}{i}", "CM") for i, (x, y) in enumerate(coords)]
+
+
+# Position-labelled actor pools for the role-feature corpus.  rng.sample
+# consumes rng *only* in role mode, so the legacy (role-off) corpus path is
+# untouched and remains byte-identical to earlier runs.
+_OUTFIELD_TM_POOL = ["CB", "CB", "LB", "RB", "CDM", "CM", "CM",
+                     "CAM", "LW", "ST", "RW"]
+_OPP_POOL = ["GK", "CB", "CB", "LB", "RB", "CDM", "CM", "CM",
+             "CAM", "LW", "ST", "RW"]
+
+
+def _role_coords_to_players(coords: List[Tuple[float, float]], prefix: str,
+                            pool: List[str], rng: random.Random):
+    """Fake players with role-labelled positions (for v2 features).
+
+    Role features filter actors by position (opp forwards/wides, our
+    backline), so a synthetic corpus must tag each fake actor with a
+    plausible canonical position.  Deterministic per seed via ``rng``."""
+    labels = rng.sample(pool, len(coords))
+    return [_FakePlayer(f"{prefix}{i}", labels[i]) for i, (x, y) in enumerate(coords)]
+
+
+def _carrier(position: str) -> _FakePlayer:
+    """The synthetic ball-carrier — carries only the position label (the
+    role block reads ``player.position``; DNA stays unset so the shared
+    v1 block's self/DNA features read the same defaults as ``player=None``)."""
+    return _FakePlayer(f"carrier_{position}", position)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -308,117 +375,187 @@ def _apply_sharing(fitnesses: List[float], pop: List[FootballBrain],
 # FITNESS SCORING (synthetic)
 # ─────────────────────────────────────────────────────────────
 
-def synthetic_fitness(
-    brain: FootballBrain,
-    player_position: str,
-    n_states: int = 400,
-    seed: int = 0,
-    surrogate: Optional[Any] = None,
-    pop_diversity: float = 0.0,
+def generate_state_corpus(
+    position: str,
+    n_states: int,
+    seed: int,
     goal_bias: float = 0.0,
-) -> float:
-    """Score a brain by running it over many random game states.
+    input_size: int = INPUT_SIZE,
+    perception_config: Optional[PerceptionConfig] = None,
+) -> np.ndarray:
+    """Build a deterministic (n_states, input_size) sensor corpus.
 
-    The per-state reward is either the position reward table (hand-made)
-    or — when a ``surrogate`` (a ``FitnessSurrogate``) is supplied — the
-    surrogate's learned expected-success for the chosen intent given the
-    sensor state.  Using a surrogate grounds evolution in what actually
-    wins real matches instead of our guessed preferences.
+    A fraction ``goal_bias`` of the states are drawn from scoring
+    situations (final-third / goal-close / central) so rare high-value
+    intents (ST SHOOT, CM through-balls, winger crosses) are represented
+    in the argmax landscape.  Identical RNG sequence per (position,
+    n_states, seed, goal_bias).
 
-    Fitness = mean reward of chosen intents, weighted by the network's
-    own confidence (a brain that commits firmly to a rewarding intent
-    scores higher than one that's always wishy-washy), minus a penalty
-    for indecision (all outputs near-uniform = low confidence).
-
-    Two diversity bonuses prevent population collapse:
-      - ``pop_diversity``: average L2 distance to population centroid,
-        set by evolve().  Rewards brains that are different from the herd.
-      - Behavioral entropy: Shannon entropy of the marginal intent
-        distribution across all states.  Rewards brains that adapt their
-        choices to context rather than always picking the same intent.
-
-    Returns a scalar in roughly [0, 1].
+    ``input_size`` defaults to the v1 width and reproduces the legacy
+    corpus byte-for-byte.  For a schema-v2 role-features brain the caller
+    passes the role width (24 + 7 / 24 + 8): the shared 24-d block is
+    unchanged and the role tail is derived from role-``position``-labelled
+    fake actors, read through the SAME perceived scene when
+    ``perception_config`` is enabled (train-through-imperfect-perception
+    fidelity).  Unknown-role positions with an oversized ``input_size``
+    zero-pad the tail (never crashes, learns nothing from dead inputs).
     """
     rng = random.Random(seed)
-    rewards: List[float] = []
-    confidences: List[float] = []
-    penalties = 0.0
-    intent_counts = np.zeros(OUTPUT_SIZE, dtype=np.float64)
-
-    for _ in range(n_states):
+    role_mode = input_size != INPUT_SIZE
+    tactics_mode = input_size in set(V3_INPUT_D.values())
+    sensors = np.empty((n_states, input_size), dtype=np.float64)
+    for i in range(n_states):
         if goal_bias > 0.0 and rng.random() < goal_bias:
-            st = random_game_state_scoring(rng, player_position)
+            st = random_game_state_scoring(rng, position)
         else:
-            st = random_game_state(rng, player_position)
+            st = random_game_state(rng, position)
 
         t_coords = st["teammates"]
         d_coords = st["defenders"]
         all_names = {}
-        for i, (tx, ty) in enumerate(t_coords):
-            all_names[f"t{i}"] = (tx, ty)
-        for i, (dx, dy) in enumerate(d_coords):
-            all_names[f"d{i}"] = (dx, dy)
+        for idx_t, (tx, ty) in enumerate(t_coords):
+            all_names[f"t{idx_t}"] = (tx, ty)
+        for idx_d, (dx, dy) in enumerate(d_coords):
+            all_names[f"d{idx_d}"] = (dx, dy)
         pe = _DummyPositionEngine(all_names)
 
-        teammates = _coords_to_players(t_coords, "t")
-        defenders = _coords_to_players(d_coords, "d")
+        if role_mode:
+            teammates = _role_coords_to_players(t_coords, "t",
+                                                _OUTFIELD_TM_POOL, rng)
+            defenders = _role_coords_to_players(d_coords, "d",
+                                                _OPP_POOL, rng)
+        else:
+            teammates = _coords_to_players(t_coords, "t")
+            defenders = _coords_to_players(d_coords, "d")
 
-        sensors = extract_sensors(
-            None, st["x"], st["y"], teammates, defenders, pe,
-            st["under_pressure"], st["attacks_right"], st["game_state"],
-            st["minute"],
-        )
-        probs = brain.forward(sensors)
+        if role_mode:
+            carrier = _carrier(position)
+            if perception_config is not None and perception_config.enabled:
+                shared, scene = perceive(
+                    carrier, st["x"], st["y"], teammates, defenders, pe,
+                    st["under_pressure"], st["attacks_right"], st["game_state"],
+                    st["minute"], config=perception_config, return_scene=True)
+            else:
+                shared = extract_sensors(
+                    None, st["x"], st["y"], teammates, defenders, pe,
+                    st["under_pressure"], st["attacks_right"], st["game_state"],
+                    st["minute"],
+                )
+                scene = {"teammates": teammates, "defenders": defenders,
+                         "position_engine": pe}
+            role = role_block(carrier, st["x"], st["y"],
+                              scene["teammates"], scene["defenders"],
+                              scene["position_engine"], st["attacks_right"])
+            if tactics_mode:
+                # v3: append a synthetic manager-instruction block sampled
+                # from the SAME rng sequence (rolls AFTER the geometry so
+                # the v2 / v1 corpus stays byte-identical).
+                tactics = random_tactics_context(rng)
+                vec = build_v3_vector(shared, role, tactics)
+            else:
+                vec = build_v2_vector(shared, role)
+            if vec.shape[0] != input_size:  # unknown role -> zero-pad tail
+                padded = np.zeros(input_size, dtype=np.float64)
+                padded[:min(vec.shape[0], input_size)] = vec[:input_size]
+                vec = padded
+            sensors[i] = vec
+        else:
+            sensors[i] = extract_sensors(
+                None, st["x"], st["y"], teammates, defenders, pe,
+                st["under_pressure"], st["attacks_right"], st["game_state"],
+                st["minute"],
+            )
+    return sensors
+
+
+def synthetic_fitness(
+    brain: FootballBrain,
+    player_position: str,
+    batched_sensors: Optional[np.ndarray] = None,
+    surrogate: Optional[Any] = None,
+    pop_diversity: float = 0.0,
+    n_states: int = 400,
+    seed: int = 0,
+    goal_bias: float = 0.0,
+    input_size: int = INPUT_SIZE,
+    perception_config: Optional[PerceptionConfig] = None,
+) -> float:
+    """Score a brain over a batch of sensor states.
+
+    Either pass a pre-generated ``batched_sensors`` array of shape
+    (n_states, input_size) or supply ``n_states``/``seed``/``goal_bias``
+    and the corpus is generated deterministically here.  The network
+    forward pass is vectorised (one batched matmul per brain instead of
+    one Python call per state).
+
+    Per-state reward is either the position reward table (hand-made) or
+    — when a ``surrogate`` (a ``FitnessSurrogate``) is supplied — the
+    surrogate's learned expected-success for the chosen intent given the
+    sensor state.
+
+    Fitness = mean reward of chosen intents, weighted by the network's
+    own confidence, minus penalties for indecision / single-intent or
+    two-intent collapse (anti-collapse stabilisers), then scaled by a
+    behavioural-entropy bonus.  Returns a scalar in roughly [0, 1].
+
+    ``input_size`` / ``perception_config`` forward to the corpus builder
+    (schema-v2 role-features width and train-through-imperfect-perception).
+    With a role-features brain the surrogate only ever sees the shared
+    24-d block (its buckets are all index < 24), so the role tail never
+    distorts a learned success table / critic.
+    """
+    if batched_sensors is None:
+        batched_sensors = generate_state_corpus(
+            player_position, n_states, seed, goal_bias,
+            input_size=input_size, perception_config=perception_config)
+    sensors_all = np.asarray(batched_sensors, dtype=np.float64)
+    n_states = len(sensors_all)
+    if n_states == 0:
+        return 0.0
+
+    probs_all = brain.forward(sensors_all)  # (N, OUTPUT_SIZE), one matmul pass
+
+    rewards = np.empty(n_states, dtype=np.float64)
+    confidences = np.empty(n_states, dtype=np.float64)
+    intent_counts = np.zeros(OUTPUT_SIZE, dtype=np.float64)
+    penalties = 0.0
+
+    for i in range(n_states):
+        probs = probs_all[i]
         idx = int(np.argmax(probs))
         intent = _INTENT_BY_IDX[idx]
         intent_counts[idx] += 1.0
 
         if surrogate is not None:
-            reward = surrogate.expected_success(sensors, intent, player_position)
+            s_in = sensors_all[i][:24] if input_size != INPUT_SIZE else sensors_all[i]
+            reward = surrogate.expected_success(s_in, intent, player_position)
         else:
-            reward = _context_reward(intent, player_position, sensors)
-        confidence = float(probs[idx])
-        rewards.append(reward)
-        confidences.append(confidence)
+            reward = _context_reward(intent, player_position, sensors_all[i])
+        rewards[i] = reward
+        confidences[i] = probs[idx]
 
         sorted_p = np.sort(probs)[::-1]
         if len(sorted_p) > 1 and (sorted_p[0] - sorted_p[1]) < 0.02:
             penalties += 0.1
 
-    if not rewards:
-        return 0.0
-
-    mean_reward = statistics.mean(rewards)
-    mean_conf = statistics.mean(confidences)
+    mean_reward = float(rewards.mean())
+    mean_conf = float(confidences.mean())
     fitness = mean_reward * (0.5 + 0.5 * mean_conf) - penalties / n_states
 
-    # Behavioral diversity bonus: Shannon entropy of intent marginal.
-    # A brain that always picks the same intent regardless of state gets 0;
-    # one that spreads across intents based on context gets up to 1.0.
     intent_probs = intent_counts / intent_counts.sum()
     intent_probs = intent_probs[intent_probs > 0]
     entropy = -float(np.sum(intent_probs * np.log(intent_probs + 1e-12)))
     max_entropy = math.log(OUTPUT_SIZE)
-    bdiv = entropy / max_entropy  # normalised to [0, 1]
+    bdiv = entropy / max_entropy
 
-    # Dominance penalty: if one intent exceeds 50% of states, penalise
-    # proportionally.  This prevents the surrogate from collapsing the
-    # brain to a single high-value intent (e.g. SWITCH for CM/CF).
     max_share = float(intent_counts.max() / intent_counts.sum())
-    dom_pen = max(0.0, max_share - 0.50) * 1.5  # 0 at 50%, 0.75 at 100%
-
-    # Effective-usage penalty: a brain can evade the single-intent rule by
-    # collapsing onto TWO intents split ~50/50 (predicted for CAM: CARRY +
-    # SWITCH, other 8 intents almost never firing).  So additionally require
-    # a spread of behaviour: count intents individually clearing 5% of the
-    # batch; if fewer than 6 clear it, apply a proportional penalty (0 at 6+,
-    # 0.75 when only 3 intents ever fire, 1.5 at ... clamped by fitness scale).
+    dom_pen = max(0.0, max_share - 0.50) * 1.5
     if intent_counts.sum() > 0:
         shares = intent_counts / intent_counts.sum()
         n_effective = int(np.sum(shares > 0.05))
         if n_effective < 6:
             shortfall = (6 - n_effective) / 6.0
-            dom_pen += shortfall * 0.75  # 0 at 6+, 0.375 at 3, 0.75 at 0
+            dom_pen += shortfall * 0.75
 
     scaled = (fitness - dom_pen) * (1.0 + 1.0 * bdiv) / 1.5
     return max(0.0, min(1.0, scaled))
@@ -456,6 +593,10 @@ def evolve(
     verbose: bool = True,
     surrogate: Optional[Any] = None,
     goal_bias: float = 0.0,
+    input_size: int = INPUT_SIZE,
+    perception_config: Optional[PerceptionConfig] = None,
+    role_family: Optional[str] = None,
+    fitness_fn: Optional[Callable[[FootballBrain], float]] = None,
 ) -> EvolutionResult:
     """Run a full evolution run for a single positional brain.
 
@@ -482,13 +623,38 @@ def evolve(
         RNG seed for reproducibility.
     verbose : bool
         Print per-generation progress.
+    surrogate : optional
+        Learned FitnessSurrogate / CriticSurrogate driving expected-success.
+    goal_bias : float
+        Fraction of sampled states drawn from scoring situations.
+    input_size : int
+        Sensor width this brain consumes — INPUT_SIZE (24, v1) or the
+        schema-v2 role-features width (24 + 7 / 24 + 8).  When larger
+        than 24 the initial population and the synthetic corpus are built
+        role-aware and the saved best brain carries a ``v2_role_features``
+        meta block.
+    perception_config : optional
+        When enabled, the synthetic corpus is generated THROUGH the
+        imperfect perception layer (training fidelity for a challenger
+        that will gate under the closed Step-4 rule).
+    role_family : optional
+        Informational role family stamped into the v2 meta (defaults to
+        ``_role_family(position)`` when ``input_size`` > 24).
+    fitness_fn : optional
+        Overrides the fitness signal entirely.  When given, each brain is
+        scored ``fitness_fn(brain)`` instead of ``synthetic_fitness``; the
+        synthetic corpus is never generated and ``surrogate``/``goal_bias``
+        are ignored.  Use it to drive a SHORT in-engine refinement loop
+        (population of ~4-8, few generations, with ``evaluate_full_match``
+        behind the callable) — a full 32x40 real-match GA is ~7 h/position.
 
     Returns
     -------
     EvolutionResult with best brain + history.
     """
     rng = random.Random(seed)
-    pop = [FootballBrain.random(seed=i) for i in range(population_size)]
+    pop = [FootballBrain.random(seed=i, input_size=input_size)
+           for i in range(population_size)]
 
     best_overall: Optional[FootballBrain] = None
     best_fitness_overall = -1.0
@@ -503,14 +669,27 @@ def evolve(
         # population diversity (anti-collapse bonus), normalised by init
         pop_div = _compute_pop_diversity(pop) / init_pop_div
 
+        # PRE-GENERATE STATE CORPUS (vectorised forward + identical RNG
+        # sequence per brain: seed + gen * 1000 + i) UNLESS an external
+        # fitness_fn owns the signal.
+        if fitness_fn is None:
+            corpus_sensors = [
+                generate_state_corpus(position, n_states, seed + gen * 1000 + i,
+                                      goal_bias=goal_bias, input_size=input_size,
+                                      perception_config=perception_config)
+                for i in range(population_size)
+            ]
+
         # evaluate
         fitnesses = []
-        for brain in pop:
-            f = synthetic_fitness(brain, position, n_states=n_states,
-                                  seed=seed + gen * 1000 + len(fitnesses),
-                                  surrogate=surrogate,
-                                  pop_diversity=pop_div,
-                                  goal_bias=goal_bias)
+        for i, brain in enumerate(pop):
+            if fitness_fn is not None:
+                f = float(fitness_fn(brain))
+            else:
+                f = synthetic_fitness(brain, position, batched_sensors=corpus_sensors[i],
+                                      surrogate=surrogate,
+                                      pop_diversity=pop_div,
+                                      input_size=input_size)
             fitnesses.append(f)
 
         # fitness sharing — divide by niche count to penalise convergence
@@ -524,8 +703,7 @@ def evolve(
         best_idx = fitnesses.index(best_f)
         if best_f > best_fitness_overall:
             best_fitness_overall = best_f
-            data = pop[best_idx].serialize()
-            best_overall = FootballBrain.deserialize(data)
+            best_overall = _clone_brain(pop[best_idx])
 
         if verbose:
             print(f"  gen {gen+1:3d}  best={best_f:.4f}  mean={mean_f:.4f}  "
@@ -554,8 +732,22 @@ def evolve(
         pop = next_pop
         mutate_rate = max(min_mutate_rate, mutate_rate * mutate_decay)
 
+    best = best_overall if best_overall is not None else pop[0]
+    if input_size != INPUT_SIZE:
+        # Stamp the schema lineage so loaders route this brain to the
+        # right sensor builder (and reject it to a v1-only loader).
+        from brain_schema import brain_meta_dict
+        if input_size in set(V3_INPUT_D.values()):
+            sensor_schema = "v3_tactics_context"
+        else:
+            sensor_schema = "v2_role_features"
+        best.meta = brain_meta_dict(
+            training_method="ga_surrogate",
+            sensor_schema=sensor_schema,
+            role_family=role_family or _role_family(position),
+        )
     return EvolutionResult(
-        best_brain=best_overall if best_overall is not None else pop[0],
+        best_brain=best,
         best_fitness=best_fitness_overall,
         generation=gen_best,
         mean=gen_mean,
@@ -563,35 +755,197 @@ def evolve(
 
 
 # ─────────────────────────────────────────────────────────────
-# FULL-MATCH FITNESS (hook for real engine)
+# FULL-MATCH FITNESS — engine outcomes, not intention rewards
 # ─────────────────────────────────────────────────────────────
 
-def evaluate_full_match(brain: FootballBrain, build_engine: Callable[[], Any],
-                        n_matches: int = 1) -> float:
-    """Evaluate a brain using the real MatchEngine.
+# Signal weights: the fitness blend when a candidate brain is scored by the
+# real engine.  All terms come from MatchEngine outcomes — none of the
+# hand-authored POSITION_REWARDS leak in here.  xG diff carries the most
+# weight because it is the engine's own expected-value/chance-quality model
+# (lower variance than goals) and is directly "how good were the chances".
+OUTCOME_DEFAULT_WEIGHTS: Dict[str, float] = {
+    "xg_diff": 0.45,     # engine threat-model yield (chance quality)
+    "turnover": 0.20,    # retention: fewer brain-attributed errors -> better
+    "goal_diff": 0.15,   # sparse but real
+    "possession": 0.10,  # cumulative control
+    "chances": 0.10,     # the candidate's own shot production
+}
+
+# Event names that count as a player "creating a chance" for himself.
+_OUTCOME_SHOT_EVENTS = {
+    "SHOT_ON_TARGET", "SHOT_OFF_TARGET", "SHOT_BLOCKED", "HIT_WOODWORK",
+    "GOAL", "FREEKICK_DIRECT", "PENALTY_SCORED", "PENALTY_MISSED",
+}
+
+
+@dataclass
+class OutcomeFitnessConfig:
+    """Normalisation + weighting knobs for outcome-driven fitness.
+
+    Each signal is mapped into an achievement in [0, 1] and blended by
+    ``weights``; the final scalar is then renormalised by the total weight.
+
+    - xg_diff / goal_diff are centred at 0 (0.5 => parity) and saturate at
+      the respective cap (an xG margin of ``xg_cap`` scores 1.0).
+    - possession maps linearly from 0-100%.
+    - turnover maps linearly from 0 to ``turnover_tolerance`` (an error on
+      > 20% of one's own decided touches scores 0 on that axis).
+    - chances: the candidate's own shot-esque events, saturating at
+      ``chances_cap``.
+    """
+    weights: Dict[str, float] = field(default_factory=lambda: dict(OUTCOME_DEFAULT_WEIGHTS))
+    xg_cap: float = 3.2
+    goal_cap: float = 4.0
+    turnover_tolerance: float = 0.20
+    chances_cap: int = 8
+
+
+def extract_outcome_signals(result: Any,
+                           target_player: Optional[str] = None,
+                           team: Optional[str] = None) -> Dict[str, float]:
+    """Pull pure engine-outcome scalars for one candidate slot from a MatchResult.
+
+    ``target_player`` (optional) is the candidate's exact name.  When given,
+    the side the candidate plays for is inferred from his own timeline rows
+    (falls back to home), and TWO brain-attributed signals are produced from
+    the CARRY ``active_brain`` metadata: ``turnover_rate`` (fraction of his
+    decided touches flagged ``is_error``) and ``own_shots`` (his shot-esque
+    events).  When omitted, turnover_rate is 0 and own_shots is empty — the
+    team-wide outcome signals still work.
+
+    ``team`` (optional, ``"home"`` or ``"away"``) overrides the automatic
+    side inference.  Use it when both squads share player names (the probe
+    template names both STs ``"ST"``) so the timeline scan doesn't pick the
+    wrong side's first occurrence.
+
+    Returns a dict with keys: team, xg_diff, goal_diff, possession,
+    turnover_rate, n_touches, n_errors, own_shots.
+    """
+    home_goals = float(getattr(result, "home_goals", 0) or 0)
+    away_goals = float(getattr(result, "away_goals", 0) or 0)
+    home_xg = float(getattr(result, "home_xg", 0.0) or 0.0)
+    away_xg = float(getattr(result, "away_xg", 0.0) or 0.0)
+    poss_home = float(getattr(result, "home_possession_pct", 50.0) or 50.0)
+    timeline = list(getattr(result, "timeline", []) or [])
+
+    def _name(ev: Any) -> str:
+        pl = getattr(ev, "player", None)
+        if isinstance(pl, str):
+            return pl
+        return str(getattr(pl, "name", "") or "")
+
+    # side inference from the candidate's own rows; home is the fallback
+    if team is not None:
+        pass  # caller knows the side (e.g. duplicate names across squads)
+    elif target_player:
+        for ev in timeline:
+            if _name(ev) == target_player:
+                t = getattr(ev, "team", "") or "home"
+                team = t if t else "home"
+                break
+    team = team or "home"
+    team = str(team).title() if str(team).lower() in ("home", "away") else str(team)
+
+    if str(team).lower().startswith(("home", "left", "1")):
+        team_goals, opp_goals, team_xg, opp_xg, team_poss = (
+            home_goals, away_goals, home_xg, away_xg, poss_home)
+    else:
+        team_goals, opp_goals, team_xg, opp_xg, team_poss = (
+            away_goals, home_goals, away_xg, home_xg, 100.0 - poss_home)
+
+    touches = errors = own_shots = 0
+    if target_player:
+        for ev in timeline:
+            if _name(ev) != target_player:
+                continue
+            md = getattr(ev, "metadata", None) or {}
+            if "active_brain" in md:
+                touches += 1
+                ab = md.get("active_brain") or {}
+                if ab.get("is_error"):
+                    errors += 1
+            etype = getattr(getattr(ev, "event_type", None), "name", "")
+            if etype in _OUTCOME_SHOT_EVENTS:
+                own_shots += 1
+
+    return {
+        "team": team,
+        "xg_diff": team_xg - opp_xg,
+        "goal_diff": team_goals - opp_goals,
+        "possession": team_poss,
+        "turnover_rate": (errors / touches) if touches else 0.0,
+        "n_touches": touches,
+        "n_errors": errors,
+        "own_shots": own_shots,
+    }
+
+
+def outcome_fitness(signals: Dict[str, float],
+                    config: Optional[OutcomeFitnessConfig] = None) -> float:
+    """Blend extracted outcome signals into a single fitness in [0, 1]."""
+    cfg = config or OutcomeFitnessConfig()
+    w = {k: float(cfg.weights.get(k, 0.0)) for k in OUTCOME_DEFAULT_WEIGHTS}
+    total = sum(w.values())
+    if total <= 0.0:
+        return 0.0
+
+    xg_sig = float(min(1.0, max(0.0, 0.5 + signals["xg_diff"] / cfg.xg_cap)))
+    goal_sig = float(min(1.0, max(0.0, 0.5 + signals["goal_diff"] / cfg.goal_cap)))
+    poss_sig = float(min(1.0, max(0.0, signals["possession"] / 100.0)))
+    tol = max(1e-6, cfg.turnover_tolerance)
+    retain_sig = float(min(1.0, max(0.0, 1.0 - signals["turnover_rate"] / tol)))
+    chance_sig = float(min(1.0, signals.get("own_shots", 0) / max(1, cfg.chances_cap)))
+
+    blended = (
+        w["xg_diff"] * xg_sig + w["turnover"] * retain_sig
+        + w["goal_diff"] * goal_sig + w["possession"] * poss_sig
+        + w["chances"] * chance_sig
+    )
+    return float(min(1.0, max(0.0, blended / total)))
+
+
+def evaluate_full_match(brain: FootballBrain,
+                        build_engine: Callable[[FootballBrain], Any],
+                        n_matches: int = 3,
+                        config: Optional[OutcomeFitnessConfig] = None,
+                        target_player: Optional[str] = None,
+                        team: Optional[str] = None) -> float:
+    """Score a candidate brain by the real engine's own outcomes.
 
     Parameters
     ----------
     brain : FootballBrain
-        The brain to evaluate.
-    build_engine : Callable[[], Any]
-        A zero-arg callable that builds a configured MatchEngine with
-        this brain registered to the target player, runs simulate(),
-        and returns the result object.  This keeps the heavy engine
-        wiring out of this module — you supply it (see evolve_brains.py).
+        The candidate to evaluate.
+    build_engine : Callable[[FootballBrain], Any]
+        A callable that takes the candidate brain, wires it into a
+        MatchEngine (registering it under the exact on-pitch player name so
+        ``get_brain`` resolves it), runs ``simulate()`` and returns the
+        MatchResult.  Provide it with ``match_probe.build_probe_engine`` or
+        your own closure.  The brain is passed per-call so the SAME wiring
+        can evaluate every population member (usable as ``evolve``'s
+        ``fitness_fn``).
     n_matches : int
-        Number of matches to average over.
+        Number of real matches to average over.  Each takes ~15-20s.
+    config : optional
+        ``OutcomeFitnessConfig`` normalisation/weighting.
+    target_player : optional
+        Exact name of the candidate's on-pitch player, used to attribute
+        turnovers and own-chance creation (and infer his side).
+    team : optional
+        Which side the candidate plays for (``"home"``/``"away"``).
+        When given, skips the fragile timeline inference — needed when both
+        squads reuse the same player name (probe template).
 
     Returns
     -------
-    float — normalised fitness from match outcomes.
+    float — averaged outcome fitness in [0, 1].
     """
-    scores = []
-    for _ in range(n_matches):
-        result = build_engine()
-        # result has .score_home, .score_away, possession etc. — adapt
-        # to the actual MatchResult interface.
-        home = getattr(result, "score_home", getattr(result, "home_goals", 0))
-        away = getattr(result, "score_away", getattr(result, "away_goals", 0))
-        scores.append(float(home) / (float(away) + 1.0))
-    return statistics.mean(scores)
+    cfg = config or OutcomeFitnessConfig()
+    fits = []
+    n = max(1, int(n_matches))
+    for _ in range(n):
+        result = build_engine(brain)
+        signals = extract_outcome_signals(result, target_player=target_player,
+                                          team=team)
+        fits.append(outcome_fitness(signals, cfg))
+    return statistics.mean(fits) if fits else 0.0

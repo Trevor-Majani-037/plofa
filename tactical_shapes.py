@@ -238,9 +238,14 @@ def formation_stance_for(
     minute = state.minute if minute is None else minute
 
     # Manager bias layer — identical lenses to tactical_ai.py (aggressive
-    # managers chase earlier / protect later).
+    # managers chase earlier / protect later). Applied ONLY to managers that
+    # expose the Phase 0–5 surface (chase_shift/protect_shift). A Phase 6
+    # brain Manager (manager_profile.Manager) has no such shifts — its
+    # posture is decided by the neural pipeline, so the threshold lenses
+    # are skipped for it (no crash on a missing attribute) and its say
+    # comes AFTER stance selection as a one-step nudge (Phase 8).
     chase_min, push_min, protect_min, lead_min = 60, 70, 70, 80
-    if manager is not None:
+    if manager is not None and hasattr(manager, "chase_shift"):
         chase_min = max(45, 60 - manager.chase_shift())
         push_min = max(50, 70 - manager.chase_shift() * 0.7)
         protect_min = max(50, 70 - manager.protect_shift())
@@ -248,16 +253,43 @@ def formation_stance_for(
 
     # Stance selection — same decision order as TacticalAI.adjust().
     if gd <= -2 and minute >= chase_min:
-        return FormationStance.ALL_OUT_CHASE
-    if gd == -1 and minute >= push_min:
-        return FormationStance.PUSHING
-    if gd >= 2 and minute >= protect_min:
-        return FormationStance.SEE_IT_OUT
-    if gd == 1 and minute >= lead_min:
-        return FormationStance.PROTECT_LEAD
-    if gd == 0 and minute >= 80:
-        return FormationStance.TENSE_LEVEL
+        stance = FormationStance.ALL_OUT_CHASE
+    elif gd == -1 and minute >= push_min:
+        stance = FormationStance.PUSHING
+    elif gd >= 2 and minute >= protect_min:
+        stance = FormationStance.SEE_IT_OUT
+    elif gd == 1 and minute >= lead_min:
+        stance = FormationStance.PROTECT_LEAD
+    elif gd == 0 and minute >= 80:
+        stance = FormationStance.TENSE_LEVEL
+    else:
+        # The very first exchanges are a feel-out period handled by the
+        # dials; the shape stays authored.
+        return FormationStance.BASELINE
 
-    # The very first exchanges are a feel-out period handled by the dials;
-    # the shape stays authored.
-    return FormationStance.BASELINE
+    # ── BRAIN-MANAGER SAY (Phase 8, opt-in) ──────────────────────
+    # A live Manager's CURRENT posture nudges the shape one step along
+    # the attack order (dwell-guarded upstream, so no flicker):
+    #   ATTACK  → one step more attacking (chase harder, throw men forward)
+    #   DEFEND  → one step more defensive (lock the block earlier)
+    #   BALANCED / no live manager / flag OFF → scoreline shape stands.
+    # Static profiles (no .decide) never enter this branch.
+    if manager is not None and hasattr(manager, "decide"):
+        import match_engine as _me
+        if bool(getattr(_me, "USE_MANAGER_BRAIN", False)):
+            posture = getattr(manager, "_current_posture", "BALANCED")
+            if posture in ("ATTACK", "DEFEND"):
+                order = (
+                    FormationStance.ALL_OUT_CHASE,
+                    FormationStance.PUSHING,
+                    FormationStance.TENSE_LEVEL,
+                    FormationStance.BASELINE,
+                    FormationStance.PROTECT_LEAD,
+                    FormationStance.SEE_IT_OUT,
+                )
+                idx = order.index(stance)
+                if posture == "ATTACK":
+                    stance = order[max(0, idx - 1)]
+                else:
+                    stance = order[min(len(order) - 1, idx + 1)]
+    return stance
