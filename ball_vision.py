@@ -21,6 +21,7 @@ ball-vision must NEVER kill a match.
 from __future__ import annotations
 
 import weakref
+import zlib
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -119,9 +120,18 @@ def perceive_ball(
         float(cfg.ball_stale_growth) * elapsed)
     # Deterministic draw per (player, snapshot, staleness bucket) so the
     # same recalled situation always says the same thing.
+    #
+    # ``zlib.crc32`` not ``hash()``: a ``hash()`` of a str is salted by
+    # PYTHONHASHSEED, so the same fixture replayed under a different hash seed
+    # recalled the ball differently and produced a different match. Measured:
+    # identical seed + varied PYTHONHASHSEED gave three different matches;
+    # pinning =0 gave three identical ones. crc32 is stable in every process,
+    # forever -- the same discipline position_engine.py:2481, world/squads.py
+    # and world/proof.py already follow.
     ident = f"{pname}:{minute:.1f}:{elapsed:.1f}"
     rng = np.random.default_rng(
-        (int(cfg.seed) * 2654435761 + hash(ident)) & 0xFFFFFFFF)
+        (int(cfg.seed) * 2654435761
+         + zlib.crc32(ident.encode("utf-8"))) & 0xFFFFFFFF)
     px = track.x + float(rng.normal(0.0, sigma))
     py = track.y + float(rng.normal(0.0, sigma))
     return px, py, False, sigma

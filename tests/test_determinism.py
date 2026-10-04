@@ -9,10 +9,18 @@ Findings behind these tests, all measured rather than assumed
    same seed in one process, and three *separate processes*, all produced a
    byte-identical 3,283-event timeline, sha ``e59c7889d1dbad5a``.
 
-2. **It survives ``PYTHONHASHSEED`` far less well.** The same fixture under
-   ``PYTHONHASHSEED=1`` produced 3,024 events — 8% less football. This traces
-   to exactly three ``hash()``-on-string sites, and those are frozen on
-   purpose: changing them changes the live 26/27 season.
+2. **It did NOT survive ``PYTHONHASHSEED``** — the same fixture under
+   ``PYTHONHASHSEED=1`` produced 3,024 events against 3,283 at the default,
+   i.e. 8% less football. This traced to exactly three ``hash()``-on-string
+   sites. Those three were the *entire* cross-process cause and are now
+   ``zlib.crc32`` (2026-10-04): pinned ``PYTHONHASHSEED=0`` gave three
+   byte-identical matches, varied 0 / 1 / 12345 gave three different ones, and
+   that discrepancy is gone. The AST test below now pins the count at **zero**
+   rather than at three.
+
+   The cost of the fix was accepted knowingly: every 26/27 calibration number
+   taken before it was taken under an unpinned hash seed and is therefore not
+   byte-reproducible.
 
 3. **The production squad path does not replay across processes.** Three fresh
    interpreters, same seed, same ``PYTHONHASHSEED``, real rosters: 3,057 /
@@ -24,9 +32,20 @@ Findings behind these tests, all measured rather than assumed
    returns byte-identical squads when called three times in a row, so the
    loader is not the source.
 
-Point 3 is the open bug. It is **not** the "minute 28 off-ball divergence"
-previously recorded — that diagnosis was wrong, and these tests exist partly so
-the corrected version is the one that survives.
+Point 3 is not the same defect as point 2, and the two must not be conflated:
+point 2 was the whole cross-process story for the *scratch* harness path and is
+fixed; point 3 concerns the *production roster* path and is still open. It is
+**not** the "minute 28 off-ball divergence" previously recorded — that
+diagnosis was wrong, and these tests exist partly so the corrected version is
+the one that survives.
+
+A fourth finding (2026-10-04) retracts a standing project rule rather than
+adding to this list: the widely repeated "an A/B across two ``simulate()``
+calls in one process is invalid" was **false**. A negative control — same seed,
+second ``simulate()``, nothing cleared at all — was byte-identical to the
+reference. Module-level brain and mind caches do not contaminate the timeline
+(the 531k ``np.random.default_rng()`` calls per match are all seeded), and
+``np.random.seed()`` was never the lever.
 
 The tests below are AST checks rather than match simulations. A full-match
 reproducibility test costs ~160 s for the two runs it needs, which does not
@@ -59,45 +78,40 @@ def _tree(name: str) -> ast.Module:
 
 # ── the PYTHONHASHSEED dependency, pinned ─────────────────
 
-def test_the_hash_seed_dependent_sites_are_still_exactly_three():
+def test_there_are_no_hash_seed_dependent_sites_on_the_match_path():
     """``hash()`` on a string depends on PYTHONHASHSEED, so every such call on
     the match path is a reproducibility hazard and a place where a 26/27
     calibration quietly depends on the environment.
 
-    Three are expected, all deliberate:
+    There used to be exactly three of them, all deliberate:
 
-      ``ball_vision.py``    perception seed for a vision query
-      ``perception.py``  x2 the same, in the two draw paths
+      ``ball_vision.py``    recall noise for a player who has lost the ball
+      ``perception.py``  x2 per-snapshot perception noise, two draw paths
 
-    ``perception.py`` already carries a comment explaining that new code should
-    use ``zlib.crc32`` instead and that these were left alone because changing
-    them changes the live season. This test does not demand they be fixed — it
-    demands that the count stays *known*, so a fourth one shows up as a failure
-    rather than as a mystery divergence months later.
+    and they were measured to be the **entire** cross-process cause of this
+    engine producing different matches from the same seed on different
+    machines: identical seed with ``PYTHONHASHSEED`` 0 / 1 / 12345 gave three
+    different matches; pinned to 0 it gave three identical ones. All three are
+    ``zlib.crc32`` now (2026-10-04), which is stable in every process forever.
+
+    The test now demands the count is **zero**. The reason to keep a count test
+    at all, rather than deleting it with the sites, is that the failure mode is
+    invisible: a re-introduced ``hash()`` does not crash, it does not warn, and
+    it does not show up until someone re-runs a calibration on a different
+    machine and gets a different match.
     """
     found = []
     for name in MATCH_PATH:
-        src = (ROOT / name).read_text(encoding="utf-8")
         for node in ast.walk(_tree(name)):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id == "hash" and node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)):
-                found.append(f"{name}:{node.lineno} hash(<string literal>)")
-            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                  and node.func.id == "hash" and node.args
-                  and isinstance(node.args[0], (ast.Name, ast.Attribute))):
+                    and isinstance(node.args[0], (ast.Name, ast.Attribute))):
                 found.append(f"{name}:{node.lineno} hash(<name/attr>)")
-    # Literal-argument calls are constants and harmless; only dynamic ones count.
-    dynamic = [f for f in found if "<string literal>)" not in f]
-    assert len(dynamic) == 3, (
-        f"expected 3 dynamic hash() calls on the match path, found "
-        f"{len(dynamic)}: {dynamic}")
-    assert sorted(dynamic) == sorted([
-        "ball_vision.py:124 hash(<name/attr>)",
-        "perception.py:422 hash(<name/attr>)",
-        "perception.py:519 hash(<name/attr>)",
-    ]), f"the hash-dependent sites moved: {dynamic}"
+    assert not found, (
+        f"dynamic hash() calls are back on the match path: {found}. Use "
+        f"zlib.crc32(ident.encode('utf-8')) -- see perception._fixture_seed. "
+        f"A hash() of a str is PYTHONHASHSEED-salted, so the same fixture "
+        f"replays into a different match on a different machine.")
 
 
 def test_the_perception_module_explains_why_it_uses_crc32():

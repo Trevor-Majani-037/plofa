@@ -46,6 +46,7 @@ Threaded through ``NeuralDecisionBrain.decide``; global switch via
 from __future__ import annotations
 
 import os
+import zlib
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
@@ -211,14 +212,19 @@ def derive_match_seed(home: str, away: str, match_date, competition: str = "") -
 
     Why ``zlib.crc32`` and not ``hash()``
     -------------------------------------
-    The existing draws use ``hash(ident)``, which for a ``str`` depends on
-    ``PYTHONHASHSEED``. Set it to anything but 0 and the same match yields
-    different noise — a silent reproducibility trap that only shows up on
-    someone else's machine. ``crc32`` is stable everywhere, in every process,
-    forever. New code should use it; the existing ``hash()`` sites are left
-    alone deliberately, because changing them would alter 26/27 output.
+    ``hash()`` of a ``str`` depends on ``PYTHONHASHSEED``. Set it to anything
+    but 0 and the same match yields different noise — a silent reproducibility
+    trap that only shows up on someone else's machine. ``crc32`` is stable
+    everywhere, in every process, forever.
+
+    The two per-snapshot noise draws below used ``hash()`` too, and that was
+    measured to be the *entire* cross-process cause of this module making
+    different matches on different machines (2026-10-04: identical seed with
+    PYTHONHASHSEED 0 / 1 / 12345 gave three different matches; pinned to 0 it
+    gave three identical ones). They are crc32 now. The 26/27 calibration
+    numbers taken before this move were taken under an unpinned hash seed and
+    are therefore not reproducible — that was the trade being made knowingly.
     """
-    import zlib
     ident = f"{competition}|{home}|{away}|{match_date}"
     return zlib.crc32(ident.encode("utf-8")) & 0xFFFFFFFF
 
@@ -419,7 +425,11 @@ def perceive(
     # situations → different draws.  Avoids the fixed-bias degeneracy of
     # using the same rng for every call.
     _ident = f"{getattr(player, 'name', '')}:{x:.3f}:{y:.3f}:{minute:.1f}:{len(seen_defs)}:{len(seen_tms)}"
-    draw_seed = (cfg.seed * 2654435761 + hash(_ident)) & 0xFFFFFFFF
+    # crc32 not hash(): see _fixture_seed's docstring -- hash() of a str is
+    # PYTHONHASHSEED-salted, which made the same fixture replay into three
+    # different matches on three different machines. Fixed 2026-10-04.
+    draw_seed = (cfg.seed * 2654435761
+                 + zlib.crc32(_ident.encode("utf-8"))) & 0xFFFFFFFF
     rng = np.random.default_rng(draw_seed)
 
     offsets: dict[str, float] = {}
@@ -516,7 +526,10 @@ def perceive_offball_actors(
         seen_tms = [a for a, kind in ranked if kind == "tm"]
 
     ident = f"{getattr(player, 'name', '')}:{x:.3f}:{y:.3f}:{len(seen_defs)}:{len(seen_tms)}"
-    draw_seed = (cfg.seed * 2654435761 + hash(ident)) & 0xFFFFFFFF
+    # crc32 not hash(): see _fixture_seed's docstring -- hash() of a str is
+    # PYTHONHASHSEED-salted. Fixed 2026-10-04.
+    draw_seed = (cfg.seed * 2654435761
+                 + zlib.crc32(ident.encode("utf-8"))) & 0xFFFFFFFF
     rng = np.random.default_rng(draw_seed)
 
     offsets: dict[str, float] = {}

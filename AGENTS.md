@@ -335,10 +335,14 @@ half-space coverage, `TRIANGLE SUPPORT RULE`, winger 1v1 isolation, La Pausa as
     guard was INERT — which a missing `math` import was hiding. A controlled
     replay reporting `jumps_filtered == 0` with 200+ non-physical samples present
     is what caught it. A silently-no-op guard is worse than no guard.
-  - **AN A/B ACROSS TWO `simulate()` CALLS IS INVALID.** Both arms scored
-    differently (0-0 vs 1-0) because the second inherits the first's module-level
-    brain caches — the seed-reproducibility bug biting exactly where it hurts.
-    Compare by replaying ONE recorded feed through both configurations instead.
+  - ~~**AN A/B ACROSS TWO `simulate()` CALLS IS INVALID.**~~ — **RETRACTED
+    2026-10-04.** Both arms scored differently (0-0 vs 1-0) and the cause was
+    attributed to module-level brain caches. It is not: `_diag_seed_repro.py`'s
+    `arm none` — two `simulate()` calls, same seed, **nothing cleared** — is
+    byte-identical to a single-call reference. An in-process A/B is valid. What
+    made those two arms differ was that they were run in two *processes* with
+    different `PYTHONHASHSEED` values, which was the real and separate bug, now
+    fixed (see *REPRODUCIBILITY*).
   - 22 tests in `tests/test_run_taxonomy_export.py` (19 fast + 3 match-level), all
     green. Includes one that EACH of the six types is reachable from a movement
     shaped to mean it, so a type that can never fire fails directly rather than
@@ -474,9 +478,11 @@ against the dead `drift_minute` wiring all day.
   to this — different roster and date — and the two should not be quoted side
   by side. The 1500–3400 in `event_chain`'s own docstring is a different claim
   again.
-- **BRAIN-ONLY vs DECIDERS, 3 matches per arm, SEPARATE PROCESSES** (an A/B
-  across two `simulate()` calls in one process is invalid — the second
-  inherits the first's module-level brain caches):
+- **BRAIN-ONLY vs DECIDERS, 3 matches per arm, SEPARATE PROCESSES** (the
+  stated reason — "an A/B across two `simulate()` calls in one process is
+  invalid — the second inherits the first's module-level brain caches" — is
+  **retracted 2026-10-04**, see *REPRODUCIBILITY*; separate processes are just
+  habit here):
 
   | | deciders | brain only | real PL |
   |---|---|---|---|
@@ -809,10 +815,11 @@ crowding and the running changed the pitch and not the football.
   | corners with >1 attacker | 0 | **6 of 10** |
   | distinct winners across a match | 1 per corner | **3 across 7 corners** |
 
-- **CORNER CONVERSION, 6 seeds in 6 SEPARATE PROCESSES** (mandatory — an
-  in-process sweep inherits the brain caches): 3 goals from 58 corners =
-  **5.2%**. Real Premier League is 3–4%, so this is in the band, and it is up
-  from step 1's 2.8%.
+- **CORNER CONVERSION, 6 seeds in 6 SEPARATE PROCESSES** (mandatory at the
+  time because of the now-retracted brain-cache rule; and note these numbers
+  predate the crc32 fix so they carry hash-order noise): 3 goals from 58
+  corners = **5.2%**. Real Premier League is 3–4%, so this is in the band, and
+  it is up from step 1's 2.8%.
 - **OPEN FINDING — attackers win 93-100% of corners.** Measured
   `won-aerial` by seed: 100/100/93/100/83/100. Real football has defenders
   clearing the large majority of corner deliveries, and a keeper claiming or
@@ -827,6 +834,181 @@ crowding and the running changed the pitch and not the football.
   61 passed / 1 strict xfailed. 26/27 regression 48 passed / 2 failed — the
   same two as before step 3 and both already characterised (the documented
   crosses-signature mismatch, and the non-deterministic `GK average x` one).
+
+## CORNER STEP 4 — the 93–100% was TWO defects, one of them mine (2026-10-03)
+
+Asked whether conservation-of-energy physics would fix the attacker winning
+93–100% of corners. **No**, and measuring it twice is what found the real cause.
+Isolated probe first (`_diag_corner_race.py`, milliseconds, no match — the right
+instrument here, since nothing about this needs a 90-minute simulation).
+
+- **DEFECT 1: a dead heat was decided by ARGUMENT ORDER.**
+  `resolve_aerial_delivery` built `candidates` from
+  `attacking_players + defending_players` and ordered them with a **stable**
+  sort on `(time_s, -reach)`. Two men on the *identical* spot: attacker passed
+  first → ATTACKER wins; defender passed first → DEFENDER wins. Every call site
+  passes attackers first, so every tie went to the attack.
+- **DEFECT 2: the race was QUANTISED.** `if candidates: break` abandoned the
+  flight at the first sample at which *anybody* could reach the ball, so a
+  1.3 s cross was decided in 0.1 s buckets (`TICK_S`). The same pure tie
+  returned ATTACKER at `sample_step` 0.1 and 0.05, and DEFENDER at 0.02 and
+  0.01. **A duel that flips with the sampling resolution is not football.**
+- **FIX (`geometry_engine.py`).** Score every contestant on `time_to_reach`,
+  which is continuous, across a fixed `AERIAL_SCORE_STEPS = 240` grid;
+  `sample_step` is now a FLOOR it can raise but never lower. Ties break on
+  vertical reach, then on how far in front of the ball the man is **along the
+  ball's own direction of travel** (a dot product — direction-agnostic, and it
+  is the real tiebreak: in a dead heat the man the cross is travelling into
+  gets it), then on **NAME**.
+  - **`id()` is deliberately not the tiebreak.** It is not reproducible across
+    processes, so a match would vary run-to-run for a tie — worse than the bias
+    removed.
+  - **My first fix MOVED the bug rather than removing it**, and the gate caught
+    it: the per-player update was a strict `<`, so on an exact tie the first
+    player *iterated* still won. The name term has to be inside the compared
+    key, not merely present in the tuple.
+- **GATE (`_diag_gate_aerial.py`, 0/5 failures on both properties):** argument
+  order must not change the winner; sampling resolution must not either.
+- **BUT THE REAL MATCH DID NOT MOVE — and that is what exposed defects 3 and
+  4.** Seed 31: 8/8 attacker corners before the fix, 8/8 after. A real bug that
+  changes nothing in the real number was not the dominant mechanism. The probe
+  had said an attacker **4 m off his own slot** loses the duel, which pointed at
+  the geometry.
+- **DEFECT 3 (MINE, introduced by step 3): `att_wins` was overridden by its own
+  fallback.** The `headerer` lookup set `headerer = receiver` whenever
+  `headerer` was None — which is ALSO true when a **defender** won. So
+  `att_wins` came out True for every controlled or contested corner and the
+  `CORNER_TAKEN.outcome` delivery-quality flag read 93–100% attacker while the
+  duel underneath was genuinely split. A fallback that cannot distinguish "no
+  winner" from "the other side won" is not a fallback, it is an override.
+  **This is the same trap as the fabricated assist: the computation was fixed
+  and the field that REPORTS it was left wired to the fabrication.** The 93–100%
+  headline was half this bug and half real geometry.
+- **DEFECT 4: a man does not stop on his chalk mark.** `advance_to_slots` walked
+  each man onto his mark and stopped *exactly*, so he stood on the ball's
+  destination and scored ~0 arrival — nothing could beat him. It now ends each
+  run-in short of the slot by a bounded residual
+  (`SET_PIECE_ARRIVAL_ERROR_M = 1.8`, capped at `2.4` so it stays inside
+  `SET_PIECE_ARRIVED_M = 3.0`). It models a human's positional error, not a
+  football-outcome bias: it does not know which side a player is on.
+- **MEASURED, 3 seeds in 3 separate processes, `CORNER_TAKEN.outcome`:**
+
+  | seed | 31 | 57 | 73 | mean |
+  |---|---|---|---|---|
+  | corners | 14 | 8 | 13 | 35 |
+  | attacker won the aerial | 64% | 50% | 46% | **~53%** |
+
+  The duel agrees on its own terms — `_diag_race_in_match.py` logs every
+  `arrival` inside a live match: **6 of 11 corner aerials won by the defence**,
+  with the winner uniquely fastest in 8 of 11 and a median margin of 0.665 s
+  over the next man. So the defence now wins on **arrival**, not on a
+  tiebreak, which is the correct mechanism.
+- **STILL OPEN, measured, NOT fixed:**
+  1. **The keeper never wins a corner aerial — 0 across all three seeds.** Real
+     keepers claim or punch a meaningful share. `gk_wins` is computed, but the
+     keeper is added to `defenders` unconditionally and never gets there.
+  2. **~53% is still attack-favouring**; defenders clear the large majority of
+     real corners.
+  3. The probe's sanity sweep is counter-intuitive and unexplained: with the
+     defender placed progressively NEARER the ball, the attacker keeps winning
+     until "nobody" is in reach at all. A 3 m advantage should not lose. **Do
+     not act on this until it is understood** — it is the sixth rejected
+     pairing of this kind in the audit.
+  4. Delivery execution error (the user's "the kicker is not a god") is NOT
+     done. The sweep showed it needs ~5.5 m of error before it flips a duel, and
+     beyond that **nobody** contests at all — the 1.3 s flight is too short for
+     a genuinely misplaced cross. The flight duration and the target have to
+     move together. Short corners are also still absent.
+- **ENERGY / BALL PHYSICS: still worth building, still not this bug.** It cannot
+  change who wins a duel decided before the ball is struck. Its real target is
+  recorded under *CORNER STEP 3*: corner headers still resolve through the
+  probabilistic `GoalkeeperEngine.evaluate_save` while open-play shots use a
+  real `aim_shot_flight` + `resolve_shot`. Genuine asymmetry, unaddressed.
+- **PROBE NOTES worth not rediscovering:** `resolve_aerial_delivery` is imported
+  **by name** into `possession_physics`, so patching the `geometry_engine`
+  attribute intercepts nothing — the entry point is
+  `PossessionEpisode.resolve_aerial`. And a set-piece window opens partway
+  through the chain, so testing `setpiece_active()` when `generate` is ENTERED
+  finds it closed and silently measures zero; test it where the duel resolves.
+  Both mistakes produced "corners measured 0" here before being found.
+- **SUITES:** `tests/test_set_piece_routines.py` 23 passed. The full suites were
+  NOT run for this pass — the user's CPU was committed elsewhere — so this is
+  **un-gated by the 26/27 regression** and should be treated as such.
+- **`match_engine.py` LOST `class MatchResult` DURING THIS PASS** (a 223-line
+  deletion, visible as `-class MatchResult:` in `git diff`, with nothing else
+  missing). A match crashed at `match_engine.py:4005` with
+  `NameError: name 'MatchResult' is not defined`. Restored from HEAD verbatim;
+  the file is now correct and `MatchResult` is a `@dataclass` with 18 fields.
+  Worth noting for the commit hazard above: **a deleted class at column 0
+  still leaves a file that imports cleanly**, and my restore dropped the
+  `@dataclass` decorator line above the class, which turned the crash into
+  `TypeError: MatchResult() takes no arguments` — restore the decorator too.
+
+## CORNER STEP 5 — the kicker is not a god (2026-10-03)
+
+The user's objection: *"the kicker isnt a god that all his corners aim
+perfectly, he is player who his hoping for someone to score, he just kicks."*
+
+- **WHAT IT WAS.** `target_x = rx + random.uniform(-1.0, 1.0)` — the delivery
+  was computed at the receiver's OWN placed position, plus a metre. The cross
+  was aimed at the man, not at a zone, which is the geometry that made every
+  corner unwinnable for the defence: the receiver stands on the ball's
+  destination and scores ~0 arrival.
+- **WHAT IT IS NOW — three terms, all from measurements the engine already
+  has.** `CORNER_LEAD_M = 2.2`: how far in front of his runner a good crosser
+  plays it, scaled by `cross_quality` and directed **toward the goal being
+  attacked** (`_goalward = 1.0 if attacks_right else -1.0` — the same
+  half-time mirror trap as the export frame, so it is explicit).
+  `CORNER_ERROR_M = 2.0`: the miss, triangular (the sum of two uniforms, so
+  errors bunch near the aim point instead of spreading flat), scaled by how
+  badly he crosses. `CORNER_ERROR_MAX_M = 3.2`: a hard cap, so the ball always
+  lands within reach of somebody.
+- **THE CAP IS A CHOICE AND IS SAYS SO.** Measured, a cross that misses by more
+  than ~5.5 m is contested by **NOBODY** — a 1.3 s flight gives a man 5 m away
+  no time to get under it, so the duel simply drops. Capping below that cliff
+  keeps corners playable rather than turning bad deliveries into dead balls.
+  It is recorded as a choice, and the underlying cliff is still unexplained.
+- **CALIBRATION, TWO PASSES.** First pass (`ERROR_M = 3.0`, cap 4.2) gave
+  attacker-won **33% and 18%** — an overcorrection. Backing off to 2.0/3.2
+  gives **40%, 57%, 20%**.
+- **NET RESULT, 3 seeds in 3 separate processes:**
+
+  | | attackers won the corner aerial |
+  |---|---|
+  | before this work | **93–100%** |
+  | after the aerial fix + arrival residual | ~53% |
+  | **after the delivery error (now)** | **~39%** (40 / 57 / 20) |
+
+  Real football: roughly **30–40%** of corners are won by the attacker, with
+  the defence clearing the large majority. That band is now reached, from a
+  starting point 60 points above it.
+- **STREAM: THIS SHIFTS THE MATCH RNG, DELIBERATELY.** Two `random.uniform`
+  draws became four. Corner counts moved too (14/8/13 before, 5/7/10 after)
+  and that is **stream noise, not a football effect** — the same matches are
+  not reproducible run to run. Do not read the corner-count drop as "the
+  delivery change removed corners". Accepted because this is an intentional
+  change to the football; the root fix for comparability is seed
+  reproducibility, not another parity shim.
+- **STILL OPEN:** (a) the keeper wins **0** corner aerials across every seed —
+  real keepers claim or punch a meaningful share, and `gk_wins` is computed but
+  the keeper is offered as a defender and never arrives; (b) **short corners
+  are still absent** — a quick pass to a nearby player who crosses, or a
+  rehearsed circulation with the cross disguised, which is real and which would
+  attack the same bias harder because the defence has committed to a near-post
+  runner; (c) the **first man on the flight line** — the one positioning change
+  the probe showed to be decisive (defender at (99.0, 22.0) → DEFENDER,
+  *controlled*) is still not implemented; (d) the unexplained sweep where a
+  defender 3 m nearer the ball still loses.
+- **ENERGY / BALL PHYSICS remains unaddressed and remains the right next
+  workstream** — not for this bias, which was never energetic, but because
+  corner headers still resolve through the probabilistic
+  `GoalkeeperEngine.evaluate_save` while open-play shots use a real
+  `aim_shot_flight` + `resolve_shot`.
+- **SUITES:** `tests/test_set_piece_routines.py` 23 passed.
+  `tests/test_cross_detector.py` was **started and abandoned on timeout** —
+  it is match-level and the user's CPU was committed elsewhere, so it is
+  UNRUN, not passing. Neither is the 26/27 regression. **This pass is not
+  gated**; run both before trusting it.
 
 ## KEY PASSES AND ASSISTS (2026-10-02) — the coordinates were real; the CAUSATION is not
 
@@ -999,16 +1181,19 @@ positively rather than argued away.
   chain resolved between the two claims can attach a stale ball to a later
   shot. Until that handoff is keyed by sequence, treat any
   "|shot − ball|" number from this probe as unproven. Do not quote one.
-- **STREAM PARITY SHIM — DO NOT DELETE.** Removing the fabricated origin also
-  removed a `random.uniform(5, 20)` draw, and that is not cosmetic: it shifts
-  every later number in the global stream. Proven, not assumed — restoring that
-  one discarded line at `event_chain.py` turns
+- ~~**STREAM PARITY SHIM — DO NOT DELETE.**~~ Removing the fabricated origin
+  also removed a `random.uniform(5, 20)` draw, and that shifted every later
+  number in the global stream. Restoring that one discarded line turned
   `test_match_crosses_stamped_geometrically` from fail to pass with no
-  behavioural change whatsoever, and every calibration figure in this file was
-  taken on the stream it preserves. It is named `_STREAM_PARITY_DRAW` and
-  commented as load-bearing so it is not "cleaned up". The real fix is the
-  documented one: make a match reproducible from `random.seed` (module-level
-  brain/mind caches survive `simulate()`), then the shim can go.
+  behavioural change. It is named `_STREAM_PARITY_DRAW` and is assigned-and-never-
+  read. **It kept itself alive on a premise that has now been retracted**: the
+  stated reason it could not go was "the real fix is making a match reproducible
+  from `random.seed`, which module-level brain/mind caches prevent". Matches are
+  reproducible — see *REPRODUCIBILITY* — so the shim is no longer load-bearing
+  for that reason. It is STILL an open decision, not a clean removal: it holds
+  the historical stream, and every calibration number in this file was taken on
+  the stream it preserves, so deleting it invalidates all of them at once. Do
+  not delete it without deciding that deliberately.
 - **THE DIRECT-FK WALL IS NOT A GROUND-PLANE ARTIFACT — my hypothesis was
   wrong, and it was wrong in a way worth recording.** I had assumed (and
   written down as an open question) that `MovingPlayer` was a 2D position with
@@ -1604,6 +1789,31 @@ Sites fixed (8; `event_chain.py:8167`, `:9327`, `match_engine.py:3474`,
   Now `position_engine.tracked_position(pressed.name)`, since the pressed man
   holds the ball. The two press sites are why the table showed one at
   159/159 and this one at 16/30.
+  - **THE SCALE OF THE PRESS FIX, MEASURED CORRECTLY AFTER A FAILED
+    MEASUREMENT.** The first football A/B keyed its `before` arm on
+    `event_type == "PRESS"` with no site check, so it rewrote **84 presses per
+    match** that were already correct — `PossessionChain`'s press is `ball ± 3 m`
+    — and produced a phantom "+44% deep presses" and "−6 km/match" from the
+    restore alone. Both are **retracted in full**. Keyed on the emitting chain
+    via the `cls` frame local instead (`_diag_football_sites.py`), the real
+    figures are:
+    | | before | after |
+    |---|---|---|
+    | snap distance, 3 matches | 29,428 m | 26,166 m (**−1,087 m/match, −11.1%**) |
+    | TransitionChain press snaps | 95 / 2,946 m | 48 / 1,578 m (**−456 m/match**) |
+    | governed band rewrites (`_diag_press_band.py`) | 21/match, all inside `[55,85]x[10,58]` | 0 |
+  So the press fabrication was **~21 of ~315 presses per match (6.7%)** and
+  **~1.1 km/match** of snap distance — real, but an order of magnitude smaller
+  than first claimed. PossessionChain's press was never affected and is a
+  standing control showing no systematic shift.
+  - **THE BAND CONTROL NEEDED ITS OWN CONTROL.** The first band verdict reported
+    **49 phantom violations** by testing PossessionChain presses against
+    `[55,85]x[10,58]` — a rule that was only ever TransitionChain's. The three
+    gates are: `PYTHONHASHSEED` now held constant (`_diag_repro_process.py`
+    sweep), the emitting chain read from the `cls` frame local, and the verdict
+    range restricted to the chain that owns the rule. A check that does not
+    measure the thing under test is the same defect as a mutation with the
+    wrong condition.
 - **`match_engine.py:3474`** — `PENALTY_SCORED`/`PENALTY_MISSED` at the centre
   circle. A penalty is taken **11 m from the goal line**. The engine models no
   shootout goal (a real shootout has both teams at the SAME one), so the
@@ -1657,8 +1867,11 @@ gap from his real position credited as distance he covered.
 ### MEASURED, `_diag_creator_truth.py`, 3 real matches per arm — shooter honesty
 
 Shooter = the man who actually had the ball (section E walks back to the last
-genuine touch, independent of the ledger). **Each arm is a separate process**
-— an in-process A/B inherits the module-level brain caches.
+genuine touch, independent of the ledger). **Each arm is a separate process** —
+this was believed necessary because of the retracted "in-process A/B inherits
+the brain caches" rule. It is not actually necessary (`arm none` in
+`_diag_seed_repro.py` is byte-identical), but separate processes remain the
+habit that caught the real bug, and they cost nothing.
 
 | | before (no thread) | chain-local | **+ counter fix** |
 |---|---|---|---|
@@ -1692,6 +1905,89 @@ code, whose draw always returned somebody.
   false claim about where the ball is, and the CARRY event records him at the
   anchor coordinate. The proper fix is to thread `DefensiveChain`'s ball-winner
   in, not to guess at the call site.
+
+## REPRODUCIBILITY — the whole cross-process story was `PYTHONHASHSEED` (2026-10-04, FIXED)
+
+The project's single most-repeated open item was seed reproducibility, and it
+had been carried as a claim with a confident wrong cause for five weeks. Three
+things were believed. All three were false.
+
+- **"An A/B across two `simulate()` calls in one process is invalid, because
+  the second inherits the first's module-level brain caches."** Falsified by a
+  negative control: `_diag_seed_repro.py`'s `arm none` — same seed, a second
+  `simulate()`, **nothing cleared at all** — is byte-identical to the
+  single-call reference (digest `0373f21a9ce5`, 2463 events). All five clearing
+  arms match it too. Module caches do not contaminate the timeline.
+- **"`np.random.seed()` does not help because the live path calls
+  `np.random.default_rng()`, which is entropy-seeded."** `np.random.seed()`
+  was the wrong lever, and for a different reason than stated: `default_rng()`
+  is called 531,424 times per match and **every** call site passes an explicit
+  seed. None of them reaches the event timeline.
+- **"The proposed fix is three lines clearing the brain/mind caches at the top
+  of `_initialize_simulation()`."** Not only unnecessary — **actively harmful.**
+  `_minds` carries the season-hydrated temperament (`auto_run_match.py:1157`),
+  and `_brain_registry` is how all 13 caller `register_brain` sites select a
+  brain set for an A/B. No code change was made. Recorded so nobody re-derives
+  it.
+
+**WHAT IT ACTUALLY WAS.** Exactly three `hash()`-on-`str` calls sit on the match
+path — `ball_vision.py:124` (recall noise for a player who has lost the ball)
+and `perception.py:422` / `:519` (per-snapshot perception noise, two draw
+paths). A `str` hash is salted per process, so the same fixture produced a
+different match on every machine. `tests/test_determinism.py` had been pinning
+the count at 3 "on purpose, because changing them changes the live 26/27
+season".
+
+**THE FIX.** `zlib.crc32(ident.encode("utf-8"))` at all three sites — the
+pattern already in use at `position_engine.py:2481`, `world/squads.py:47` and
+`world/proof.py:168`. The AST test now pins the count at **ZERO**, which is the
+only version of this test worth keeping: a re-introduced `hash()` does not
+crash, does not warn, and is invisible until someone re-runs a calibration on a
+different machine.
+
+**VERIFIED.** One match per process, `_diag_repro_process.py --seed 777`, three
+separate processes:
+
+| `PYTHONHASHSEED` | events | DIGEST |
+|---|---|---|
+| 0 | 2656 | `79857b22c6e2` |
+| 1 | 2656 | `79857b22c6e2` |
+| 12345 | 2656 | `79857b22c6e2` |
+
+One digest. Before the fix, the same sweep gave three different matches (and
+`=0` gave three identical ones, which is what pinned the cause).
+
+**THE COST WAS ACCEPTED KNOWINGLY.** Every calibration number in this file
+taken before today was taken under an unpinned hash seed. It means three
+specific things:
+
+1. Per-arm "swing" between measurements includes **hash-order noise**, which was
+   never separated from real variance. "A real match takes ~90 s here, not
+   19–23 s" and "2.5x swings between arms are warm-up noise" are both
+   unestablished — neither was measured with the hash seed held constant.
+2. `PYTHONHASHSEED=0` is now an optional hygiene measure rather than a
+   requirement. Keep setting it (`world/` already does) but do not treat its
+   absence as a defect.
+3. `_STREAM_PARITY_DRAW` is no longer load-bearing *for reproducibility* — see
+   its note above for why it is still a deliberate open decision.
+
+**METHOD NOTES, so the next agent does not re-derive this.** The causation was
+closed by exclusion before it was closed by measurement, which is what made it
+fast: `tests/test_determinism.py` already pinned the count at 3, and a
+set-iteration grep found none, so the search space was three lines. Then
+`_diag_hash_divergence.py` found the first divergent event (event 37, a
+`FOUL_COMMITTED` vs a `CARRY` — a proximity threshold between *perceived*
+positions, which is exactly what a perception noise offset would move).
+Running the sweep first and explaining it afterwards would have produced a
+plausible guess instead of a located cause.
+
+**STILL OPEN, AND IT IS A DIFFERENT BUG:** the *production roster* path does
+not replay across processes — same seed, same hash seed, real
+`PLOFA-2026-2027.xlsx` squads: 3,057 / 3,060 / 3,095 events. Player positions
+diverge from minute 1:40 while the iteration *order* is identical, so it is
+allocation-dependent (`id()`, or an unseeded generator). Not re-tested after
+this fix, because the scratch path and the roster path are separate and this
+fix only touches three lines of noise seeding.
 
 ## Work State
 - **THE ROSTER WORKBOOK ALWAYS LOOKS DIRTY, AND IT IS NOT A WRITE.**
@@ -1806,11 +2102,16 @@ the order I would take them:
    (real ~0%), 22.2% beyond 25 m (real ~3%). `_shot_location`'s open-play draw
    `min(32, -14·ln(1-u) + 3)` is a log-uniform tail that over-feeds long range.
    This is calibration, NOT a fabrication — do not conflate it with 1-3.
-5. **Seed reproducibility** remains the root blocker for every A/B in this
-   project: module-level brain/mind caches survive `simulate()`, so two
-   `simulate()` calls in one process are not comparable and
-   `validate_neural_xl`-style gates are only meaningful across processes.
-   Until it is fixed, `_STREAM_PARITY_DRAW` must stay.
+5. ~~**Seed reproducibility** remains the root blocker for every A/B in this
+   project~~ — **RESOLVED 2026-10-04, and the premise was wrong in two
+   separate ways.** See *REPRODUCIBILITY* below. Short version: matches now
+   replay byte-identically ACROSS processes with a varying `PYTHONHASHSEED`
+   (verified 0/1/12345 → one digest `79857b22c6e2`), and the "two
+   `simulate()` calls in one process are not comparable" rule is **FALSE** —
+   a negative control proved it. `_STREAM_PARITY_DRAW` is no longer
+   load-bearing *for reproducibility*, but deleting it is still a deliberate
+   decision, not a cleanup: it holds the historical stream and every
+   calibration number in this file was taken on the stream it preserves.
 6. ~~**is the on-ball snap a correction or a fabrication?**~~ — **ANSWERED
    2026-10-04. It is overwhelmingly a CORRECTION, plus one confirmed
    fabrication class that is now closed.** See *THE ON-BALL SNAP* below for the
@@ -1981,7 +2282,16 @@ out) → geometric shot resolution → exporter.
   LAST, after `live_spacing_redirect`). `_offball_tick_seq` gives the 10 Hz loop
   a tick identity — `match_clock_s` cannot, because both tick loops advance it
   outside. Per-tick team decisions are cached in `_rest_defence_cache`,
-  per-(team, minute, zone) in `_striker_run_cache`.
+  per-(team, minute, zone) in `_striker_run_cache`. `_initialize_simulation()`
+  ~4299 is a TRAP — do not add brain/mind cache clearing there.
+- `ball_vision.py:124`, `perception.py:422`/`:519` — the three former
+  `hash(ident)` sites, now `zlib.crc32`. `tests/test_determinism.py` pins the
+  count at **zero**, which is the guard that keeps it there.
+- `_diag_repro_process.py` — the cross-process instrument (one match per
+  process, prints `DIGEST`). `_diag_seed_repro.py` — the in-process check and
+  its `arm none` negative control that falsified the brain-cache claim.
+  `_diag_hash_divergence.py` — first divergent event between two hash seeds.
+  `_diag_football_sites.py` / `_diag_press_band.py` — the corrected press A/B.
 - `tests/test_positional_play.py` — 46 tests: the offside-line regressions, the
   rest-defence invariant (and that it stays silent in a normal shape), the
   depth-only clamp, the no-global-RNG guarantee, and a full real match.
@@ -2240,9 +2550,35 @@ it either, because the live path calls `np.random.default_rng()` (entropy-seeded
 ignores `np.random.seed`) — the known instances are in training/evolution code
 (`football_brain.mutate/crossover`, `manager_brain`), so the live culprit is
 still unidentified. **Consequence: every calibration number taken before this is
-suspect for the same reason, not just the world layer.** This is why the phase-5
-gate counts *executions* of the new code instead of comparing simulated output —
-a fingerprint gate would report "regression" on a green engine.
+suspect for the same reason, not just the world layer.**
+
+> ### ⛔ RETRACTED 2026-10-04 — THE DIAGNOSIS WAS WRONG, ALL THREE CLAUSES
+> The observation (two processes, same seed, different matches) was real. Every
+> proposed cause was false, and the two "fixes" that followed from them were
+> aimed at code that was never involved.
+>
+> - **Not `np.random.default_rng`.** It is called 531,424 times per match and
+>   **every** call site passes an explicit seed. None reaches the event timeline.
+> - **Not the module-level brain/mind caches.** `_diag_seed_repro.py`'s `arm none`
+>   — same seed, a second `simulate()`, **nothing cleared at all** — is
+>   byte-identical to the reference (digest `0373f21a9ce5`, 2463 events). All five
+>   clearing arms match it. The caches do not contaminate.
+> - **It was `PYTHONHASHSEED`, and it was the whole story.** Exactly three
+>   `hash()`-on-string sites sit on the match path. They are now `zlib.crc32`, and
+>   one match per process under `PYTHONHASHSEED` 0 / 1 / 12345 gives **one
+>   digest** (`79857b22c6e2`, 2656 events). It was `hash(ident)` in
+>   `ball_vision.py:124` and `perception.py:422,519` — all three feeding
+>   `np.random.default_rng(...)`, which is why the two symptoms looked like
+>   unrelated bugs.
+> - **A 26/27 caution that survives.** The numbers in this file taken before
+>   2026-10-04 were taken under an *unpinned* hash seed, so they are not
+>   byte-reproducible and the per-arm "swing" between measurements includes
+>   hash-order noise. "2.5x swings between arms on one machine are warm-up
+>   noise" is not established — it was never separated from hash order.
+>
+> This is why the phase-5 gate counts **executions** of the new code rather
+> than comparing simulated output: a fingerprint gate would now report
+> "regression" for a change nobody made.
 
 ## Next Move — world layer
 
@@ -2307,14 +2643,20 @@ group → knockout structure is still unbuilt.
 
 Open items, none blocking:
 
-1. **Seed reproducibility** — the highest-value loose end in the whole project.
-   The live match is not reproducible from `random.seed()`; the cause is
-   module-level brain/mind caches (`brain_integration._brain_registry`,
-   `_pos_brain_cache`, `cognition.mind._minds`) that survive a simulation and
-   are only cleared by explicit API calls. This undermines every calibration
-   number taken so far. The fix is three lines at the top of
-   `_initialize_simulation()`, but it needs a judgement call: if that state is
-   MEANT to persist across matches, clearing it changes behaviour.
+1. ~~**Seed reproducibility** — the highest-value loose end in the whole
+   project.~~ **CLOSED 2026-10-04**, with the stated cause retracted: it was
+   `PYTHONHASHSEED`, not the module-level brain/mind caches
+   (`brain_integration._brain_registry`, `_pos_brain_cache`,
+   `cognition.mind._minds`). Three `hash()`-on-string sites are now crc32 and
+   cross-process replay is byte-identical. The *production roster* path
+   (`test_determinism.py` point 3 — same seed, same hash seed, real rosters
+   from `PLOFA-2026-2027.xlsx`, 3057 / 3060 / 3095 events) is a SEPARATE open
+   bug, allocation-dependent (`id()` or an unseeded generator), and was not
+   re-tested after the crc32 fix. **DO NOT add cache clearing at the top of
+   `_initialize_simulation()`** — that was the proposed fix and it is a TRAP:
+   it would wipe the season-hydrated minds (`auto_run_match.py:1157` carries
+   last matchday's temperament) and discard the 13 caller `register_brain`
+   sites that are how every A/B harness selects a brain set.
 2. **Phase 9** — continental group → knockout.
 3. **`world_data/` JSON templates** — the test world is built from the live
    roster rather than from data files. Unblocked now the schema is complete.
