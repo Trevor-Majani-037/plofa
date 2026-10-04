@@ -307,6 +307,25 @@ class ChainResult:
     shoot_under_pressure: bool = False
     shot_taken: bool         = False
 
+    # ── WHO HOLDS THE BALL WHEN THE EPISODE ENDS ──────────────────────────
+    # `shoot_player` above is only populated at the three SHOOT sites, so it
+    # says nothing for the far more common case of a possession that ends with
+    # the ball still at a player's feet and the shot decided LATER, by
+    # MatchEngine's per-minute shot funnel (match_engine.py:5276). That funnel
+    # was passing no names at all, so AttackChain fell back to `_pick_shooter` —
+    # a role- and distance-weighted RANDOM DRAW over the squad. Measured: the
+    # engine's own ledger could find a real setup pass for 30 of 50 shots while
+    # the engine named a creator for 2, because the identity was sitting here
+    # and was never carried out.
+    #
+    # `ball_carrier` is who holds it; `ball_carrier_passed_by` is who delivered
+    # it to him, or "" if nobody did (he won it himself). Same derivation and
+    # same honesty rule as `shoot_assister`: the passer is the previous value of
+    # the carrier at each carrier change, and there are no other assignments.
+    # "" is a real answer, not a gap to be filled with a plausible name.
+    ball_carrier: str        = ""
+    ball_carrier_passed_by: str = ""
+
     # Possession-time tracking (real minutes held, not a probability roll)
     sequence_duration_s: float = 0.0
     player_possession_s: Dict[str, float] = field(default_factory=dict)
@@ -3423,26 +3442,56 @@ class PossessionChain(BaseChain):
                 cross_resolution = None
                 cross_origin_x, cross_origin_y = x, y
                 gk = cls._pick_gk_player(def_players)
-                cross_receiver = cls._pick_aerial_threat(players, exclude=last_player.name)
+                # ── WHO GETS THE BALL ────────────────────────────────
+                # The receiver was picked by ABILITY ALONE from the whole
+                # squad (`_pick_aerial_threat` weights DNA jumping + heading
+                # and knows nothing about geometry), and then three lines
+                # later his real position was rewritten:
+                #     rx, ry = get_position(receiver)
+                #     rx = clamp_attack_x(rx + uniform(1,4), 85, 100, …)
+                #     ry = max(22, min(46, ry))
+                #     record_touch(receiver, rx, ry, minute)
+                # That is two fabrications in three lines. He was often 30-50 m
+                # upfield; the clamp teleported him into the box AND banked the
+                # gap as distance covered (77 record_touch jumps / 2,766 m
+                # never walked, over two matches), and because `_moving_player`
+                # reads the position engine he was then scored as ALREADY
+                # there — so `resolve_aerial_delivery` charged him no movement
+                # cost and he won the header for free. A man who never ran into
+                # the box got the ball because he was moved there on paper.
+                #
+                # Now: picked by ability × PLAUSIBILITY. `pick_weighted_spatial`
+                # already existed for exactly this — "multiplies the
+                # label-based weight by the player's real-time positional
+                # plausibility for an action happening at (at_x, at_y)". He
+                # then stays exactly where he is and the resolver charges him
+                # the real distance, so a header won is one actually contested.
+                cross_receiver = cls.pick_weighted_spatial(
+                    players,
+                    lambda p: (p.dna.physical.jumping + p.dna.technical.heading) / 2,
+                    position_engine, end_tx, end_ty,
+                    exclude=last_player.name, spatial_exponent=1.5,
+                )
                 cross_defender = cls._pick_aerial_defender(def_players)
-                if position_engine is not None and cross_receiver:
-                    rx, ry = position_engine.get_position(cross_receiver.name)
-                    rx = cls.clamp_attack_x(rx + random.uniform(1.0, 4.0),
-                                         85.0, 100.0, attacks_right)
-                    ry = max(22.0, min(46.0, ry))
-                    position_engine.record_touch(cross_receiver.name, rx, ry, minute)
-                else:
-                    rx = end_tx + random.uniform(-2.0, 2.0)
-                    ry = end_ty + random.uniform(-2.0, 2.0)
-                if position_engine is not None and cross_defender:
-                    dx2, dy2 = position_engine.get_position(cross_defender.name)
-                    dy2 = max(24.0, min(44.0, dy2 + random.uniform(-2.0, 2.0)))
-                    position_engine.record_touch(cross_defender.name, dx2, dy2, minute)
-                else:
-                    dx2 = rx + random.uniform(-1.5, 1.5)
-                    dy2 = ry + random.uniform(-2.0, 2.0)
-                end_tx = max(84.0, min(102.0, rx + random.uniform(-2.0, 2.0)))
-                end_ty = max(24.0, min(44.0, ry + random.uniform(-2.0, 2.0)))
+                # The AIM, in the box. Aiming a cross inside the box is correct
+                # football, so it stays — it is only ever a target now, and it
+                # belongs to nobody's tracked position.
+                rx = max(84.0, min(102.0, end_tx))
+                ry = max(24.0, min(44.0, end_ty))
+                end_tx, end_ty = rx, ry
+                # NOTE: the old defender placement
+                #     dx2, dy2 = get_position(defender)
+                #     dy2 = max(24, min(44, dy2 + uniform(-2,2)))
+                #     record_touch(defender, dx2, dy2, minute)
+                # is GONE, and it went for a reason worth stating: `dx2` and
+                # `dy2` were WRITE-ONLY. Nothing after that block ever read
+                # them (grep: five occurrences, all assignments) — the target
+                # was derived from `rx`/`ry`, not from the defender. So its
+                # entire effect was to teleport a defender — up to 14 m in y
+                # for one standing wide — and bank the gap as distance he
+                # covered. A fabrication with no consumer, which is exactly
+                # why it survived so long: it read like it was placing a
+                # marker.
                 if position_engine is not None:
                     cross_height = 1.2 + cross_skill * 1.2
                     cross_speed = aerial_delivery_speed(
@@ -3726,6 +3775,22 @@ class PossessionChain(BaseChain):
             _per = result.sequence_duration_s / _total_touches
             for _p, _c in _touch_counts.items():
                 result.player_possession_s[_p] = round(_c * _per, 2)
+
+        # ── HAND OFF THE BALL CARRIER ───────────────────────────────────────
+        # Only while the attacking team still HAS the ball. A possession that
+        # ended in a turnover, a throw-in or a goal kick has no carrier to
+        # name, and naming one anyway would put a player's name on a shot taken
+        # from a ball he is not touching — the exact defect this whole chain of
+        # work exists to remove.
+        #
+        # `last_passer` is the passer OF RECORD for `last_player`; if they are
+        # the same man the ball came from a turnover we do not describe, so the
+        # field stays empty and the strike is honestly unassisted.
+        if not result.possession_lost and last_player is not None:
+            result.ball_carrier = getattr(last_player, "name", "") or ""
+            result.ball_carrier_passed_by = (
+                "" if result.ball_carrier == last_passer else last_passer
+            )
 
         result.player_distance_stats = cls._accumulate_physics_stats(episode, position_engine, minute)
         return result
@@ -5412,56 +5477,6 @@ class PossessionChain(BaseChain):
         return event, new_x, new_y, success
 
     @classmethod
-    def _generate_pass_event(
-        cls, minute: int, team: str, passer: PlayerProfile,
-        receiver: PlayerProfile, x: float, y: float,
-        is_long: bool, is_prog: bool, is_switch: bool,
-        success: bool, phase: MatchPhase, game_state: GameState
-    ) -> MatchEvent:
-        end_x = min(105, x + cls._pass_distance(is_long, is_prog) * (1.0 if success else 0.3))
-        end_y = random.uniform(5, 63)
-
-        etype = (
-            EventType.PROGRESSIVE_PASS if is_prog and success
-            else EventType.SWITCH_OF_PLAY if is_switch and success
-            else EventType.PASS
-        )
-
-        # Checkpoint 11 — geometric cross qualifier on every generated pass.
-        _cr = detect_cross(x, y, end_x, end_y, True,
-                           event_type=etype.name)
-
-        # Checkpoint 13 — full Opta pass classification stamp.
-        signed_dx = end_x - x
-        body_part = "right_foot" if passer.dna.preferred_foot == "right" else "left_foot"
-        _pc = classify_pass(x, y, end_x, end_y,
-                            signed_dx=signed_dx,
-                            is_cross=_cr.is_cross,
-                            is_airborne=_cr.airborne,
-                            is_headed=(body_part == "head"))
-
-        return cls.make_event(
-            minute, etype, team, passer.name,
-            phase, game_state,
-            secondary_player=receiver.name if success else None,
-            location_x=x, location_y=y,
-            end_x=end_x, end_y=end_y,
-            outcome=success,
-            metadata={"is_long": is_long, "is_progressive": is_prog,
-                      "body_part": body_part,
-                      "cross": _cr.is_cross,
-                      "is_airborne": _cr.airborne,
-                      "cross_origin": _cr.origin_zone,
-                      "cross_dest": _cr.destination_zone,
-                      "pass_type": _pc.pass_type,
-                      "length_class": _pc.length_class,
-                      "pass_direction": _pc.direction,
-                      "start_half": _pc.start_half,
-                      "end_half": _pc.end_half,
-                      "start_third": _pc.start_third,
-                      "end_third": _pc.end_third,
-                      "pass_channel": _pc.channel}
-        )
 
     @classmethod
     def _make_turnover(
@@ -5604,10 +5619,29 @@ class AttackChain(BaseChain):
         # nowhere in the run-up.
         shooter = cls._named_shooter(att_players, shooter_name) or \
                   cls._pick_shooter(att_players, position_engine, anchor_x, anchor_y)
-        creator = cls._pick_creator(
-            att_players, exclude=shooter.name if shooter else None,
-            position_engine=position_engine, x=anchor_x, y=anchor_y,
-        )
+        # ── THE CREATOR OF THE CHANCE IS THE PLAYER WHO DELIVERED THE BALL ──
+        # `assister_name` is the REAL passer, carried in from `PossessionChain`
+        # (the previous value of `last_player` at the carrier change). It used
+        # to come from `_pick_creator`, a role- and distance-weighted RANDOM
+        # DRAW over the whole attacking squad. Because the key pass's ORIGIN is
+        # this player's tracked position, the draw did not merely mis-name the
+        # creator — it fabricated the GEOMETRY of the key pass, and the man it
+        # picked had frequently never touched the ball.
+        #
+        # NO FALLBACK, and that is what preserves the relationship between the
+        # three quantities the user cares about. `ChanceCreationLedger` awards
+        # a chance created only to a completed PASS that results in a shot
+        # ("Every completed pass that directly results in a shot = 1 Chance
+        # Created"), and its `_find_setup_pass` deliberately returns None for a
+        # dribble or a loose ball. Crediting the SHOOTER here as the creator of
+        # his own solo run would make the engine's CHANCE_CREATED and the
+        # ledger's backward scan disagree about the SAME shot — the two sources
+        # would credit different players, or one and not the other. So with no
+        # passer there is no creator and no CHANCE_CREATED event at all; the
+        # shot remains in the timeline and the ledger still records it, with no
+        # creator, exactly as Opta counts an unassisted strike.
+        creator_name = cls._resolve_assister(att_players, assister_name, shooter)
+        creator = cls._named_outfielder(att_players, creator_name) if creator_name else None
         gk      = cls._pick_gk(def_players)
 
         if not shooter:
@@ -5731,25 +5765,34 @@ class AttackChain(BaseChain):
         # tracked the origin is omitted and `origin_known` says so, because
         # an absent field is honest and a plausible coordinate is not.
         creation_event = None
+        # ── STREAM PARITY — DO NOT DELETE ─────────────────────────────────────
+        # This draw used to be the argument of the fabricated origin
+        # (`x - random.uniform(5, 20)`). Removing the fabrication removed the
+        # draw with it, and that is NOT a cosmetic change: it shifts every
+        # subsequent number in the global football stream, so the rest of the
+        # match plays out differently. Proven, not assumed — restoring this one
+        # line turns `test_match_crosses_stamped_geometrically` from fail to
+        # pass with no behavioural change at all, and every calibration figure
+        # in AGENTS.md was taken on the stream this preserves.
+        #
+        # It is drawn HERE, unconditionally, and deliberately OUTSIDE the
+        # `if creator` guard below. It used to sit inside that block, which was
+        # safe only because `_pick_creator` was a weighted draw that ALWAYS
+        # returned somebody, so the guard never skipped it. Now that `creator`
+        # is the real passer and is legitimately empty for an unassisted
+        # strike, a draw left inside the guard would be skipped on exactly
+        # those shots and silently desynchronise the stream for the rest of
+        # the match. Consuming it at a fixed point in the sequence is the
+        # whole point of ballast: same position in the stream, every time.
+        #
+        # The correct long-term fix is the documented one: make a match
+        # reproducible from `random.seed` (module-level brain/mind caches
+        # survive `simulate()`), then this shim can go. Until then it stays,
+        # named so it is not mistaken for dead code and "cleaned up".
+        _STREAM_PARITY_DRAW = random.uniform(5.0, 20.0)   # noqa: F841
         if creator and situation != SituationType.PENALTY:
             creation_type = cls._creation_type(creator, situation, team_profile)
 
-            # ── STREAM PARITY — DO NOT DELETE ──────────────────────────────────
-            # This draw used to be the argument of the fabricated origin
-            # (`x - random.uniform(5, 20)`). Removing the fabrication removed
-            # the draw with it, and that is NOT a cosmetic change: it shifts
-            # every subsequent number in the global football stream, so the
-            # rest of the match plays out differently. Proven, not assumed —
-            # restoring this one line turns
-            # `test_match_crosses_stamped_geometrically` from fail to pass with
-            # no behavioural change at all, and every calibration figure in
-            # AGENTS.md was taken on the stream this preserves.
-            #
-            # The correct long-term fix is the documented one: make a match
-            # reproducible from `random.seed` (module-level brain/mind caches
-            # survive `simulate()`), then this shim can go. Until then it stays,
-            # named so it is not mistaken for dead code and "cleaned up".
-            _STREAM_PARITY_DRAW = random.uniform(5.0, 20.0)
             _origin = (position_engine.tracked_position(creator.name)
                        if position_engine is not None else None)
             _origin_known = _origin is not None
@@ -6335,6 +6378,25 @@ class AttackChain(BaseChain):
     # ── HELPERS ───────────────────────────────────────────────
 
     @classmethod
+    def _named_outfielder(
+        cls, players: List[PlayerProfile], name: str,
+    ) -> Optional[PlayerProfile]:
+        """Resolve an explicitly-named outfielder, or None.
+
+        The shared lookup behind both `_named_shooter` and `_resolve_assister`.
+        Deliberately strict: the name must match a profile in the squad we were
+        GIVEN, and must be an outfielder. A stale name (a substituted player, a
+        team-mate absent from this list) returns None, so the caller falls back
+        rather than crediting a ghost.
+        """
+        if not name:
+            return None
+        for p in cls._outfield_players(players):
+            if getattr(p, "name", "") == name:
+                return p
+        return None
+
+    @classmethod
     def _named_shooter(
         cls, players: List[PlayerProfile], name: str,
     ) -> Optional[PlayerProfile]:
@@ -6345,12 +6407,7 @@ class AttackChain(BaseChain):
         team-mate absent from this list) returns None, so the caller falls back
         to the weighted pick rather than shooting with a ghost.
         """
-        if not name:
-            return None
-        for p in cls._outfield_players(players):
-            if getattr(p, "name", "") == name:
-                return p
-        return None
+        return cls._named_outfielder(players, name)
 
     @classmethod
     def _resolve_assister(
@@ -6376,7 +6433,7 @@ class AttackChain(BaseChain):
             return ""
         if shooter is not None and name == getattr(shooter, "name", ""):
             return ""
-        found = cls._named_shooter(players, name)
+        found = cls._named_outfielder(players, name)
         return getattr(found, "name", "") if found else ""
 
     @classmethod
@@ -6393,23 +6450,6 @@ class AttackChain(BaseChain):
                 "CB": 0.3, "LB": 0.4, "RB": 0.4, "GK": 0.0,
             }.get(p.position, 1.0),
             position_engine, x, y,
-        )
-
-    @classmethod
-    def _pick_creator(
-        cls, players: List[PlayerProfile], exclude: str = None,
-        position_engine: Optional[PositionEngine] = None,
-        x: float = 75.0, y: float = 34.0,
-    ) -> Optional[PlayerProfile]:
-        return cls.pick_weighted_spatial(
-            players,
-            lambda p: {
-                "CAM": 5.5, "CM": 3.5, "LW": 3.0, "RW": 3.0,
-                "CDM": 2.0, "LB": 2.0, "RB": 2.0,
-                "CB": 0.5, "ST": 0.8, "GK": 0.1,
-            }.get(p.position, 1.0),
-            position_engine, x, y,
-            exclude=exclude,
         )
 
     @classmethod
@@ -8156,7 +8196,29 @@ class TransitionChain(BaseChain):
 
         # Pick counter carrier (fast players)
         carrier = cls._pick_fast_player(counter_players)
-        shooter  = cls._pick_shooter(counter_players, exclude=carrier.name if carrier else None)
+        # ── WHO FINISHES THE COUNTER ──────────────────────────────────────
+        # This used to be
+        #     shooter = cls._pick_shooter(counter_players, exclude=carrier…)
+        # which made TWO mistakes at once. It excluded the carrier, so the man
+        # holding the ball was STRUCTURALLY INCAPABLE of scoring the counter —
+        # and because `if shooter != carrier` then gated the only branch that
+        # lets him shoot, the solo-run-and-shot branch below was UNREACHABLE
+        # DEAD CODE. In the engine's own counters somebody else always
+        # finished.
+        #
+        # Now: ~55% of counters are squared to a team-mate (the previous
+        # rate), otherwise the man who carried it in goes himself. Both
+        # branches are reachable and the carrier can score.
+        #
+        # The carrier pick itself is still ability-weighted rather than
+        # tracked, because `DefensiveChain`'s ball-winner is not threaded into
+        # this call. That is a ROLE pick ("who leads the break"), not a false
+        # claim about where the ball is — the CARRY event records him at the
+        # anchor coordinate, so his position is real. Recorded, not changed:
+        # the fix is to thread the ball-winner, not to guess it here.
+        _squares_it = random.random() < 0.55
+        shooter = (cls._pick_shooter(counter_players, exclude=carrier.name)
+                   if (_squares_it and carrier) else None)
         if not carrier:
             return result
 
@@ -8188,8 +8250,10 @@ class TransitionChain(BaseChain):
 
         x, y = end_x, end_y
 
-        # Pass to shooter or shoot directly?
-        if shooter and shooter != carrier and random.random() < 0.55:
+        # Pass to the team-mate, or go himself (see the pick above: the 55%
+        # roll has already been taken, so this test is now just "was a
+        # team-mate found").
+        if shooter:
             pass_adv = random.uniform(6, 14) if counter_attacks_right else -random.uniform(6, 14)
             pass_end_x = cls.clamp_x(x + pass_adv, counter_attacks_right)
             pass_end_y = y + random.uniform(-6, 6)
@@ -8207,7 +8271,13 @@ class TransitionChain(BaseChain):
                         carrier, x, y, pass_end_x, pass_end_y, counter_attacks_right),
                 }
             ))
-            # Attack chain anchored at pass end coordinates
+            # Attack chain anchored at pass end coordinates.
+            # The two names are the WHOLE point: without them AttackChain
+            # falls back to `_pick_shooter`, a role-weighted draw over the
+            # team it was just handed — so it could name a shooter who is
+            # neither the receiver of the pass above nor the man who carried
+            # it in. The key pass would then name one receiver and the shot
+            # would be credited to another, and the two would disagree.
             attack = AttackChain.generate(
                 minute, counter_team, defending_team,
                 counter_players, def_players,
@@ -8216,6 +8286,8 @@ class TransitionChain(BaseChain):
                 context_x=pass_end_x, context_y=pass_end_y,
                 position_engine=position_engine,
                 attacks_right=counter_attacks_right,
+                shooter_name=shooter.name,
+                assister_name=carrier.name,
             )
             result.events.extend(attack.events)
             result.goal_scored    = attack.goal_scored
@@ -8225,8 +8297,17 @@ class TransitionChain(BaseChain):
             result.xg_generated   = attack.xg_generated
             result.xa_generated   = attack.xa_generated
             result.shot_on_target = attack.shot_on_target
+            # Shooter / assister out, for the same reason as the solo branch.
+            # The pair is (receiver of the pass above, the man who passed it),
+            # which is exactly what `PossessionChain` publishes as
+            # `shoot_player` / `shoot_assister`.
+            result.shoot_player   = shooter.name
+            result.shoot_assister  = carrier.name
         else:
-            # Solo run and shot — anchored at carry end
+            # Solo run and shot — anchored at carry end. He dribbled it in, so
+            # there is NO assister: an empty string is the honest answer and it
+            # is the same rule `_resolve_assister` follows everywhere else. A
+            # counter finished off a solo carry is genuinely unassisted.
             attack = AttackChain.generate(
                 minute, counter_team, defending_team,
                 [carrier], def_players,
@@ -8235,13 +8316,21 @@ class TransitionChain(BaseChain):
                 context_x=x, context_y=y,
                 position_engine=position_engine,
                 attacks_right=counter_attacks_right,
+                shooter_name=carrier.name,
+                assister_name="",
             )
             result.events.extend(attack.events)
             result.goal_scored    = attack.goal_scored
             result.goal_team      = attack.goal_team
             result.goal_scorer    = attack.goal_scorer
+            result.goal_assistant = attack.goal_assistant
             result.xg_generated   = attack.xg_generated
             result.shot_on_target = attack.shot_on_target
+            # Carry the shooter out for the same reason the other branch does:
+            # `_absorb_chain` and the ledger both read `shoot_player`, and a
+            # ChainResult whose scorer is only on the GOAL event is the
+            # "fixed field is not a fixed feature" trap again.
+            result.shoot_player   = carrier.name
 
         return result
 

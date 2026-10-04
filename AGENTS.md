@@ -505,6 +505,44 @@ against the dead `drift_minute` wiring all day.
   exactly this argument for crosses and long passes and `detect_cross` /
   `detect_long_pass` already exist; `pass_direction` was never converted.
   Until fixed, the exporter is stamping a field wrong two-thirds of the time.
+  > ### ⛔ RETRACTED 2026-10-02 — THIS FINDING WAS A MEASUREMENT ERROR
+  > **The code is correct. Do not "fix" it.** Re-measured by `_diag_pass_direction.py`
+  > over 1,674 labelled passes in 2 real matches:
+  >
+  > | check | agree | disagree |
+  > |---|---|---|
+  > | **correct** (flip the sign for the away side) | **1,647 (98.4%)** | 27 (1.6%) |
+  > | naive (no flip — what the original probe did) | 985 | **689 (41.2%)** |
+  >
+  > The naive row reproduces the original "~two-thirds wrong" figure almost
+  > exactly, which is what identified the probe as the error rather than the
+  > code. `event_chain.py` does it properly:
+  > ```
+  > pass_advance = end_px - x
+  > if not attacks_right:
+  >     pass_advance = -pass_advance
+  > _pc = classify_pass(..., signed_dx=pass_advance, attacks_right=attacks_right)
+  > ```
+  > `classify_pass` computes the sign itself when `signed_dx is None`; the call
+  > site passes it explicitly, correctly flipped.
+  >
+  > **Why the original probe got it wrong:** "sideways" is a `|dx|` band and
+  > cannot be affected by a sign error at all — which is why it was the ONLY
+  > category that agreed. That asymmetry is the signature of a one-sided sign
+  > error, and it should have been read as such at the time. `PositionEngine.team_attacks_right`
+  > is set once per team at `initialize_team` and **never flipped at half-time**,
+  > so home is always `True` and away always `False`, both halves — confirmed by
+  > the probe's per-half table.
+  >
+  > The residual 27 (1.6%) are all `sideways -> forward/backward` boundary
+  > cases: the label is derived from the AIMED `end_px`, the event stores the
+  > recorded ARRIVAL `end_x`. That is the open `end_px`-vs-`end_x` question
+  > already on file under the export frame note, not a mislabelling.
+  >
+  > **Lesson, fifth instance of the same shape:** the probe's marginals agreed
+  > with the truth while its *assignment* did not, and the project read that as
+  > "a shuffled value" rather than "my check is in the wrong frame". When a
+  > check disagrees with the code, verify the check's frame before the code.
 - **THE PROGRESSIVE FLAG IS FINE.** An early reading of "7.3% progressive"
   was MY error: `EventType.PROGRESSIVE_PASS` requires `is_prog and success and
   abs(end_px - x) > 9.14`, a narrow subset. The engine's `is_progressive`
@@ -1091,10 +1129,13 @@ were not. He was right about the symptom and wrong about the object, as before.
   this is the single most productive trap in the spatial layer: both read as a
   real coordinate and neither is one. Use `tracked_position(name)`, which returns
   `None` for an untracked player.
-- **STILL OPEN, unchanged:** `pass_direction` metadata remains uncorrelated with
-  geometry (label "forward" → 125 fwd / 123 sq / 146 back; marginals match, the
-  assignment is random, so the exporter stamps it wrong ~2/3 of the time); the
-  shot-distance distribution is still miscalibrated (median 20.0 m, 14.8% inside
+- **`pass_direction` metadata — RETRACTED, THE CODE IS CORRECT.** Re-measured
+  2026-10-02: **98.4% agree (1,647/1,674)**. The original "~2/3 wrong" figure is
+  what you get by failing to flip the sign for the away side; "sideways" was the
+  only category that agreed because a `|dx|` band cannot be affected by a sign
+  error. Full evidence in the MEASUREMENTS section above. Do not change it.
+- **STILL OPEN, unchanged:** the shot-distance distribution is still
+  miscalibrated (median 20.0 m, 14.8% inside
   4 m against a real ~0%, 22.2% beyond 25 m against ~3%); and a match is still not
   reproducible from `random.seed`, which is the only reason
   `_STREAM_PARITY_DRAW` has to stay.
@@ -1131,8 +1172,429 @@ were not. He was right about the symptom and wrong about the object, as before.
      final-whistle state to a mid-match moment.
   4. An unattributed jump histogram cannot separate a deliberate placement
      from a clamp. Signature-test the mechanism instead of context-tagging it.
+  5. `ChainDispatcher.attack` is a **staticmethod**, not a classmethod, so
+     `getattr(f, "__func__", f)` silently returns the plain function and a
+     wrapper that passes `cls` shifts every positional by one. It surfaced as
+     `"got multiple values for argument 'position_engine'"` — a message that
+     points at the wrong argument entirely. Read the descriptor out of
+     `ChainDispatcher.__dict__`, which is a `classmethod`/`staticmethod`
+     object for both cases.
+
+## CHANCE CREATION FROM REAL TRACKED DATA (2026-10-03, third pass)
+
+The user rejected the residue list: *"i dont like this, like you have the
+capability of finishing it and making true chance creation counts from real
+tracked data"*, with one hard constraint: **do not destroy the relationship
+between chances created, shot assists and assists.** So this was finished, not
+listed.
+
+- **`_pick_creator` IS DELETED.** `CHANCE_CREATED.player` resolves from
+  `assister_name` via `_resolve_assister` + a new `_named_outfielder`.
+  `_named_shooter` delegates to the same lookup. Because the key pass's ORIGIN
+  is the creator's tracked position, the draw had fabricated the *geometry* as
+  well as the name — so this closes both at once.
+- **NO FALLBACK, AND THAT IS THE POINT.** An unassisted strike emits **no
+  `CHANCE_CREATED` at all** rather than crediting the shooter. Crediting him
+  would make the engine disagree with `ChanceCreationLedger._find_setup_pass`
+  (which returns None for a dribble) about the SAME shot — i.e. it would break
+  the exact relationship the user protected. The shot still appears.
+  **Expect fewer assists than before. Do not "fix" that.**
+- **THE STREAM SHIM MOVED OUT OF ITS GUARD.** `_STREAM_PARITY_DRAW` was
+  inside `if creator and situation != PENALTY:`, safe only because `_pick_creator`
+  always returned somebody. With a legitimately empty creator it would
+  desynchronise the RNG stream for the rest of the match, so it is now drawn
+  unconditionally at the same point.
+- **THE REAL GAP WAS THE BALL CARRIER, AND IT WAS NOT WHERE I LOOKED
+  FIRST.** `_shoot_assister`/`_shoot_player` are only set at PossessionChain's
+  three SHOOT sites, which says nothing about a possession that ends with the
+  ball at a player's feet and the shot decided LATER — by MatchEngine's
+  per-minute shot funnel (`match_engine.py:5276`), which passes no names at
+  all. That is the path that fires the BULK of a match's shots.
+  `ChainResult.ball_carrier` / `ball_carrier_passed_by` now report who holds the
+  ball and who gave it to him, and the funnel passes both.
+- **`_absorb_chain` IS THE SINGLE POINT.** Its own docstring: *"This is the
+  single point where chain outputs become match facts."* It is also the only
+  place every chain's events pass through, so possession is stamped there from
+  the last genuine ball touch — real events, not any chain's bookkeeping.
+  `MatchState.possession_team` is a TEAM name and cannot answer "who takes the
+  shot"; that is why every chain re-derived it and one of them drew it.
+- **MEASURED, 3 real matches, `_diag_creator_truth.py`** (shooter = the man who
+  had the ball, per section E, which walks back to the last real touch):
+
+  | | before | after |
+  |---|---|---|
+  | shooter IS the ball-holder | *(see `_diag_creator_truth.py --no-thread`)* | **103 / 118 (87%)** |
+  | engine CHANCE_CREATED events | 2 per 2 matches | 4 per 3 matches |
+  | creator REALLY passed the ball | — | **4/4, fabricated 0** |
+  | engine vs ledger, same player | — | 4 agree, **0 disagree** |
+  | `chances == goal_assists + shot_assists` | — | 54 players ok, **0 broken** |
+  | goals with an assist | 0 of 7 | **3 of 9** (6 genuinely unassisted) |
+
+  The 15 remaining non-matching shooters are each printed with the player who
+  actually had the ball; they are NOT assumed to be defects, because the
+  back-scan's expected-predecessor rule is wrong for set-piece headers (it
+  expects the man a corner was AIMED at, who is not necessarily the man who
+  won it). Classify before touching.
+- **`xA` WAS LAUNDERED BY THE DRAW.** `creation_event.xa = xg` is the correct
+  definition, but it was being banked against the *drawn* creator, so it is
+  real only now that the creator is. Same for `pass_network`'s (passer →
+  receiver) xA.
+- **A TEST THAT WAS RIGHT ABOUT ITS SUBJECT STILL HAD TO CHANGE.**
+  `test_chance_created_origin_is_tracked_not_drawn` called the chain with no
+  names and got an event anyway — because the creator was a draw that ALWAYS
+  returned somebody. With no fallback it gets no event. The test now supplies
+  the passer, which is what makes it exercise the mechanism its assertion is
+  about. Fifth instance of **a fixed field is not a fixed feature.**
+- `tests/test_chance_truth.py` (21 tests) pins the creator, the carrier hand-off
+  and the three-quantity relationship. It includes an **AST guard that every
+  `ChainDispatcher.attack` call site in `match_engine.py` passes
+  `shooter_name`/`assister_name`** — a defaulted argument is a silent omission,
+  the same reasoning as the `attacks_right` guard in `test_chance_provenance.py`.
+- **TEST FIXTURES THAT ASSUME A CARRIER EXISTS ARE LYING.** A possession from
+  x=62 against a full defensive block is lost ~82% of the time (measured: 49 of
+  60 draws ended in a TURNOVER or MISCONTROL), so `ball_carrier` is correctly
+  empty that often. The tests sweep 36 draws and assert both branches rather
+  than reading one. Two more fixture bugs found the same way: a single-shot
+  timeline that mutated a 3-event helper into 2 shots (so one pass correctly
+  counted two chances), and an origin asserted against the coordinate handed to
+  `record_touch` rather than read back — `record_touch` applies the wide-role
+  flank hold, so an LW recorded at y=12 is stored at y≈7.6.
+- **THE FULL CHAIN TO THE WAREHOUSE IS NOW HONEST END TO END** — this is what
+  "true stats" actually required, and each link was checked rather than assumed:
+  `PossessionChain.last_passer` → `ChainResult.shoot_assister` /
+  `ball_carrier_passed_by` → `ChainDispatcher.attack(assister_name=…)` →
+  `AttackChain` → **GOAL event `secondary_player`** → `exporter.py:845-848`
+  (`assistant["assists"]`) → `world/ingest.py:172` (`assists`) → the warehouse.
+  Note the exporter takes `chances_created` / `shot_assists` from
+  `ChanceCreationLedger` (`exporter.py:463-465`, "single source of truth") but
+  `assists` from the ENGINE event — so the engine's assist and the ledger's
+  creator are two independent derivations of the same fact, and they were
+  measured agreeing 3/3 with 0 disagreements. That agreement is the thing worth
+  protecting; the ledger's docstring claim that the engine "used to" fabricate
+  is corrected in `chance_creation.py`.
+- **THE FUNNEL'S `poss_result` IS NOT STALE — verified, not assumed.**
+  `match_engine.py:4958` does `if poss_result.possession_lost: … continue`, so
+  the shot funnel is only reached when the attacking team KEPT the ball, and
+  `poss_result` is rebuilt at the top of every sequence (4938). So
+  `ball_carrier` is the man holding the ball at exactly the coordinate the
+  funnel shoots from. Worth stating because "is this a stale variable?" is the
+  obvious objection to the change and the answer is structural.
+- **A FOURTH UN-THREADED SITE, AND A HOLE IN THE GUARD I JUST WROTE.**
+  `TransitionChain`'s counter-attack calls `AttackChain.generate` twice with no
+  `shooter_name`/`assister_name` — while having just emitted a PASS whose
+  `secondary_player` IS the shooter (8271) or carrying the ball himself (8290).
+  Worse, `TransitionChain` picks `carrier` and `shooter` as two INDEPENDENT
+  draws and `exclude=`s the carrier from the shooter pick, so in the engine's
+  own counters the man with the ball can never score. Also note the new AST
+  guard walks `match_engine.py` ONLY — a site in `event_chain.py` is invisible
+  to it, which is exactly the omission class being hunted. Fix pending.
+- **SET-PIECE HEADERERS ARE NOT POSITION-DERIVED, BUT ARE DEFENSIBLE.**
+  `_pick_aerial_threat` weights DNA `jumping + heading`, not geometry, so a
+  corner is won by the best leaper rather than by whoever arrived. Given
+  corner steps 2-3 now run 13 men into the box, "the best aerial threat wins it"
+  is a legitimate football model. Recorded, not changed — do not "fix" it
+  without a measurement.
+- **THE CROSS-RECEIVER CLAMP IS NOW ISOLATED** (`_diag_cross_clamp.py`), which
+  is item 2 of the residue and had been blocked on a probe that could not
+  separate a clamp from a placement. Signature-testing `record_touch` (new x
+  inside the attacking band, y in [22,46], old x >5 m outside it) matches
+  **77 times / 2,766 m never covered (26 pitches) per 2 matches** — of which the
+  cross-receiver site is only part, since corner box placement writes the same
+  band. Not yet apportioned between the two, and not yet changed.
+
+## COUNTER-ATTACKS AND CROSSES (2026-10-03) — the last two fabrications
+
+The chance-creation work left two paths that still named the wrong man or the
+wrong place. Both were found by walking the shot paths one at a time rather
+than by trusting the one I had already fixed.
+
+- **A COUNTER'S CARRIER WAS STRUCTURALLY INCAPABLE OF SCORING.**
+  `TransitionChain` picked `carrier = _pick_fast_player(...)` and then
+  `shooter = _pick_shooter(..., exclude=carrier.name)` — two INDEPENDENT draws,
+  the second explicitly barred from choosing the man holding the ball. And
+  because the branch that lets him shoot was gated on `if shooter != carrier`,
+  **the solo-run-and-shot branch was UNREACHABLE DEAD CODE.** Dead code that
+  reads as a design choice is this project's standing pathology; it survived
+  because `shooter != carrier` was always true and therefore looked like a
+  guard rather than a bug. Now ~55% of counters are squared to a team-mate
+  (the previous rate) and otherwise the carrier goes himself.
+- **THE COUNTER'S KEY PASS NAMED A RECEIVER WHO DID NOT SHOOT.** Both
+  `AttackChain.generate` calls in the counter dropped `shooter_name` /
+  `assister_name`, while the block immediately above had just emitted a PASS
+  whose `secondary_player` *was* the intended shooter — and handed the chain
+  the whole eleven-man squad, so `_pick_shooter` drew a THIRD, different
+  player. The key pass and the shot named different men. Both branches now
+  thread the pair, and the solo branch passes `assister_name=""` — he dribbled
+  it in, so it is genuinely unassisted, which is the same rule
+  `_resolve_assister` follows everywhere else.
+- **MY OWN AST GUARD HAD A HOLE, ONE FILE WIDE.** The guard added earlier
+  walked `match_engine.py` only, so a site in `event_chain.py` was invisible to
+  it — which is precisely the omission class it was written for, and the
+  omission was silent because nobody was looking at that file. It now walks
+  both files. **A guard that protects one file cannot catch the class.**
+- **NEGATIVE CONTROL, because a test that passes for the wrong reason is
+  worse than no test.** `_diag_counter_guard.py` strips the two kwargs at the
+  `AttackChain.generate` boundary and re-runs the real test: it goes RED with
+  `counter pass names receiver 'A6' but 'A7' shot` — exactly the defect. Note
+  the same descriptor trap as `_install_no_thread`: `generate` is a
+  classmethod, so wrapping it as a staticmethod raises `missing 1 required
+  positional argument: 'situation'`. Read `raw = Cls.__dict__["name"]` and
+  branch on `isinstance(raw, classmethod)`.
+- **`secondary_player` MEANS TWO DIFFERENT THINGS ON ONE FIELD NAME.** On a
+  SHOT it is the goalkeeper who faced it (`event_chain.py:6109` and five
+  sibling sites: `secondary_player=gk.name`); only on a GOAL is it the
+  assister. My first counter test asserted the GOAL reading against a SHOT,
+  failed with `'GK' == 'A9'`, and pointed at the counter chain for a defect
+  that was in the test. Sixth instance of the same shape as the probe-sign
+  errors: **one name, two frame-dependent meanings.**
+- **A TEST OF MINE WAS FLAKY BECAUSE ITS FIXTURE ASSUMED AN OUTCOME — AND IT
+  WAS TWO TESTS, NOT ONE.**
+  `test_the_shot_itself_is_still_recorded_without_a_creator` called the chain
+  once with no seeding and asserted a shot came out — but `AttackChain` is
+  PROBABILITY-GATED, so whether a shot exists depends on whatever ran before
+  it. It passed 4 runs of the file alone and failed next to
+  `test_cross_detector.py`. Same class as the carrier tests that "assume a
+  carrier exists": sweep the seeds and **assert the sweep was not vacuous**
+  (40 seeds must produce at least one shot, or the loop proved nothing).
+  Now stable across 6 consecutive runs.
+  **The twin in `test_chance_provenance.py` had the identical defect and only
+  surfaced in the FULL 53-minute regression** — 4 isolated runs and a 7-minute
+  subset both passed it, and it came back as the single failure of 181. Its
+  draw produced `['HIT_WOODWORK']`, which added a second dimension: `is_shot`
+  is a property whose event-type list omits woodwork (see Next Move item 7),
+  so "a strike was recorded" is not the same assertion as `any(e.is_shot)`.
+  Both now sweep 40 seeds, assert non-vacuity, and accept woodwork.
+  **Lesson: a probability-gated chain makes a single-draw fixture wrong by
+  construction, and a shorter suite is not evidence that it is right — it is
+  evidence that the RNG happened to land your way.**
+
+### CROSS RECEIVER: TWO FABRICATIONS IN THREE LINES
+
+`event_chain.py:3445-3462`, the open-play cross. It is the purest instance of
+the project's pathology found so far, because each line looks reasonable alone:
+
+    cross_receiver = cls._pick_aerial_threat(players, exclude=last_player.name)
+    rx, ry = position_engine.get_position(cross_receiver.name)
+    rx = cls.clamp_attack_x(rx + random.uniform(1.0, 4.0), 85.0, 100.0, attacks_right)
+    ry = max(22.0, min(46.0, ry))
+    position_engine.record_touch(cross_receiver.name, rx, ry, minute)
+
+1. **The receiver was chosen by ABILITY ALONE** — `_pick_aerial_threat` weighs
+   DNA `jumping + heading` and knows nothing about geometry, so it could
+   return a player 30-50 m upfield.
+2. **The clamp then teleported him into the box** and banked the gap as
+   distance covered: 77 `record_touch` jumps / 2,766 m never walked (26
+   pitches) over two matches.
+3. **And because `_moving_player` reads the position engine, he was scored as
+   ALREADY THERE**, so `resolve_aerial_delivery` charged him no movement cost
+   and he won the header for free. A man who never ran into the box got the
+   ball because he was moved there on paper.
+
+The fix needed no new machinery — `pick_weighted_spatial` already existed at
+line 892, documented as "multiplies the label-based weight by the player's
+real-time positional plausibility for an action happening at (at_x, at_y)".
+The receiver is now picked by ability × plausibility, **stays exactly where he
+is**, and the resolver charges him the real distance. Aiming a cross inside the
+box is correct football and is kept — it is only ever a TARGET now, and it
+belongs to nobody's tracked position.
+
+- **THE DEFENDER PLACEMENT WAS WRITE-ONLY.** The adjacent block computed
+  `dx2, dy2`, clamped the defender's y into `[24,44]`, and `record_touch`ed
+  him — and **nothing after it ever read either variable** (grep: five
+  occurrences, all assignments; the target came from `rx`/`ry`). Its entire
+  effect was to teleport a defender up to 14 m in y and bank the gap as
+  distance he covered. A fabrication with no consumer, which is exactly why it
+  survived: it read like it was placing a marker. Deleted.
+- **THE NEGATIVE CONTROL EXPOSED A COVERAGE GAP IN MY OWN TEST, AND THE TEST
+  NAME WOULD HAVE HIDDEN IT.** `_diag_cross_guard.py` restores the deleted
+  defects (ability-only pick + the `record_touch` teleport), runs the two new
+  tests, then restores the file from a byte-exact backup. Result: **only ONE of
+  the two pins went red.** `test_the_open_play_cross_never_rewrites_a_position`
+  correctly failed; `test_cross_receiver_pick_prefers_the_man_in_the_box`
+  **still passed** — because it calls `pick_weighted_spatial` *directly*, so it
+  pins the HELPER and never touches the call site. I had named it "the cross
+  receiver", which would have read as coverage of the cross path that does not
+  exist. Renamed to `test_the_spatial_aerial_pick_prefers_the_man_in_the_box`
+  with the limitation written into its docstring: one test says the helper
+  discriminates, the other says the cross uses it, neither alone does.
+  **Running a negative control is what turns a test's name into a claim you
+  have actually checked.**
+- **A COMMENT QUOTING THE DELETED BUG FAILS A TEXT SCAN.** The source pin
+  initially failed on the cross block's own explanatory comment, which quotes
+  `record_touch(receiver, rx, ry, minute)` verbatim as part of documenting the
+  fix. Stripping comment lines before scanning fixed it. This is the
+  `_diag_teleport_moves.py` trap again — a name inside a comment is not a
+  call site — and it is why the project's standing rule is to trust structure
+  over text.
+- **THE MEASUREMENT THAT ISOLATED IT.** `_diag_cross_clamp.py` signature-tests
+  `record_touch`: new x inside the attacking band AND `y` in `[22,46]` AND old
+  x more than ~5 m outside it. Note that signature also catches corner box
+  placement (both write into the same band), so it is an upper bound — which
+  is why the fix was made by reading the mechanism, not by apportioning the
+  count. `_diag_teleport_moves.py` context attribution still cannot separate a
+  clamp from a deliberate placement; that remains the fourth rejected pairing.
+- **THE SIGNATURE DID NOT MOVE, AND THAT IS THE MORE IMPORTANT RESULT.** After
+  deleting the clamp, `_diag_cross_clamp.py` still reports **79** (against the
+  **77** recorded before, across different matches). So the cross-receiver
+  clamp was a real defect and a SMALL contributor. Do not let a future agent
+  read "clamp deleted" as "the jump problem solved" — it was one site among
+  several, and the count is dominated by something else entirely.
+- **`_absorb_chain` IS AN AMPLIFIER, WHICH IS WHY THE CLAMP MATTERED MORE THAN
+  ITS ARITHMETIC.** The bulk of ≥12 m `record_touch` jumps is
+  `match_engine.py:5764`/`:5772` inside `_absorb_chain`, which snaps each
+  player to **the coordinates of the event they just performed**
+  (`record_touch(event.player, event.location_x, …)` and
+  `record_touch(event.secondary_player, end_x, end_y, …)`). That is the
+  documented on-ball reposition and it is legitimate *when the event's
+  coordinates are real* — but it means **any fabricated event coordinate
+  becomes a real tracked position**, and is then read by the exporter, the
+  shot map and the aerial resolver as fact. The cross clamp's clamped `rx/ry`
+  became the CROSS event's `end_x/end_y`, so `:5772` persisted the fabrication
+  for free. This is the general reason the "omit, never invent" rule matters
+  more than the distance it banks: a fabricated coordinate does not stay local,
+  it gets promoted to a tracked fact by the next line that trusts the event.
+  (`event_chain.py:1336` is the same idea inside `PossessionChain`; `:5731` is
+  the CHANCE_CREATED shooter snap, whose `x - 8` invented spot was removed
+  earlier; `event_chain.py:7056`/`:7076` are the corner box placement, which
+  is deliberate and documented under *CORNER BOX*.)
+
+### MEASURED, `_diag_touch_sites.py` — WHERE the position writes actually come from
+
+The earlier apportion attempts inferred INTENT from context labels and could
+not separate a clamp from a deliberate placement. That was the wrong question.
+The right one is *which line of code wrote this*, and the caller's stack frame
+answers it exactly — no inference. 1,086 single-call `record_touch` jumps
+≥ 12 m over 2 real matches, 28,972 m (**275.9 pitches**), bucketed by
+`file:lineno` with the owning chain named one frame out:
+
+| SITE | jumps | metres | pitches | box-band | what it is |
+|---|---|---|---|---|---|
+| `match_engine.py:5764` | 463 | 12,576 | 119.8 | 52 | `_absorb_chain`: snap actor to `event.location_*` |
+| `match_engine.py:5772` | 260 | 6,943 | 66.1 | 30 | `_absorb_chain`: snap `secondary_player` to `end_*` |
+| `event_chain.py:1336` | 235 | 5,761 | 54.9 | 27 | `PossessionChain`: snap ball-carrier to ball |
+| `event_chain.py:7056` | 50 | 1,696 | 16.2 | **49** | corner box placement (deliberate, *CORNER BOX*) |
+| `event_chain.py:7076` | 40 | 928 | 8.8 | 0 | corner box placement |
+| `event_chain.py:5731` | 14 | 350 | 3.3 | 0 | `CHANCE_CREATED` shooter snap |
+| 5 minor sites | 22 | 647 | 6.2 | 3 | set-piece restarts |
+| **TOTAL** | **1,086** | **28,972** | **275.9** | **161** | |
+
+Two things fall out, and they are not the same claim:
+
+- **91% of the METRES (25,280 of 28,972) is the on-ball snap** — the three
+  "snap the player to the coordinate of the event he just performed" lines.
+  That is architecturally necessary: a man who performed an event at a
+  coordinate must be recorded there. It is not a fabrication *in itself*.
+- **30% of the BOX-BAND hits (49 of 161) is `event_chain.py:7056` alone**,
+  which makes 49 of its own 50 jumps into the box band. That is the corner box
+  placement, introduced deliberately by corner steps 2–3 and documented as
+  booking the displacement on purpose. So the old 77/79 figure was never about
+  the cross clamp at all.
+- **THE CROSS-RECEIVER CLAMP WAS A SMALL CONTRIBUTOR.** It was a real defect,
+  it fed the amplifier below, and it accounts for a handful of events. Do not
+  read "clamp deleted" as "the jump problem solved".
+
+**THE AMPLIFIER, WHICH IS THE PART THAT MATTERS.** `_absorb_chain:5772` writes
+`record_touch(event.secondary_player, event.end_x, event.end_y)`. The cross
+clamp's `rx/ry` *became* the CROSS event's `end_x/end_y`, so that line promoted
+the fabrication into a tracked position for free — and from there the exporter,
+the shot map and the next aerial all read it as fact. **A fabricated
+coordinate does not stay local; the next line that trusts the event promotes it
+to truth.** That is the general argument for "omit, never invent" being a hard
+rule rather than a style preference: the cost of inventing a coordinate is not
+the metres you banked, it is that everything downstream can no longer tell it
+apart from a measured one.
+
+**THE QUESTION THIS RAISES AND DOES NOT ANSWER.** When the on-ball snap moves a
+man 29 m in one tick, there are two readings and this probe cannot separate
+them: either the chain's coordinate is right and the position engine was simply
+stale (the snap is a *correction*), or the chain's coordinate is invented and
+91% of all position writes are fabrications. Both produce an identical jump.
+Distinguishing them needs something this probe does not have — an independent
+measure of where the player was before the chain ran (the 10 Hz integrator's
+own trace at that instant, or a chain that is handed the engine's coordinate
+instead of generating its own). **Do not guess.** This is now the single
+highest-value open measurement in the audit, and it is far larger than anything
+fixed today.
+
+*Probe self-correction, recorded because the first version of it lied:* it
+printed a heading `by signature (new_x in band, y in [22,46], old_x >5 m
+outside)` and then summed **every** site — the filter was never implemented, so
+the number under that heading was the ≥12 m total wearing a false label. `y` is
+now captured and the filter is actually applied (hence the two columns above).
+The probe also writes `_diag_touch_sites.txt` itself, because piping its table
+through `Select-Object -Last N` truncated the **top** — the part worth reading.
+
+### MEASURED, `_diag_creator_truth.py`, 3 real matches per arm — shooter honesty
+
+Shooter = the man who actually had the ball (section E walks back to the last
+genuine touch, independent of the ledger). **Each arm is a separate process**
+— an in-process A/B inherits the module-level brain caches.
+
+| | before (no thread) | chain-local | **+ counter fix** |
+|---|---|---|---|
+| shooter IS the ball-holder | 64/103 (**62%**) | 103/118 (87%) | **98/108 (91%)** |
+| drawn shooters | 39 | 15 | **10** |
+| engine CHANCE_CREATED events | 0 | 4 | **9** |
+| creator REALLY passed the ball | — | 4/4 | **9/9, fabricated 0** |
+| engine vs ledger, same player | — | 4 agree / 0 disagree | **9 agree / 0 disagree** |
+| `chances == goal_assists + shot_assists` | 54 ok, 0 broken | 54 ok, 0 broken | **54 ok, 0 broken** |
+
+Denominators differ per arm (they are different matches: 113 / 126 / 119
+shots), so read the RATES. The before-arm's `0` CHANCE_CREATED events are an
+artefact of the probe stripping the names — `_pick_creator` is deleted, so with
+no name there is legitimately no creator — and are not evidence about the old
+code, whose draw always returned somebody.
+
+- **ONE NEW DISAGREEMENT, RECORDED NOT HIDDEN.** Section D went from
+  `3 agree / 0 disagree` to `7 agree / 1 disagree`. The engine's assist and
+  the ledger's backward scan are two INDEPENDENT derivations of the same fact,
+  and they now differ on one goal. That is worth chasing and must not be
+  smoothed away: it is either a legitimate edge case (the ledger attaching the
+  setup pass to a different delivery) or a real disagreement about causation.
+  **Not yet diagnosed — do not report the two as agreeing.**
+- **THE REMAINING 10 DRAWN SHOOTERS ARE NOT ALL DEFECTS.** Each is printed with
+  the player who actually had the ball. They are not assumed to be wrong,
+  because the back-scan's expected-predecessor rule is wrong for set-piece
+  headers: it expects the man a corner was AIMED at, who is not necessarily
+  the man who WON it. Classify before touching.
+- **THE CARRIER PICK IS STILL A ROLE PICK, AND THAT IS DEFENSIBLE.**
+  `_pick_fast_player` selects "who leads the break" by ability; it is not a
+  false claim about where the ball is, and the CARRY event records him at the
+  anchor coordinate. The proper fix is to thread `DefensiveChain`'s ball-winner
+  in, not to guess at the call site.
 
 ## Work State
+- **THE ROSTER WORKBOOK ALWAYS LOOKS DIRTY, AND IT IS NOT A WRITE.**
+  `PLOFA-2026-2027.xlsx` is tracked and contains live formulas — `PLAYERS!R207`
+  is `=DATEDIF(TODAY(),O207,"m")` ("Months Left") — so it shows as modified
+  (and a different size) every time Excel recalculates and saves it, with the
+  cached result drifting from 44 to 43. **Nothing in the repo writes that file**:
+  `roster_loader.py` and every other reference use
+  `load_workbook(read_only=True)` / `pd.read_excel`, and `squad_manager.py`'s two
+  `.xlsx` sites read *exported* match files, not the roster. A diff of all
+  11,853 non-empty cells at HEAD vs the working copy (`_diag_xlsx_diff.py`)
+  found exactly one difference — that cached `TODAY()` value — so **a dirty
+  roster is not evidence that something wrote it.** Verify with
+  `_diag_xlsx_diff.py` (cells, not bytes) before treating it as a write;
+  `_diag_xlsx_cell.py` / `_diag_xlsx_formula.py` identify the cell and say
+  whether it is a formula. Do not stage the workbook to "clean" the tree.
+- **COMMIT HAZARD, RECORDED BEFORE IT BIT: `git add -u` IS WRONG HERE.**
+  Every substantive artefact of this session is either a MODIFIED tracked file
+  or — worse — **an UNTRACKED new one**: `tests/test_chance_truth.py` (22
+  tests, the only thing pinning the creator, the carrier hand-off, the
+  three-quantity relationship and the AST guards) plus the probes
+  (`_diag_creator_truth.py`, `_diag_carrier.py`, `_diag_pass_direction.py`,
+  `_diag_cross_clamp.py`, `_diag_touch_sites.py`, `_diag_cross_guard.py`,
+  `_diag_counter_guard.py`, `_diag_delete_pass_event.py`,
+  `_diag_bound_delete.py`, `_diag_ast_structure.py`) that AGENTS.md cites as
+  evidence. `git add -u` stages **tracked files only**, so it would have
+  committed the code changes and **silently dropped every test that justifies
+  them** — the worst possible outcome, and invisible because the commit
+  succeeds. Stage explicitly instead. Also exclude, deliberately:
+  `plofa_output/**` (regenerated by `test_plofa_export.py` on every run) and
+  the tracked `__pycache__/*.pyc`, which are noise. Note the `.quarantine_*`
+  and `.corrupt-*` directories in the tree are pre-existing, not mine — leave
+  them alone.
 - DONE: neural net + sensors + GA evolution; surrogate build + integration;
   pseudo-evo; evolved real brains; registration-bug fix (`validate_neural_xl.py`).
 - DONE: LIVE SWAP — `event_chain.py` routes through `NeuralDecisionBrain`;
@@ -1200,27 +1662,15 @@ were not. He was right about the symptom and wrong about the object, as before.
 one path, not the class. Do not report "fabrication eliminated". Remaining, in
 the order I would take them:
 
-1. **`_pick_creator` is STILL LIVE** and still supplies `CHANCE_CREATED`'s
-   `player` field. It is a role- and distance-weighted random draw over the
-   squad, exactly the mechanism removed from the assist. Either derive it from
-   the last completed pass into the box, or omit the field. Note the same
-   trap that bit me on the assist: `chance_creation.py`'s docstring already
-   claims the engine "used to" fabricate chances — check what the EXPORT reads,
-   not what the ledger class offers.
-2. **The cross-receiver clamp at `event_chain.py:3404`** — the receiver's real
-   x is clamped into `[85, 100]` and then `record_touch`ed, so a winger at
-   x=40 is written at x=85 and the gap is banked as distance covered. Isolating
-   it is cheaper than it looks: a signature test is `new_x` inside the
-   attacking `[85,100]` band AND `y` in `[22,46]` AND `old_x` more than ~5 m
-   outside the band. Do NOT report a figure from `_diag_teleport_moves.py`
-   context attribution — it cannot separate a clamp from a deliberate
-   placement, which is the fourth rejected probe pairing of the session.
-3. **`pass_direction` metadata is uncorrelated with geometry** — marginals
-   match, the assignment is random, so the exporter stamps it wrong ~2/3 of
-   the time. `detect_cross` / `detect_long_pass` already exist and
-   `event_chain.py:2482` already makes this argument; `pass_direction` was
-   never converted. Cheapest honest fix is to derive it from geometry, or drop
-   it.
+1. ~~**`_pick_creator` is STILL LIVE**~~ — **DONE 2026-10-03.** Deleted; the
+   creator is now the real passer (`assister_name` → `_resolve_assister`), and
+   a drawn creator had been fabricating the key pass's ORIGIN geometry too.
+2. ~~**The cross-receiver clamp at `event_chain.py:3404`**~~ — **DONE
+   2026-10-03.** See *CROSS RECEIVER: TWO FABRICATIONS IN THREE LINES* below.
+3. ~~**`pass_direction` metadata is uncorrelated with geometry**~~ —
+   **RETRACTED 2026-10-02, DO NOT TOUCH IT.** Measured 98.4% correct; the
+   original finding was a sign error in the probe (it never flipped for the
+   away side). See the retraction block in MEASUREMENTS.
 4. **Shot-distance distribution** — median 20.0 m (real ~17), 14.8% inside 4 m
    (real ~0%), 22.2% beyond 25 m (real ~3%). `_shot_location`'s open-play draw
    `min(32, -14·ln(1-u) + 3)` is a log-uniform tail that over-feeds long range.
@@ -1230,6 +1680,49 @@ the order I would take them:
    `simulate()` calls in one process are not comparable and
    `validate_neural_xl`-style gates are only meaningful across processes.
    Until it is fixed, `_STREAM_PARITY_DRAW` must stay.
+6. **NEW, AND BIGGER THAN ANYTHING FIXED IN THIS PASS: is the on-ball snap a
+   correction or a fabrication?** 91% of the ≥12 m position writes (25,280 of
+   28,972 m per 2 matches) are the three "snap the player to the coordinate of
+   the event he just performed" lines, the largest being
+   `match_engine.py:5764`/`:5772` in `_absorb_chain`. When that snap moves a
+   man 29 m in one tick there are two readings and the current probe cannot
+   separate them: the chain's coordinate is right and the position engine was
+   stale (the snap is a CORRECTION), or the chain's coordinate is invented and
+   91% of all position writes are fabrications. Both produce an identical
+   jump. **Do not guess — this is the highest-value open measurement in the
+   audit.** It needs an independent measure of where the player was *before*
+   the chain ran: the 10 Hz integrator's own trace at that instant, or a chain
+   handed the engine's coordinate instead of generating its own. Note the
+   reason this matters more than its size: `_absorb_chain:5772` promotes any
+   event coordinate to a tracked position, so a single invented coordinate
+   becomes indistinguishable from a measured one everywhere downstream.
+7. **`HIT_WOODWORK` IS NOT A SHOT, AND THAT IS A CALIBRATION QUESTION, NOT A
+   BUG.** Found by the full regression: the only failure was a fixture that
+   asserted `any(e.is_shot)` and drew `['HIT_WOODWORK']`. `MatchEvent.is_shot`
+   is a **property** over a fixed list (`match_engine.py:616`) — SHOT_ON_TARGET,
+   SHOT_OFF_TARGET, SHOT_BLOCKED, GOAL, PENALTY_SCORED, PENALTY_MISSED — and
+   woodwork is absent, so a ball on target that hits the frame is not a shot.
+   **Measured as internally CONSISTENT, not as an oversight**: the exporter's
+   "Total Shots" is `shots_on_target + shots_off_target + shots_blocked`
+   (`exporter.py:1758`, `:3058`, `:4183`) and it tracks woodwork as its own
+   `hit_woodwork` column (`exporter.py:954`), so flag and export agree. The
+   disagreement is with real football, where a woodwork strike IS a shot on
+   target. **NOT CHANGED HERE** — adding it moves every shot and shot-on-target
+   number in the project and needs its own gate. Do not "fix" it inside a
+   fabrication pass; it is a separate calibration decision, and the finding is
+   only that the question exists.
+8. **ONE NEW ENGINE-vs-LEDGER DISAGREEMENT, UNDIAGNOSED.** Section D of
+   `_diag_creator_truth.py` went from `7 agree / 0 disagree` to `7 agree / 1
+   disagree`. The engine's assist and the ledger's backward scan are two
+   INDEPENDENT derivations of the same fact and now differ on one goal. It is
+   either a legitimate edge case (the ledger attaching the setup pass to a
+   different delivery) or a real disagreement about causation. **Do not report
+   the two as agreeing until it is explained.**
+9. **The 10 remaining drawn shooters are not yet classified.** Each is printed
+   with the man who actually had the ball. Do NOT assume they are defects: the
+   back-scan's expected-predecessor rule is wrong for set-piece headers, since
+   it expects the man a corner was AIMED at rather than the man who WON it.
+   Classify before touching.
 
 Then the wider set-piece work, still in the user's non-negotiable order:
 corner box crowding via the pre-corner shape (block drops before the ball goes

@@ -22,6 +22,7 @@ Run with:  python -m pytest test_cross_detector.py -q
 """
 
 import random
+import re
 from datetime import date
 
 import pytest
@@ -303,6 +304,125 @@ def test_attacking_crash_skips_crosser():
     # Crosser is not pulled; the striker crashes.
     assert pe.states["rw"].current_x == before
     assert pe.states["st"].current_x > 55.0
+
+
+# ─────────────────────────────────────────────
+# 6. CROSS RECEIVER — PICKED SPATIALLY, POSITION NEVER REWRITTEN
+# ─────────────────────────────────────────────
+#
+# The open-play cross used to pick its receiver by DNA ability alone
+# (`_pick_aerial_threat`, which weighs `jumping + heading` and knows nothing
+# about geometry), then rewrite his real position three lines later:
+#     rx, ry = get_position(receiver)
+#     rx = clamp_attack_x(rx + uniform(1,4), 85, 100, attacks_right)
+#     ry = max(22, min(46, ry))
+#     record_touch(receiver, rx, ry, minute)
+# which moved a man 30-50 m away into the box, banked the gap as distance he
+# covered (77 jumps / 2,766 m never walked over two matches), and — because
+# `_moving_player` reads the position engine — scored him as ALREADY there,
+# so `resolve_aerial_delivery` charged him no movement cost and he won the
+# header for free. A man who never ran into the box got the ball because he
+# was moved there on paper.
+#
+# Two pins, one per half: the pick must be SPATIAL, and the cross block must
+# not write anybody's position at all.
+
+def test_the_spatial_aerial_pick_prefers_the_man_in_the_box():
+    """`pick_weighted_spatial` prefers proximity — the substance of the fix.
+
+    Two strikers with the same role, one standing on the ball's target and
+    one 46 m away. The spatial pick must strongly favour the man who is
+    there. Deterministic: the counter is seeded per trial and the threshold
+    is far outside the sampling noise of 60 Bernoulli draws.
+
+    **SCOPE — read this before assuming coverage.** This test calls
+    `pick_weighted_spatial` DIRECTLY, so it pins the HELPER, not the call
+    site. `_diag_cross_guard.py` proved the distinction: it restored the old
+    ability-only pick at the cross call site and this test still PASSED,
+    while the source pin went red. Together the two cover the behaviour —
+    this one says the helper discriminates, `test_the_open_play_cross_never_
+    rewrites_a_position` says the cross uses it — but neither alone does, and
+    the name deliberately says "the spatial aerial pick" rather than "the
+    cross receiver" so that the gap is not read as coverage that is not
+    there.
+    """
+    from event_chain import BaseChain
+    squad = SquadBuilder.build("Home", [
+        ("near", "ST", []), ("far", "ST", []),
+        ("gk", "GK", []), ("cb1", "CB", []), ("cb2", "CB", []),
+        ("lb", "LB", []), ("rb", "RB", []), ("cdm", "CDM", []),
+        ("cm1", "CM", []), ("cm2", "CM", []), ("cam", "CAM", []),
+    ])
+    near, far = squad["starters"][0], squad["starters"][1]
+    pe = PositionEngine()
+    pe.states["near"] = _state("near", "ST", 88.0, 33.0)   # on the target
+    pe.states["far"] = _state("far", "ST", 42.0, 34.0)     # 46 m away
+    aerial = lambda p: (p.dna.physical.jumping + p.dna.technical.heading) / 2
+
+    near_picks = 0
+    trials = 60
+    for seed in range(trials):
+        random.seed(9000 + seed)
+        pick = BaseChain.pick_weighted_spatial(
+            [near, far], aerial, pe, 92.0, 34.0, spatial_exponent=1.5)
+        near_picks += (pick.name == "near")
+    assert near_picks >= int(trials * 0.75), (
+        f"the spatial pick chose the man in the box only {near_picks}/{trials} "
+        f"times; a proximity-blind pick would be near 50/50")
+
+
+def test_the_open_play_cross_never_rewrites_a_position():
+    """The clamp, the aim-as-position, and the write-only defender placement
+    are all gone, and this pins their absence in the source.
+
+    A source assertion is normally the weaker kind of test, and it is used
+    here deliberately as a SECOND pin: the behavioural test above cannot see
+    a teleport that happens to leave the receiver in the same place, whereas
+    this sees any reintroduction of `record_touch` into the cross block
+    regardless of the numbers it happens to produce on a given seed.
+    """
+    import ast
+    src = open("event_chain.py", "rb").read().decode("utf-8")
+    tree = ast.parse(src)
+    poss = [n for n in tree.body
+            if isinstance(n, ast.ClassDef) and n.name == "PossessionChain"]
+    assert len(poss) == 1
+    src_lines = src.splitlines()
+
+    # Locate the open-play cross block by its own distinctive comment, then
+    # scan the `if ... cross_zone ...` arm for position writes.
+    start = next(i for i, ln in enumerate(src_lines)
+                 if "GEOMETRY-FIRST CROSS RESOLUTION" in ln)
+    # Strip COMMENTS before scanning. The block's own explanatory comment
+    # quotes the deleted code verbatim — including the string
+    # `record_touch(receiver, rx, ry, minute)` — so a naive substring scan
+    # fails on the documentation of the fix. This is the same trap as
+    # `_diag_teleport_moves.py` counting a name inside a comment; the
+    # project's own standing rule is to trust structure over text.
+    block_lines = []
+    for ln in src_lines[start:start + 60]:
+        stripped = ln.strip()
+        if stripped.startswith("#"):
+            continue
+        block_lines.append(ln)
+    block = "\n".join(block_lines)
+    assert "record_touch" not in block, (
+        "the open-play cross block writes a position again — the cross AIM "
+        "must never be persisted as somebody's tracked position, or the gap "
+        "is banked as distance he covered and resolve_aerial_delivery "
+        "charges him no movement cost")
+
+    # And the receiver must come from the spatial helper, not the ability-only
+    # one.
+    assert "pick_weighted_spatial(" in block, (
+        "the cross receiver is no longer picked by proximity")
+    assert "_pick_aerial_threat(players, exclude=last_player.name)" not in block, (
+        "the ability-only aerial pick is back for the open-play cross")
+
+    # The write-only defender variables must be gone entirely: they were
+    # computed, teleported a defender up to 14 m in y, and never read.
+    assert not re.search(r"\bdx2\b|\bdy2\b", block), (
+        "the write-only defender placement is back")
 
 
 # ─────────────────────────────────────────────

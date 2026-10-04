@@ -262,9 +262,18 @@ def test_every_set_piece_call_site_in_match_engine_passes_attacks_right():
 def test_chance_created_origin_is_tracked_not_drawn():
     """`origin_known` / `origin_source` must exist, and a live chain must
     report a tracked origin. If `origin_known` ever goes false in a match
-    where the whole XI is registered, the fabrication is back."""
+    where the whole XI is registered, the fabrication is back.
+
+    Names are supplied here because the creator is now the REAL passer with no
+    fallback: with no passer there is no creator and therefore no
+    CHANCE_CREATED event at all. This test used to call the chain with no names
+    and get an event anyway, because the creator was a weighted draw that
+    always returned somebody. Supplying the passer is what makes it exercise
+    the mechanism the assertion is actually about.
+    """
     from event_chain import AttackChain
     eng = _build_engine()
+    eng.position_engine.record_touch("LW", 58.0, 18.0, 30)
     res = ChainDispatcher.attack(
         30, "Home", "Away",
         eng.active_players["Home"], eng.active_players["Away"],
@@ -272,9 +281,12 @@ def test_chance_created_origin_is_tracked_not_drawn():
         SituationType.OPEN_PLAY,
         position_engine=eng.position_engine,
         context_x=92.0, context_y=30.0, attacks_right=True,
+        shooter_name="ST", assister_name="LW",
     )
     ch = _first(res, "CHANCE_CREATED", "BIG_CHANCE_CREATED")
     assert ch is not None, [e.event_type.name for e in res.events]
+    assert ch.player == "LW", "the creator must be the named passer"
+    assert ch.secondary_player == "ST", "the shooter must stay the receiver"
     md = ch.metadata
     assert md.get("origin_known") is True
     assert md.get("origin_source") == "tracked_position"
@@ -286,3 +298,66 @@ def test_chance_created_origin_is_tracked_not_drawn():
     assert not (5.0 <= math.hypot(ch.end_x - ch.location_x,
                                   ch.end_y - ch.location_y) <= 20.0
                 and md.get("origin_source") != "tracked_position")
+
+
+def test_unassisted_strike_emits_no_chance_creation_event():
+    """The companion to the above, and the guard on the relationship between
+    chances created, shot assists and assists.
+
+    With no passer there is no creator and no CHANCE_CREATED event. Crediting
+    the shooter instead would make the engine disagree with
+    `ChanceCreationLedger._find_setup_pass`, which returns None for a dribble.
+    See `tests/test_chance_truth.py` for the full argument.
+
+    This was the SECOND instance of the same fixture defect: it called the
+    chain once with no seeding and asserted a strike came out, but
+    `AttackChain` is PROBABILITY-GATED, so the outcome depends on whatever ran
+    before. Here the single draw produced `['HIT_WOODWORK']` and the assertion
+    failed — and it is instructive *why* it failed:
+
+      * `MatchEvent.is_shot` is a PROPERTY over a fixed event-type list
+        (`match_engine.py:616`) that contains SHOT_ON_TARGET, SHOT_OFF_TARGET,
+        SHOT_BLOCKED, GOAL, PENALTY_SCORED, PENALTY_MISSED — and NOT
+        HIT_WOODWORK. A ball on target that hits the frame is therefore not
+        `is_shot`.
+      * That is a *deliberate and internally consistent* modelling choice, not
+        an oversight: the exporter's "Total Shots" is
+        `shots_on_target + shots_off_target + shots_blocked` (exporter.py:1758,
+        3058, 4183) and it tracks woodwork as its own `hit_woodwork` column
+        (exporter.py:954). So the two agree, and real football — where a
+        woodwork strike IS a shot on target — is where the disagreement with
+        Opta lives. That is a CALIBRATION question, filed below, and it is not
+        silently changed here because it would move every shot number in the
+        project.
+
+    So the assertion is "a strike was RECORDED", which is what the test is
+    actually about, and it sweeps seeds because the outcome is a draw.
+    """
+    import random as _r
+    strikes = 0
+    for seed in range(40):
+        _r.seed(5200 + seed)
+        eng = _build_engine()
+        res = ChainDispatcher.attack(
+            30, "Home", "Away",
+            eng.active_players["Home"], eng.active_players["Away"],
+            eng.home_profile, eng.away_profile, eng.state,
+            SituationType.OPEN_PLAY,
+            position_engine=eng.position_engine,
+            context_x=92.0, context_y=30.0, attacks_right=True,
+            shooter_name="ST", assister_name="",
+        )
+        assert _first(res, "CHANCE_CREATED", "BIG_CHANCE_CREATED") is None, (
+            f"seed {seed}: an unassisted strike emitted a chance-creation "
+            f"event, which would contradict the ledger's None-for-a-dribble")
+        # and the strike itself must still be recorded
+        recorded = [e for e in res.events
+                    if e.is_shot or e.event_type == EventType.HIT_WOODWORK]
+        strikes += len(recorded)
+        for e in recorded:
+            assert e.player == "ST", (
+                f"seed {seed}: the named shooter must be the man who strikes "
+                f"it, got {e.player!r}")
+    assert strikes > 0, (
+        "40 seeds produced no strike at all, so this test proved nothing — the "
+        "assertions inside the loop were never reached")

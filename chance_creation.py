@@ -4,8 +4,8 @@ PLOFA 26/27 — CHANCE CREATION LEDGER  (Checkpoint 11)
 chance_creation.py
 
 Why this exists:
-    The engine used to emit CHANCE_CREATED / BIG_CHANCE_CREATED events by
-    RANDOMLY picking a "creator" from the attacking squad and fabricating a
+    The engine DID emit CHANCE_CREATED / BIG_CHANCE_CREATED events by
+    randomly picking a "creator" from the attacking squad and fabricating a
     position in the attacking third. Key passes and assists were therefore
     invented, not recorded from emergent event causality — the exact failure
     the analyst flagged ("chances are randomly generated in the attacking
@@ -15,6 +15,36 @@ Why this exists:
     REAL event timeline that derives the entire chance-creation pipeline from
     what actually happened — just as a datalogger watches the footage and
     tags the assist.
+
+STATUS, 2026-10-02 — THIS LEDGER IS NOT THE ONLY SOURCE, and the engine's own
+path is now causal too. Two things a future reader must not get wrong:
+
+  1. **The engine's `CHANCE_CREATED` events were a SUPPLEMENT, not a rival.**
+     `_count_explicit_chance_events` counts them ONLY for shots this ledger's
+     backward scan missed (`if shot_key in covered: continue`). So the two
+     describe the same shots without double-counting, and where they overlap
+     they must name the SAME player — `tests/test_chance_truth.py` asserts it.
+
+  2. **The engine's creator is no longer a draw.** It was `_pick_creator`, a
+     role- and distance-weighted random pick over the attacking squad, and
+     because the key pass's ORIGIN is the creator's tracked position it did not
+     merely mis-name the creator, it fabricated the key pass's geometry. It is
+     deleted. The creator is now the real passer, threaded in as
+     `assister_name` from `PossessionChain`.
+
+  **THERE IS NO FALLBACK, and that is load-bearing.** `ChanceCreationLedger`
+  awards a chance created only to a completed PASS that results in a shot, and
+  `_find_setup_pass` returns None for a dribble or a loose ball. So an
+  unassisted strike produces NO `CHANCE_CREATED` event at all — not one
+  credited to the shooter. Crediting the shooter would make the engine and this
+  ledger disagree about the SAME shot, which is precisely the relationship
+  `chances_created == shot_assists + goal_assists` rests on. Do not add a
+  fallback here or in `AttackChain`.
+
+  **THE LEDGER DOES NOT SUPPLY THE ASSIST COLUMN.** `exporter.py`'s Goals
+  sheet and `alltime_db` ASSISTS read the engine's `goal_assistant` / GOAL
+  event `secondary_player`. This module supplies xA and the chance-creation
+  aggregates. See the correction in `PLOFA_ARCHITECTURE_AUDIT.md` F.1.
 
     Taxonomy implemented (Opta / StatsBomb naming both noted):
         1. Goal Assist        — the final pass to the shooter WHO SCORES.

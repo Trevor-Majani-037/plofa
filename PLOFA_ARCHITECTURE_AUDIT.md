@@ -383,6 +383,28 @@ a pre-emptive `break`.
   (`build_up_attacks`, `direct_attacks`, `shot_ending_sequences`);
   `ChanceCreationLedger` (`chance_creation.py:164`) derives shot assists / goal assists /
   xA / big chances backward from the timeline.
+  > **Correction, 2026-10-02 — THE LEDGER IS NOT THE ASSIST SOURCE.** Read this
+  > before assuming the ledger governs assists. It does not:
+  > `exporter.py`'s Goals sheet and `alltime_db` ASSISTS read the **engine's own**
+  > `goal_assistant` / GOAL-event `secondary_player`, not `ChanceCreationLedger`.
+  > The ledger is used for xA / chance-creation aggregates. Historically both
+  > paths existed side by side and the ledger's own docstring claimed the engine
+  > "used to" fabricate chances — which is not evidence that it stopped, and was
+  > not true of the assist field at all.
+  >
+  > As of 2026-10-02 the engine path is causal and the two agree: the shooter is
+  > the man `PossessionChain` last had the ball, and the assist is the previous
+  > value of the carrier at the carrier change, with **no fallback**. A goal with
+  > nobody passing to the scorer is genuinely UNASSISTED and reads as `""`.
+  > Expect fewer assists than before; that is the honest answer, not a regression.
+  >
+  > This was the third instance in one session of the same trap — **a fixed field
+  > is not a fixed feature.** After changing a field, follow it to the consumer
+  > before claiming the feature works. The instances: the `CHANCE_CREATED` origin
+  > (fixed, then the invented `record_touch` that propagated it downstream was
+  > still shipping); `result.goal_assistant` (fixed, then the GOAL event's own
+  > `secondary_player` — the column the Goals sheet actually reads — was still
+  > `creator.name if creator else None`); and `world.ingest`'s `sub_controller`.
 
 ### F.2 What is discarded (the credit-assignment opportunity)
 

@@ -5273,6 +5273,22 @@ class MatchEngine:
                     )
                     if self._absorb_chain(sp_result, minute): break
                 else:
+                    # This funnel produced the BULK of the match's shots and it
+                    # used to pass no names at all, so AttackChain drew the
+                    # shooter by role weight and distance — a player who may
+                    # never have touched the ball, shooting from a position he
+                    # was not at. The possession episode that just ran knows
+                    # exactly who holds the ball and who gave it to him, so
+                    # pass both. This is the same causation the matrix hand-off
+                    # above established; leaving it off here was why the engine
+                    # could name a creator for 2 shots in a match while its own
+                    # ledger found a real setup pass for 30.
+                    #
+                    # `ball_carrier` is empty when the possession did not end
+                    # with the ball at a player's feet (a turnover, a throw-in, a
+                    # goal kick). `_named_shooter` resolves "" to None, so the
+                    # chain falls back exactly as it did before — we do not
+                    # invent a name to fill the slot.
                     att_result = ChainDispatcher.attack(
                         minute, attacking_team, defending_team,
                         att_players, def_players,
@@ -5281,6 +5297,10 @@ class MatchEngine:
                         context_x=self.state.last_ball_x,
                         context_y=self.state.last_ball_y,
                         attacks_right=attacks_right,
+                        shooter_name=poss_result.shoot_player
+                                     or poss_result.ball_carrier,
+                        assister_name=poss_result.shoot_assister
+                                      or poss_result.ball_carrier_passed_by,
                     )
                     self._maybe_var_overturn(att_result, poss_result, minute, attacking_team)
                     if self._absorb_chain(att_result, minute): break
