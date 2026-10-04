@@ -1524,6 +1524,136 @@ now captured and the filter is actually applied (hence the two columns above).
 The probe also writes `_diag_touch_sites.txt` itself, because piping its table
 through `Select-Object -Last N` truncated the **top** — the part worth reading.
 
+## THE ON-BALL SNAP — correction or fabrication? (2026-10-04, ANSWERED)
+
+The audit's highest-value open question, and it is now closed. The short
+answer: **the snap is overwhelmingly a CORRECTION.** The coordinate it writes
+is the ball's own tracked position, so it records a fact. One genuine
+fabrication class was found on the way and is fixed.
+
+**THE METHOD — no inference, two identity joins.** The earlier attempt failed
+because it inferred INTENT from context labels, which cannot separate a
+deliberate placement from a clamp. This one attributes every large snap to the
+line of code that produced its coordinate:
+
+1. Wrap `BaseChain.make_event`, record `id(event) -> "file:lineno"` of the
+   CALLING frame (`make_event` is a `@staticmethod`, so wrap it AS one or the
+   descriptor hands the wrapper `minute` as `self`).
+2. Wrap `PositionEngine.record_touch`; for a jump ≥12 m, read
+   `sys._getframe(1).f_locals["event"]` — `_absorb_chain` has the event object
+   as a frame local, so the join is by **object identity**, not by matching
+   coordinates. That distinction matters: a coordinate match would be ambiguous
+   when two events share a position.
+3. Look that event up in the `make_event` map. The answer is then read off the
+   source, not argued.
+
+**WHAT THE SNAP ACTUALLY WRITES** (`match_engine.py:5764` snaps the actor to
+`event.location_*`; `:5772` snaps `secondary_player` to `end_*`):
+
+| make_event site | event | snaps | metres | within 3 m of the ball |
+|---|---|---|---|---|
+| `event_chain.py:1556` | PRESS | 159 | 4,156 | **159/159** |
+| `event_chain.py:2705` | PASS (actor) | 64 | 1,219 | **64/64** |
+| `event_chain.py:2705` | PASS (`end_*`) | 59 | 1,332 | 18/59 |
+| `event_chain.py:7315` | AERIAL_DUEL | 29 | 1,122 | **29/29** |
+| `event_chain.py:1336` | PossessionChain own snap | 180 | 4,441 | n/a (see below) |
+
+So the dominant sites write **the ball**, which is tracked state, and the snap
+is a correction: the actor of an event happened where the ball was. The
+18/59 row is the RECEIVER, which is correctly not at the ball — it is at the
+pass's destination.
+
+**MY OWN ORACLE WAS WRONG ON THE `event_chain.py` ROWS, AND IT ALMOST BECAME A
+FINDING.** The `ATBALL` column reads `self.state.last_ball_x` from the caller's
+frame, but for `event_chain.py:*` sites `self` is a **chain class**, not the
+engine, so `last_ball_x` is `n/a` and the table printed a confident `0/180` for
+the single largest site. That number was a probe artefact, not a measurement —
+`event_chain.py:1336` is `record_touch(last_player.name, x, y, minute)`, the
+possession chain placing the carrier on its own tracked ball. **A column that
+reads cleanly is not a column that is right.**
+
+**THE FABRICATION: `MatchEvent.location_x` DEFAULTS TO (50.0, 34.0).**
+`match_engine.py:592` — `location_x: float = 50.0`, `location_y: float = 34.0`.
+The centre spot. So an event built without a location does not read as absent,
+it reads as a **measurement of the centre circle**, and `_absorb_chain:5764`'s
+`if event.location_x is not None` guard cannot see it — 50.0 is not None.
+
+This is the **third instance of the same trap** the project has already
+documented twice: `PositionEngine.get_position` answers `(50.0, 34.0)` for an
+untracked player, and `PlayerSpatialState.position` holds the position LABEL
+("ST") rather than a point. All three read as real coordinates and none is one.
+
+Measured, one match, by **kwarg presence** (exact — `make_event` takes them
+via `**kwargs`, so their absence is knowable at the call, before the default is
+ever applied):
+
+- **64–68 of ~2,900 events per match (2.1–2.2%)** sat on the centre-spot default.
+- **24 events/match produced ≥12 m snaps, 602–775 m banked** as distance nobody
+  covered, and **every one** traced to a single line.
+
+Sites fixed (8; `event_chain.py:8167`, `:9327`, `match_engine.py:3474`,
+`:4210`, `:4221`, `:5948`, `:6008`; `match_engine.py:6156` `_emit_event` is a
+`**kwargs` factory and is exempt):
+
+- **`event_chain.py:8167`** — `TransitionChain`'s "player played through" PASS
+  passed **no location at all**. The pressed man is on the ball, so it now takes
+  the press location. This was the whole of the 602 m.
+- **`event_chain.py:8107`** (found while reading 8167, not by the probe) — the
+  PRESS location was **`random.uniform(55, 85)`**. A press happened in a zone no
+  player or ball ever occupied, and the snap then teleported the presser there.
+  Now `position_engine.tracked_position(pressed.name)`, since the pressed man
+  holds the ball. The two press sites are why the table showed one at
+  159/159 and this one at 16/30.
+- **`match_engine.py:3474`** — `PENALTY_SCORED`/`PENALTY_MISSED` at the centre
+  circle. A penalty is taken **11 m from the goal line**. The engine models no
+  shootout goal (a real shootout has both teams at the SAME one), so the
+  home-attacking end is used and `location_source="shootout_spot_convention"`
+  is stamped. `PENALTY_SCORED` IS in `_ON_BALL_EVENTS`, so this one really did
+  snap the taker.
+- **`match_engine.py:4210` / `:4221`** — INJURY and SUBSTITUTION. Every change
+  in every match was exported as happening on the centre circle. Now the
+  outgoing player's tracked position (where he actually stood), computed
+  **before** the injury block because the INJURY event is deliberately emitted
+  first as the cause.
+- **`match_engine.py:5948` / `:6008`** — VAR_DISALLOWED_GOAL and GOAL_CELEBRATION,
+  both at the **goal mouth** via a new `MatchEngine._goal_mouth(team)`. A goal
+  ruled out for offside, recorded on the centre circle, is football nonsense
+  that exported as truth. The VAR event also now carries the offside
+  coordinates (`pending_offside_fk_x/y`) so the two facts travel together.
+- **`event_chain.py:9327`** — the `event_chain.py` substitution chain. **It has
+  ZERO call sites**: the live path builds the SUBSTITUTION event directly at
+  `match_engine.py:4221`, which is exactly why the same defect had to be fixed
+  twice. Recorded rather than deleted, and the docstring says so, because a
+  green guard on the dead path is not evidence the live one is covered.
+
+**THE GUARD, AND IT EARNED ITS KEEP IMMEDIATELY.**
+`test_every_event_builds_with_an_explicit_location` walks the AST over **both**
+files and covers **both** construction routes — `make_event(...)` and direct
+`MatchEvent(...)` — because `match_engine.py` builds four events directly and a
+guard watching only `event_chain.py` could not see a single one of them. That is
+the same one-file hole the `shooter_name` guard had, recurring; the lesson
+generalises: **a guard that protects one file cannot catch the class.** It
+flagged `match_engine.py:4210`/`:4221` on its first run, which the runtime
+probe had not reported at all (no substitution fired in that match).
+
+Re-measured after the fix: **0 events on the centre-spot default, 0 snaps.**
+
+**WHAT IS STILL AN ASSUMPTION, AND DELIBERATELY NOT FIXED.** The receiver snap
+(`match_engine.py:5772`) writes the pass's **aim** point. `end_x` is only ever
+overwritten for corners and free kicks (`event_chain.py` CORNER_TAKEN /
+FREEKICK_CROSS stamp `aerial.contact_point` or the aimed target afterwards); an
+ordinary PASS keeps the aimed `end_px` forever. So the snap asserts "the
+receiver arrived exactly where the pass was aimed". That is a **modelling
+choice**, not an invention — the aim is derived from a teammate's tracked
+position by `_find_target`, not drawn from `random` — and it is the same open
+`end_px`-vs-`end_x` question already on file under the PLOFA export frame note.
+Fixing it needs a recorded arrival, which is a real-physics change.
+
+**`record_touch` DOES BANK THE JUMP** (`position_engine.py:907-910` → `state.
+minute_touch_distance`), which is what makes the centre-spot default
+consequential rather than cosmetic: a man recorded on the centre circle has the
+gap from his real position credited as distance he covered.
+
 ### MEASURED, `_diag_creator_truth.py`, 3 real matches per arm — shooter honesty
 
 Shooter = the man who actually had the ball (section E walks back to the last
@@ -1586,7 +1716,8 @@ code, whose draw always returned somebody.
   (`_diag_creator_truth.py`, `_diag_carrier.py`, `_diag_pass_direction.py`,
   `_diag_cross_clamp.py`, `_diag_touch_sites.py`, `_diag_cross_guard.py`,
   `_diag_counter_guard.py`, `_diag_delete_pass_event.py`,
-  `_diag_bound_delete.py`, `_diag_ast_structure.py`) that AGENTS.md cites as
+  `_diag_bound_delete.py`, `_diag_ast_structure.py`, `_diag_snap_origin.py`,
+  `_diag_default_loc.py`) that AGENTS.md cites as
   evidence. `git add -u` stages **tracked files only**, so it would have
   committed the code changes and **silently dropped every test that justifies
   them** — the worst possible outcome, and invisible because the commit
@@ -1680,22 +1811,23 @@ the order I would take them:
    `simulate()` calls in one process are not comparable and
    `validate_neural_xl`-style gates are only meaningful across processes.
    Until it is fixed, `_STREAM_PARITY_DRAW` must stay.
-6. **NEW, AND BIGGER THAN ANYTHING FIXED IN THIS PASS: is the on-ball snap a
-   correction or a fabrication?** 91% of the ≥12 m position writes (25,280 of
-   28,972 m per 2 matches) are the three "snap the player to the coordinate of
-   the event he just performed" lines, the largest being
-   `match_engine.py:5764`/`:5772` in `_absorb_chain`. When that snap moves a
-   man 29 m in one tick there are two readings and the current probe cannot
-   separate them: the chain's coordinate is right and the position engine was
-   stale (the snap is a CORRECTION), or the chain's coordinate is invented and
-   91% of all position writes are fabrications. Both produce an identical
-   jump. **Do not guess — this is the highest-value open measurement in the
-   audit.** It needs an independent measure of where the player was *before*
-   the chain ran: the 10 Hz integrator's own trace at that instant, or a chain
-   handed the engine's coordinate instead of generating its own. Note the
-   reason this matters more than its size: `_absorb_chain:5772` promotes any
-   event coordinate to a tracked position, so a single invented coordinate
-   becomes indistinguishable from a measured one everywhere downstream.
+6. ~~**is the on-ball snap a correction or a fabrication?**~~ — **ANSWERED
+   2026-10-04. It is overwhelmingly a CORRECTION, plus one confirmed
+   fabrication class that is now closed.** See *THE ON-BALL SNAP* below for the
+   method, the numbers and the fix. Short version: the coordinate the snap
+   writes is the ball's own tracked position (PRESS 159/159 exactly at the
+   ball; PASS passer 64/64), so the snap records a fact rather than inventing
+   one; the receiver snap writes the pass's AIM point, which is a modelling
+   assumption ("passes are executed as aimed") and not an invention; and the
+   genuinely fabricated coordinate was `MatchEvent.location_x/y` DEFAULTING to
+   (50.0, 34.0), the centre spot, at eight construction sites — now fixed and
+   guarded by AST. **Remaining from the question:** whether the *receiver* snap
+   should write the aim or a recorded arrival. `end_x` is only ever overwritten
+   for corners and free kicks (`event_chain.py` CORNER_TAKEN / FREEKICK_CROSS),
+   so an ordinary PASS keeps the aimed `end_px` forever. That is the one
+   modelling assumption here, it is documented rather than fixed, and it is the
+   same open `end_px`-vs-`end_x` question already on file under the PLOFA
+   export frame note.
 7. **`HIT_WOODWORK` IS NOT A SHOT, AND THAT IS A CALIBRATION QUESTION, NOT A
    BUG.** Found by the full regression: the only failure was a fixture that
    asserted `any(e.is_shot)` and drew `['HIT_WOODWORK']`. `MatchEvent.is_shot`

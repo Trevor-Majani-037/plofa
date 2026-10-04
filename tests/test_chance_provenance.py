@@ -257,7 +257,128 @@ def test_every_set_piece_call_site_in_match_engine_passes_attacks_right():
     )
 
 
-# ── 5. CHANCE_CREATED provenance ─────────────────────────────────
+# ── 5. every make_event call site passes a location ───────────────
+
+def test_every_event_builds_with_an_explicit_location():
+    """`MatchEvent.location_x`/`location_y` DEFAULT to (50.0, 34.0)
+    (`match_engine.py:592`) — the centre spot. So an event built without a
+    location does not read as absent, it reads as a measurement of the centre
+    circle, and `_absorb_chain:5764`'s `if event.location_x is not None` guard
+    cannot detect it. `TransitionChain`'s "player played through" PASS did
+    exactly this: 24 events per match, 22 of which snapped a player >=12 m
+    (602 m banked as distance nobody covered).
+
+    The fix at the call site is necessary but not sufficient — a defaulted
+    argument is a silent permission, which is the same reasoning as the
+    `set_piece(attacks_right)` guard above. So walk the AST over BOTH files
+    that build events, and cover BOTH routes:
+
+      * `make_event(...)` — must name `location_x` and `location_y` as
+        keywords; the signature takes them via `**kwargs`, so keywords are the
+        only way.
+      * `MatchEvent(...)` constructed directly — `match_engine.py` does this
+        for SUBSTITUTION and INJURY, and a guard that only watched
+        `event_chain.py` could not see them at all. Same lesson as the
+        `shooter_name` guard, which had the same hole for one file.
+
+    `make_event`'s own `return MatchEvent(...)` is exempt, and so is
+    `MatchEngine._emit_event`, because both are factories that forward
+    `**kwargs` and cannot name a location themselves. Anything they omit, their
+    caller must supply — which is why the call sites of THOSE are the ones that
+    matter, not the factories."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def fn_ranges(tree):
+        return [(n.name, n.lineno, n.end_lineno) for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+    sites = []
+    for fname in ("event_chain.py", "match_engine.py"):
+        src = open(os.path.join(here, fname), encoding="utf-8").read()
+        tree = ast.parse(src)
+        ranges = fn_ranges(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+            if name not in ("make_event", "MatchEvent"):
+                continue
+            if name == "MatchEvent" and any(
+                    n in ("make_event", "_emit_event")
+                    and lo <= node.lineno <= hi
+                    for n, lo, hi in ranges):
+                continue  # a **kwargs-forwarding factory, not a real site
+            kwargs = {kw.arg for kw in node.keywords if kw.arg}
+            sites.append((fname, node.lineno,
+                          "location_x" in kwargs and "location_y" in kwargs))
+    assert sites, "no event construction sites found — did these move?"
+    missing = [(f, ln) for f, ln, ok in sites if not ok]
+    assert not missing, (
+        f"events built with no explicit location at "
+        f"{[f'{f}:{ln}' for f, ln in missing]}; they default to the centre "
+        f"spot (50.0, 34.0) and are recorded — and, for on-ball types, "
+        f"snapped to — as though the action happened there"
+    )
+
+
+def test_a_press_is_recorded_where_the_ball_actually_was():
+    """The behavioural half of the guard above, on the site it was found.
+
+    `TransitionChain` drew its press location from `random.uniform(55, 85)`,
+    i.e. a press was recorded in a zone no player or ball ever occupied, and
+    `_absorb_chain` then snapped the presser there. The pressed man holds the
+    ball, so his tracked position is the press location."""
+    from event_chain import TransitionChain
+    from match_engine import MatchState
+    import random as _r
+    eng = _build_engine()
+
+    # `TransitionChain.generate` PICKS its own presser and pressed man out of
+    # the pools it is handed — an earlier version of this test anchored one
+    # named player and asserted the press landed on him, which fails for a
+    # reason that has nothing to do with the location draw. So track every
+    # player at a distinct, known point and assert against whoever the event
+    # itself names as pressed.
+    for i, p in enumerate(eng.active_players["Away"]):
+        eng.position_engine.record_touch(p.name, 40.0 + i, 20.0 + i * 3, 5)
+    for i, p in enumerate(eng.active_players["Home"]):
+        eng.position_engine.record_touch(p.name, 60.0 + i, 30.0 + i * 3, 5)
+
+    seen = 0
+    for seed in range(40):
+        _r.seed(6100 + seed)
+        res = TransitionChain.generate(
+            5, "Home", "Away",
+            eng.active_players["Home"], eng.active_players["Away"],
+            eng.home_profile, MatchState(minute=5),
+            position_engine=eng.position_engine,
+            attacks_right=True,
+        )
+        for ev in res.events:
+            if ev.event_type is not EventType.PRESS:
+                continue
+            seen += 1
+            src = ev.metadata.get("location_source")
+            if src == "tracked":
+                want = eng.position_engine.tracked_position(ev.secondary_player)
+                assert want is not None, (
+                    f"labelled 'tracked' but {ev.secondary_player} has no "
+                    f"tracked position")
+                assert (ev.location_x, ev.location_y) == want, (
+                    f"seed {seed}: press recorded at "
+                    f"({ev.location_x}, {ev.location_y}), the pressed man's "
+                    f"tracked position is {want}")
+            else:
+                # no tracked state -> a coordinate we had to invent, and it must
+                # SAY SO. This is the same rule as CHANCE_CREATED's
+                # `origin_known` / `origin_source`.
+                assert src in ("counterpress_zone", "untracked_draw"), ev.metadata
+    assert seen > 0, "no PRESS event in 40 draws — the sweep proved nothing"
+    assert seen >= 40, f"only {seen} PRESS events across 40 draws"
+
+
+# ── 6. CHANCE_CREATED provenance ─────────────────────────────────
 
 def test_chance_created_origin_is_tracked_not_drawn():
     """`origin_known` / `origin_source` must exist, and a live chain must

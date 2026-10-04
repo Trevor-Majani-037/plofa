@@ -3471,14 +3471,24 @@ class MatchEngine:
                 scored[team] += 1
             self.state.match_clock_s += 25  # ~25s per penalty, incl. the run-up
             minute, second = divmod(int(self.state.match_clock_s), 60)
+            # A penalty is taken from the SPOT, 11 m from the goal line — not
+            # from the centre circle this event used to inherit by default
+            # (`MatchEvent.location_x` defaults to 50.0). Which end is a
+            # convention here: the engine models no shootout goal, because a
+            # real shootout has both teams kicking at the SAME one. So the
+            # home-attacking end is used and the value is LABELLED, rather than
+            # being indistinguishable from an observed coordinate.
+            spot_x = 105.0 - 11.0
             self.timeline.append(MatchEvent(
                 minute=minute, second=second,
                 event_type=(EventType.PENALTY_SCORED if converted
                             else EventType.PENALTY_MISSED),
                 team=team, player=name,
                 phase=self.state.phase, game_state=self.state.game_state,
+                location_x=spot_x, location_y=34.0,
                 metadata={"round": round_no, "sudden_death": sudden,
-                          "taker_index": idx},
+                          "taker_index": idx,
+                          "location_source": "shootout_spot_convention"},
             ))
             if not self.quiet:
                 mark = "✔" if converted else "✘"
@@ -4137,6 +4147,24 @@ class MatchEngine:
             n_unmarked_events=unmarked,
         )
 
+    # ── goal-mouth coordinate ───────────────────────────────────────
+    def _goal_mouth(self, team: str) -> Tuple[float, float]:
+        """The centre of the goal `team` attacks, in the home-attacks-right frame.
+
+        Needed because `MatchEvent.location_x`/`location_y` DEFAULT to
+        (50.0, 34.0) (`MatchEvent`, below) — the CENTRE SPOT. So an event built
+        with no location does not read as absent, it reads as a measurement of
+        the centre circle. A goal celebration or a goal ruled out for offside,
+        recorded at the centre spot, is football nonsense that exports as
+        truth. `team_attacks_right` is set once per team at `initialize_team`
+        and never flipped at half-time (home is always True, away always
+        False), which is the frame this whole file already uses.
+        """
+        right = True
+        if self.position_engine is not None:
+            right = self.position_engine.team_attacks_right.get(team, True)
+        return (105.0, 34.0) if right else (0.0, 34.0)
+
     def _execute_substitution(self, sub: dict, minute: int):
         """
         Apply a substitution decided by SubstitutionController.
@@ -4191,6 +4219,23 @@ class MatchEngine:
         else:
             self.state.away_subs_made += 1
 
+        # ── WHERE the outgoing player was standing ──────────────────
+        # Both the INJURY and the SUBSTITUTION event used to be built with no
+        # location at all. That is NOT the same as "no location": `MatchEvent`
+        # defaults `location_x`/`location_y` to (50.0, 34.0) — the CENTRE SPOT —
+        # and nothing downstream can tell a default from a measurement. So
+        # every substitution in a match was exported as having happened on the
+        # centre circle. `tracked_position` rather than `get_position`, because
+        # the latter answers (50.0, 34.0) for an untracked player — the same
+        # value, for the same reason, one layer down.
+        #
+        # Computed BEFORE the injury block: the INJURY event is emitted first
+        # on purpose (it is the cause), so it reads these two variables too.
+        off_loc = (self.position_engine.tracked_position(name_off)
+                   if self.position_engine is not None else None)
+        off_x, off_y = off_loc if off_loc is not None else (50.0, 34.0)
+        loc_source = "tracked" if off_loc is not None else "untracked_default"
+
         # Injury milestone: when the sub was forced by an in-match injury,
         # surface an INJURY event BEFORE the substitution so the timeline
         # (and exports) show the causality: the injury, then the change.
@@ -4214,7 +4259,9 @@ class MatchEngine:
                 player=name_off,
                 phase=self.state.phase,
                 game_state=self.state.game_state,
-                metadata=inj_meta,
+                location_x=off_x,
+                location_y=off_y,
+                metadata={**inj_meta, "location_source": loc_source},
             )
 
         # Emit substitution event
@@ -4227,10 +4274,13 @@ class MatchEngine:
             secondary_player=name_on,
             phase=self.state.phase,
             game_state=self.state.game_state,
+            location_x=off_x,
+            location_y=off_y,
             metadata={
                 "reason":    sub.get("reason", "tactical"),
                 "freshness": sub.get("freshness", 1.0),
                 "stamina_at_exit": sub.get("stamina_at_exit", 0),
+                "location_source": loc_source,
             }
         )
         if inj_event is not None:
@@ -5943,6 +5993,7 @@ class MatchEngine:
         if chain_result.goal_scored:
             if getattr(chain_result, 'delayed_offside', False):
                 # VAR DISALLOWED GOAL
+                var_x, var_y = self._goal_mouth(chain_result.goal_team)
                 if not self.quiet:
                     print(f"  ❌ GOAL RULED OUT (VAR/Offside)! {minute}' — {chain_result.goal_scorer}")
                 self.timeline.append(MatchEvent(
@@ -5950,7 +6001,16 @@ class MatchEngine:
                     event_type=EventType.VAR_DISALLOWED_GOAL,
                     team=chain_result.goal_team,
                     player=chain_result.goal_scorer,
-                    phase=self.state.phase, game_state=self.state.game_state
+                    phase=self.state.phase, game_state=self.state.game_state,
+                    # A goal ruled out for offside happened AT THE GOAL, not on
+                    # the centre circle this used to default to. The offside
+                    # itself was at `pending_offside_fk_x/y`, queued just above;
+                    # the goal attempt is what this event records, so the goal
+                    # mouth is the honest place.
+                    location_x=var_x, location_y=var_y,
+                    metadata={"location_source": "goal_mouth",
+                              "offside_x": getattr(chain_result, 'offside_x', None),
+                              "offside_y": getattr(chain_result, 'offside_y', None)},
                 ))
                 # The restart is the offside free kick queued by the
                 # offside_detected block above — clear any kickoff so that
@@ -6005,13 +6065,22 @@ class MatchEngine:
                 celebration_s = _COSMETIC_RNG.randint(10, 30)
                 self.state.match_clock_s += celebration_s
                 ce_min, ce_sec = divmod(int(self.state.match_clock_s), 60)
+                # The scorer celebrates where he scored. This event used to
+                # inherit the (50.0, 34.0) centre-spot default, so every
+                # celebration in every match was exported on the centre circle.
+                # Note this fires AFTER `_reset_positions_to_halves()`, so the
+                # tracked positions are already the kickoff shape — the goal
+                # mouth, not the engine's current state, is the truthful answer.
+                cel_x, cel_y = self._goal_mouth(chain_result.goal_team)
                 self.timeline.append(MatchEvent(
                     minute=ce_min, second=ce_sec,
                     event_type=EventType.GOAL_CELEBRATION,
                     team=chain_result.goal_team,
                     player=chain_result.goal_scorer,
                     phase=self.state.phase, game_state=self.state.game_state,
-                    metadata={"duration": celebration_s},
+                    location_x=cel_x, location_y=cel_y,
+                    metadata={"duration": celebration_s,
+                              "location_source": "goal_mouth"},
                 ))
                 if not self.quiet:
                     print(f"  🎉 CELEBRATION ({celebration_s}s)"

@@ -8088,10 +8088,32 @@ class TransitionChain(BaseChain):
         if not presser or not pressed:
             return result
 
-        # StatsBomb standard: single PRESSURE event only.
-        # Success is inferred from what happens next (interception/tackle/turnover).
-        press_x = random.uniform(55, 85)
-        press_y = random.uniform(10, 58)
+        # ── WHERE THE PRESS HAPPENS ─────────────────────────────────
+        # This used to be `random.uniform(55, 85)` / `random.uniform(10, 58)`.
+        # A press happens where the ball is, so drawing a zone produced an
+        # event at a place no player and no ball ever was — and because
+        # `_absorb_chain` snaps the presser to `location_*`, the draw also
+        # teleported the presser and banked the gap as distance he covered
+        # (measured: 30 snaps / 843 m per match at `match_engine.py:5764`
+        # alone, versus 159/159 already at the ball for the OTHER press site).
+        #
+        # The pressed man holds the ball, so his tracked position IS the press
+        # location. `tracked_position` rather than `get_position`, because the
+        # latter answers (50.0, 34.0) for an untracked player — the centre
+        # spot, which reads as a measurement. When there is genuinely no
+        # tracked state (no position engine attached), the draw is kept but
+        # LABELLED, so a fabricated coordinate is never indistinguishable from
+        # a measured one downstream. Same pattern as CHANCE_CREATED's
+        # `origin_known` / `origin_source`.
+        loc = (position_engine.tracked_position(pressed.name)
+               if position_engine is not None else None)
+        if loc is not None:
+            press_x, press_y = loc
+            loc_source = "tracked"
+        else:
+            press_x = random.uniform(55, 85)
+            press_y = random.uniform(10, 58)
+            loc_source = "untracked_draw"
 
         # ── COUNTERPRESS BURST (P2) ────────────────────────────────
         # When the pressing team has just lost possession, its first
@@ -8102,6 +8124,7 @@ class TransitionChain(BaseChain):
         if counterpress and counterpress.get("active"):
             press_x = counterpress.get("x", press_x)
             press_y = counterpress.get("y", press_y)
+            loc_source = "counterpress_zone"
             cp_boost = state.COUNTERPRESS_INTENSITY_MULT
 
         result.add(cls.make_event(
@@ -8110,7 +8133,8 @@ class TransitionChain(BaseChain):
             secondary_player=pressed.name,
             location_x=press_x,
             location_y=press_y,
-            metadata={"counterpress": bool(cp_boost > 1.0)},
+            metadata={"counterpress": bool(cp_boost > 1.0),
+                      "location_source": loc_source},
         ))
 
         # Press success?
@@ -8163,11 +8187,24 @@ class TransitionChain(BaseChain):
             result.xa_generated   = counter_result.xa_generated
             result.shot_on_target = counter_result.shot_on_target
         else:
-            # Press failed — player played through
+            # Press failed — player played through.
+            # This event used to pass NO location at all, which is not the
+            # same as passing none: `MatchEvent.location_x`/`location_y`
+            # DEFAULT to (50.0, 34.0) — the centre spot
+            # (`match_engine.py:592`) — and `_absorb_chain:5764`'s
+            # `if event.location_x is not None` guard cannot see a default.
+            # So the man who played through the press was recorded as having
+            # materialised at the centre circle, and the gap banked as distance
+            # he covered. Measured 24 such events per match, 22 of them
+            # snapping >=12 m (602 m). `pressed` is the man ON THE BALL, so
+            # the press location above is his actual position.
             result.add(cls.make_event(
                 minute, EventType.PASS, retreating_team, pressed.name,
                 phase, gs, outcome=True,
+                location_x=press_x,
+                location_y=press_y,
                 metadata={"press_resistance": True,
+                          "location_source": loc_source,
                           "body_part": "right_foot" if pressed.dna.preferred_foot == "right" else "left_foot"}
             ))
 
@@ -9283,21 +9320,41 @@ class SubstitutionChain(BaseChain):
         player_on: PlayerProfile,
         state: MatchState,
         reason: str = "tactical",  # "tactical" | "injury" | "chasing_game" | "protecting_lead"
+        position_engine: Optional[PositionEngine] = None,
     ) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
+
+        # A substitution happens WHERE THE OUTGOING PLAYER IS. This event used
+        # to pass no location at all, which is not the same as passing none:
+        # `MatchEvent.location_x`/`location_y` DEFAULT to (50.0, 34.0) — the
+        # centre spot (`match_engine.py:592`) — so it was exported as though
+        # every change happened on the centre circle.
+        #
+        # NOTE this chain has ZERO call sites: the live path builds the
+        # SUBSTITUTION event directly in `MatchEngine._execute_substitution`,
+        # which is why the same defect had to be fixed there too. Recording
+        # that rather than deleting it — but do not read a green guard here as
+        # evidence the live substitution path is covered. It is not.
+        loc = (position_engine.tracked_position(player_off.name)
+               if position_engine is not None else None)
+        loc_x, loc_y = loc if loc is not None else (50.0, 34.0)
 
         result.add(cls.make_event(
             minute, EventType.SUBSTITUTION, team,
             player_off.name,
             phase, gs,
             secondary_player=player_on.name,
+            location_x=loc_x,
+            location_y=loc_y,
             metadata={
                 "player_off": player_off.name,
                 "player_on": player_on.name,
                 "reason": reason,
                 "position_off": player_off.position,
                 "position_on":  player_on.position,
+                "location_source": "tracked" if loc is not None
+                                   else "untracked_default",
             }
         ))
 
@@ -9478,10 +9535,12 @@ class ChainDispatcher:
 
     @staticmethod
     def substitution(
-        minute, team, player_off, player_on, state, reason="tactical"
+        minute, team, player_off, player_on, state, reason="tactical",
+        position_engine=None,
     ) -> ChainResult:
         return SubstitutionChain.generate(
-            minute, team, player_off, player_on, state, reason
+            minute, team, player_off, player_on, state, reason,
+            position_engine=position_engine,
         )
 
 if __name__ == "__main__":
