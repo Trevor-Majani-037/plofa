@@ -141,6 +141,39 @@ STRETCH_SPINE_PEAK_HI: float = 44.0
 STRETCH_DRIFF_BOOST: float = 0.5    # flank-anchor pull in drift_minute
 STRETCH_TOUCH_BOOST: float = 0.30   # flank-hold pull in record_touch
 STRETCH_TARGET_BOOST: float = 0.30  # off-ball target steer (match_engine)
+#
+# 2026-10-05 -- RAISED TO 0.55 AND 0.75 AS AN EXPERIMENT, THEN REVERTED.
+#
+# Measurement (`_diag_wide_target.py`, seed 777, ~140k in-possession samples
+# per setting, same live loop):
+#
+#   boost   in-possession actual distance to the touchline (m)
+#    0.30                        15.4
+#    0.55                        14.6
+#    0.75                        12.1   <- inside the real 3-12 m band
+#
+# So the knob works and the diagnosis under it is sound. It was reverted
+# anyway, because it does not do the thing it was raised to do:
+#
+#   1. IT DOES NOT FIX THE COLLAPSE. Team width p05 stayed at 4.2-6.6 m and
+#      p10 at 16-18 m across all three settings. The user reported a shape
+#      that "sometimes collapses into a narrow block", and the collapse is
+#      unchanged -- it is a tail event, and a rule that raises the AVERAGE
+#      cannot touch a tail.
+#   2. IT DOES NOT REACH 45-55 m. Median side-to-side separation moved 36.2
+#      -> 38.9 m, nowhere near the band.
+#   3. IT COSTS REAL FOOTBALL. CK35 is applied AFTER the live run targets
+#      (match_engine.py:2835-2843 then :2859), so a higher weight directly
+#      undoes the winger's "cut inside" / box-entry run -- measured firing on
+#      18% of samples at 24 m off the line. That run layer was wired
+#      deliberately (2026-09-29) and is the thing that makes wingers look
+#      like wingers.
+#
+# Trading a deliberate cut for 3 m of average width, while leaving both
+# reported symptoms untouched, is a bad trade. The lever is right; the
+# magnitude is not the problem. Record kept so the next attempt starts from
+# 140k samples of evidence instead of a guess.
+
 # Selection floor lift on top of WIDE_OUTLET_DIRECTION_FLOOR at full spine.
 STRETCH_FLOOR_LIFT: float = 0.12
 # Hard lateral clamp for wide roles under the rule — inside the pitch,
@@ -925,6 +958,17 @@ class PositionEngine:
     # jostling period. The window is opened by the set-piece chain and consumed
     # by the integrator itself (`tick_setpiece`), so no caller has to remember
     # to close it and an exception mid-chain cannot leave it stuck on.
+    # How far off his assigned mark a player actually ends up after a
+    # run into a crowded box. Real arrivals miss the chalk by a metre or
+    # two because the man is jostling, being held and still adjusting.
+    # Zero was measurably wrong: a player parked exactly on his slot is
+    # standing on the ball's destination, so `resolve_aerial_delivery`
+    # scores him at ~0 arrival and no marker can beat him. Corner aerial
+    # duels resolved 8/8 and 15/15 to the attack before this.
+    SET_PIECE_ARRIVAL_ERROR_M = 1.8
+    # Ceiling for the same reason: `SET_PIECE_ARRIVED_M` is 3.0, and a
+    # player who overshoots by more than that is NOT in the box.
+    SET_PIECE_ARRIVAL_ERROR_MAX_M = 2.4
     SET_PIECE_ACTIVE: bool = True
 
     def advance_to_slots(self, targets: Dict[str, Tuple[float, float]],
@@ -945,6 +989,9 @@ class PositionEngine:
         import math as _m
 
         exclude = exclude or set()
+        # While still running, settle onto the mark at this tolerance; the
+        # arrival residual below decides where he finishes.
+        SETTLE_GAP_M = 0.4
         budget = max(0.0, float(seconds))
         step_dt = 0.1
         steps = max(1, int(round(budget / step_dt)))
@@ -968,7 +1015,13 @@ class PositionEngine:
             for _ in range(steps):
                 dx, dy = gx - cx, gy - cy
                 dist = _m.hypot(dx, dy)
-                if dist <= 0.4:
+                # Stop short of the mark by a realistic residual rather than
+                # driving to the coordinate exactly. See the class docstring:
+                # parking a man exactly on the ball's destination makes every
+                # corner aerial unwinnable for the defence, and the error is a
+                # property of the man's arrival, not of his team.
+                _ex = _m.hypot(cx - gx, cy - gy)
+                if _ex <= SETTLE_GAP_M:
                     break
                 # ease in over the first 40% of a second and out inside 2 m
                 v = top
@@ -982,6 +1035,17 @@ class PositionEngine:
                 travelled += adv
                 if v >= 5.5:
                     sprint_s += step_dt
+            # The residual: where he actually finished relative to the mark.
+            # One draw per player, so a full box does not draw 13 numbers and
+            # silently shift the whole match's random stream twice.
+            _gx_off = random.gauss(0.0, self.SET_PIECE_ARRIVAL_ERROR_M / 1.8)
+            _gy_off = random.gauss(0.0, self.SET_PIECE_ARRIVAL_ERROR_M / 1.8)
+            _off = _m.hypot(_gx_off, _gy_off)
+            if _off > self.SET_PIECE_ARRIVAL_ERROR_MAX_M:
+                _sc = self.SET_PIECE_ARRIVAL_ERROR_MAX_M / _off
+                _gx_off *= _sc
+                _gy_off *= _sc
+            cx, cy = gx + _gx_off, gy + _gy_off
             st.current_x, st.current_y = cx, cy
             if travelled <= 0.0:
                 continue

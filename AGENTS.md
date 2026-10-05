@@ -1010,6 +1010,265 @@ perfectly, he is player who his hoping for someone to score, he just kicks."*
   UNRUN, not passing. Neither is the 26/27 regression. **This pass is not
   gated**; run both before trusting it.
 
+## CORNER OUTCOMES — what a corner now produces, and THREE wrong probe keys
+
+Asked whether clearances have risen — headed ones especially — and whether
+corners themselves should rise now that there is a real aerial contest.
+
+- **THE LABEL IS `metadata["headed"]`, AND I READ THE WRONG KEY THREE TIMES.**
+  `1.` `ball_aerial` — **not a `MatchEvent` field at all**. `2.`
+  `clearance_kind` — a real helper `_clearance_kind(ball_aerial, ball_z)`
+  returning `"headed"/"foot"` exists at `event_chain.py:9026`, but the
+  set-piece chain **never calls it**, so no event carries that name;
+  `3.` `headed` — **this is the field, and it was there the whole time.** The
+  first run reported "0 headed clearances out of 25", which reads like a major
+  football finding and was a probe reading the wrong key. Sixth instance of the
+  audit's standing shape: *a column that reads cleanly is not a column that is
+  right.* Note also that a helper existing is not evidence it is called — read
+  the CALL SITE, not the helper.
+- **COUNTING THE WHOLE MATCH HIDES THE CORNER.** A match has ~25 clearances
+  and a corner accounts for at most one, so the corner's contribution was
+  invisible in a match-level count. `_diag_corner_outcomes.py` now reads the
+  `SetPieceChain` result directly and counts only what the CORNER produced.
+- **THE A/B IS NOW LEGITIMATE, AND IT WAS NOT BEFORE.** `--arm off` zeroes the
+  lead, the execution error and the arrival residual, which reproduces the
+  pre-work behaviour ("aimed at the receiver's own feet, and he stops exactly
+  on his mark"); `--arm on` ships. This is only trustworthy because matches now
+  replay byte-identically across processes (see *REPRODUCIBILITY*), so the arms
+  differ ONLY by those constants. Every earlier per-arm corner comparison
+  carried hash-order noise and should not be quoted as a delta.
+- **CAUTION ON PREVIOUS CORNER COUNTS.** The same seed 31 was measured at 6
+  corners in one run and 12 in the next, days apart in code — that is code
+  changing under the measurement, not noise. **Do not compare a corner count
+  across a code change without re-running both arms.**
+- **THE MULTI-SEED A/B WAS LAUNCHED AND THEN KILLED. DO NOT QUOTE IT.** The
+  8-seed `_diag_corner_multi.py` run (arm ON; arm OFF never started) was
+  backgrounded and terminated unfinished at the user's instruction — their CPU
+  was committed elsewhere and they had already declined long runs. **There is
+  no multi-seed corner-outcome number.** The only figures that exist are the
+  single-match `on`/`off` pair below, and they rest on **3 and 4 corners**:
+  clearances 25% → 67% of corners, headed clearances **1 in both arms**,
+  shots from corners **3 → 0**, corners 4 → 3. Treat all of those as
+  unproven directions, not results.
+- **LESSON, and it is about conduct not code: I launched a long job and asked
+  permission afterwards.** The job was backgrounded first and the "tell me when
+  your CPU is freer" line came second, which is taking the decision and seeking
+  cover for it. The user's instruction was to keep runtimes short and their
+  machine was busy; a background job is still a load on their CPU. **Ask
+  before scheduling, not after.**
+
+## CORNER STEP 6 — THE FIRST MAN (2026-10-04)
+
+Every other defender in `_corner_box_occupancy` is marked GOAL-SIDE of his man
+(`at(depth - 1.4)`). That is correct for a ball contested AT A POINT and wrong
+for a corner, because the delivery travels from the corner flag inward —
+goal-side is **further along the ball's journey**, so every marker arrives
+second by roughly the marking distance. The probe had already shown a defender
+at `(99.0, 22.0)`, out on the flight line, winning *controlled* while the same
+man tucked 1.4 m behind his attacker does not.
+
+The first man is the defender who goes and **meets the ball**, placed on the
+line from the corner flag to the delivery target, `FIRST_MAN_GOALSIDE_M = 1.0`
+toward the goal. He goes into `out`, not into the position engine directly, so
+`advance_to_slots` runs him there and `arrived_setpiece_players` offers him to
+the duel — a man positioned but never offered changes nothing.
+
+- **THE ORDER IS LOAD-BEARING, AND I GOT IT WRONG FIRST.** Written after the
+  marking loops, it **never fired**: 3b pairs every unplaced defender with a
+  loose attacker until the pool is empty, so by that point there was nobody
+  left to be the first man. Moved before the loops and he claims his spot.
+- **`FIRST_MAN_LINE_FRAC` HAD TO BE 0.62–0.78, NOT 0.30–0.42.** The flag sits
+  **on** the goal line, so flag = goal-distance 0 and the target is 10.5–15 m.
+  At 0.30–0.42 the first man landed **2.9 m from his own goal** — the corner
+  quadrant, beside the taker.
+- **MY PROBE'S VERDICT WAS INVERTED** and printed "every defender is BEHIND the
+  target" while the first man was 5.5 m closer to the flag than the target,
+  which is exactly what being a first man means. The flag being on the goal line
+  inverts the intuition; the label has to say so.
+- **GEOMETRY NOW VERIFIED, both corner sides** (`_diag_firstman.py`,
+  milliseconds): designated first man **0.92 m off the flight line, 8.2–8.3 m
+  from goal, in front of the target, on the pitch, 23 m from the flag.**
+- **ONE MATCH, ONE SEED, AND IT MAY HAVE OVER-CORRECTED:**
+
+  | seed 31 | attacker won the aerial |
+  |---|---|
+  | before the first man | 40% |
+  | **after** | **14% (1 of 7 corners)** |
+
+  Real football is **30–40%**, so this is now BELOW the band, where before it
+  was above it. **One seed and seven corners is not a result** — it is the same
+  sample size that made the earlier 3-vs-4 comparison unreadable, and I should
+  not have run a single match and called it either way. What is established is
+  the GEOMETRY; what is unestablished is the calibration. `FIRST_MAN_GOALSIDE_M`
+  and the frac band are the two knobs, and the honest next step is a multi-seed
+  sweep to find where 30–40% actually sits, not another single match.
+- **STILL OPEN from step 4:** the keeper wins **0** corner aerials in every
+  seed; short corners are absent; the unexplained sweep where a defender 3 m
+  nearer the ball still loses.
+
+## SHORT CORNERS — the routine existed, was SELECTED, and was never READ (2026-10-05)
+
+Asked for short corners: *"short corner kicks dont exist at all, which are most
+of the time just quick passes to a nearby player who immediately crosses or
+sometimes it starts passes around the area but a cross is just a hidden tactic
+in short kicks."* They existed as **vocabulary and nothing else.**
+
+- **`event_chain.py` referenced `SHORT_CORNER` ZERO times.** The enum member
+  existed, and it was in **all thirteen style pools**, so it was being *selected*
+  routinely — and then played as a low cross aimed at the edge of the box,
+  because `corner_delivery(SHORT_CORNER)` returned `target_zone: "edge"` and the
+  chain honoured the zone. The word "short" was carried in the name and read
+  nowhere. This is the audit's standing pathology in its purest form: the
+  mechanism is selected, wired to nothing, and looks present in the source.
+- **THE FIX is a flag plus a branch**, because a short corner is a different
+  ACTION, not a different target:
+  - `"short": True` on the routine's delivery params (and nowhere else;
+    `_diag_short_corner.py` asserts exactly that, including that
+    `routine=None` is unaffected);
+  - **receiver** = the attacker NEAREST THE TAKER by tracked position, not
+    `_pick_set_piece_target(zone)`, which picks 28-40 m out in the box;
+  - **box NOT packed** — `if is_corner and not is_short`. A short corner exists
+    *because* the box is empty; running thirteen men in would leave the short
+    pass surrounded by our own attackers with nobody to receive it;
+  - **`corner_height = 0.35`** — a ground ball, not a lofted delivery. Lofting
+    it would hand the defenders a header they win every time and turn the
+    routine back into the cross it replaced;
+  - **target** = the receiver's TRACKED position, since `rx, ry` is zone-shaped
+    and would aim the short pass at empty grass 30 m from its intended receiver.
+- **⛔ RETRACTED 2026-10-05 — "the pool weighting is already correct at 13%".**
+  That was **arithmetic about a dictionary, not a realised rate.** `SHORT_CORNER`
+  is 7 of 52 pool entries (13%), which says nothing about how often the routine
+  is chosen: `corner_routine_for` selects by a **chunk rotation**
+  (`test_corner_routine_rotates_across_chunks`), not a proportional draw, so
+  pool membership is not frequency. **Measured over 4 seeds / 33 corners, short
+  corners fire at 48%** — against a real 10–20%. So honouring the routine
+  *created* a new distortion: previously the routine was selected and ignored
+  (visually neutral); now it is selected and played, at roughly 4x the real
+  rate. **This is the first thing to fix, and the pool arithmetic must not be
+  used to justify it again.** Note the style differentiation (`tiki_taka` 50%,
+  possession styles 25%, every direct style 0%) remains a real property of the
+  pools; it simply is not the realised rate.
+
+- **⚠️ A BEFORE/AFTER ARM WAS BUILT BY MUTATION AND PRODUCED AN INVALID
+  BASELINE.** `_diag_corner_ab.py` reconstructs the pre-work state by toggling
+  six things (old aerial selection, zero arrival residual, zero delivery
+  lead/error, no first man, no short corners). It cannot use `git stash` —
+  `HEAD` is thousands of lines behind and a parallel session shares these
+  files. The **before arm returned 0 on everything**: 0 clearances, 0 shots, 0
+  recoveries across 27 corners. **Zero across every outcome is a broken engine,
+  not a football result.** The suspect is `box_dead_first_man`, written in a
+  hurry: it indexes names with `getattr(n2, "position", "")` where `n2` is
+  already a string, and pops an arbitrary defender, so the duel never produces
+  a winner and both `att_wins` and `def_wins` stay false.
+  **Do not quote that arm, and do not rebuild it by mutation again** — a
+  before-arm assembled from six edits measures the edits. `git stash` is unsafe
+  here; the honest options are to revert the specific hunks by hand from a
+  byte-exact backup, or to accept a partial before-arm with the un-reverted
+  feature stated.
+- **Measured, one match, seed 31** (`_diag_short_corner_match.py`): 27 set-piece
+  chains, of which 8 actual corners — `far_post_outswing` 3, `penalty_spot_crowd`
+  2, **`short_corner` 3**. The routine is **stamped in the `CORNER_TAKEN`
+  metadata**, so the exporter and the chance ledger can see it; that was not
+  true before and is what makes the mechanic countable at all.
+  - **3 of 8 = 37% is NOT evidence of over-frequency.** Against a 13% rate,
+    P(X>=3 | n=8) is about 0.30. One seed, eight corners. Do not "correct" the
+    pool weight on this.
+- **PROBE ERROR, the clean-wrong-table-above-a-right-one shape again.**
+  `_diag_corner_pool.py` compared a bare `"SHORT_CORNER"` against
+  `SetPieceRoutine.SHORT_CORNER` members and printed **0% for every style** — with
+  the correct 13% aggregate sitting directly underneath it. A wrong table above
+  a right number is the most dangerous layout a probe can have.
+- **NOT VERIFIED, then MEASURED — see SHORT CORNERS: THE MECHANIC BELOW.** The
+  routine is honoured but was not yet a short pass; three further defects had
+  to be found before it was one.
+
+## SHORT CORNER MECHANIC — three defects between "flagged" and "short" (2026-10-05)
+
+The questions: is the short pass lost, is it worked back into the box, and how
+does a 0.35 m duel resolve. Answered with the **routine FORCED**
+(`_diag_short_corner_q.py`), because at 13% of ~8 corners a match yields roughly
+ONE short corner and ten would need ten matches. **The forced arm measures the
+MECHANIC, never the frequency** — `_diag_short_corner_match.py` measures the
+unforced rate, and the two must not be quoted interchangeably.
+
+- **DEFECT A: the height clamp was not routine-aware.** `corner_height = 0.35`
+  was set, and **the next line** was
+  `corner_height = max(2.0, min(3.0, ...))` — overwriting it. Measured with the
+  flag correct: apex **3.4–9.1 m**. The clamp exists to keep a CROSS inside
+  players' vertical reach, which is real and is kept, for crosses. A short pass
+  has no such constraint.
+- **DEFECT B: the receiver was 18–34 m away.** Picking "the attacker nearest the
+  taker" is correct football and useless here, because in this engine the whole
+  team is 20–40 m up the pitch. Measured pass length **17.7–34.2 m** against a
+  real 8–18 m. The routine was "short" only in its name.
+- **DEFECT C, the real one: NOBODY CAME SHORT.** The fix is that the receiver is
+  **run to a support slot** 13 m from the flag (`SHORT_CORNER_SUPPORT_M`) via
+  the same `advance_to_slots` the box uses. That is what a midfielder actually
+  does — come short, offer, receive on the half-turn — and it is *why* a short
+  corner works in real football and would not work here otherwise: it requires
+  someone to have moved.
+
+### THE THREE ANSWERS, forced arm, seed 31, 13 corners
+
+| | before (flag only) | after (a real short corner) |
+|---|---|---|
+| pass length | 17.7–34.2 m | **11.3–12.7 m** (real 8–18) |
+| target height / apex | 0.35 / 3.4–9.1 m | **0.35 / 0.67–0.81 m** |
+| flight duration | 0.94–2.64 s | **0.61–0.70 s** |
+| attacking side retained it | 8/8 = **100%** | **3/13 = 23%** |
+
+- **Q1 — YES, IT IS USUALLY LOST.** 23% retained; `BALL_RECOVERY` 10/13. A
+  short corner that worked 100% of the time was the tell that it was not short:
+  an 18–34 m delivery is a cross, and crosses are won by the attack.
+- **Q2 — SOMETIMES WORKED BACK IN.** 0.38 shots+goals per corner, so roughly one
+  in three produces an attempt. That is the whole point of the routine and it is
+  now plausible rather than 1.0+ per corner.
+- **Q3 — THE DUEL IS CONTESTABLE, but it resolves as `drops`, not an
+  interception.** 10 of 13 duels return `outcome="drops"` — no contestant
+  satisfied `arrival <= time_s` — which the chain then turns into
+  `BALL_RECOVERY` for the defence. The effect is right (the defence gets the
+  ball) but the label is not: a dropped ball and an intercepted pass are
+  different events, and the resolver never distinguishes them at 0.65 s over
+  12 m, where only men within a metre or two can arrive in time.
+- **⚠️ MY OWN PROBE MISLABELLED A COLUMN, and it is the one that would have
+  carried the claim.** It printed `contestants QUALIFIED (could arrive)` from
+  `len(attackers) + len(defenders)` — which is the number **OFFERED**, not the
+  number that qualified. So "3 contestants qualified, 0/13 with ≤2" is a
+  statement about nothing. The real figure is the outcome distribution above.
+  A column whose heading asserts a stronger claim than its expression computes.
+- **THE SHOT MAP / UNFORCED RATE HAS NOT BEEN RE-CHECKED** since defects A-C
+  were fixed; the 13% pool weighting is unchanged by them but the *behaviour*
+  of those 13% is now entirely different from what it was when that rate was
+  measured.
+
+- **TESTS, and why they are a NEW FILE.** `tests/test_set_piece_routines.py`
+  **23 passed** — and is worth nothing against this work. It asserts
+  `corner_delivery(SHORT_CORNER)["target_zone"] == "edge"` and nothing else:
+  no `short` flag, no delivery height, no support run. **All three defects sail
+  straight through it.** A suite that is green and silent about a feature is
+  not evidence about that feature. So `tests/test_short_corner.py` (13 tests,
+  **36 passed** with the routines file) pins the flag, the ground height, the
+  support distance, that the chain actually READS `is_short`, and that the
+  packed-box branch stays gated on `not is_short`.
+- **THE GUARD THAT EARNS THE FILE IS AN AST ONE, and it needed two bugs in
+  ITSELF before it worked.** Defect A was "the line I wrote was correct and
+  the next line undid it", which no behavioural test on `corner_delivery` can
+  see — the clamp lives in the chain. So `test_the_height_clamp_is_not_applied_
+  to_a_short_pass` asserts the `[2.0, 3.0]` clamp is lexically inside
+  `if not is_short:`, and it asserts **non-vacuity first** (that a clamp
+  matching that shape still exists at all), so a rename cannot quietly turn the
+  guard into a no-op.
+  - **Bug 1: it walked `ast.iter_child_nodes(node)`, which walks DOWN.** It
+    searched the clamp's descendants for an enclosing `if`, found none, and
+    reported the clamp unguarded. The test failed on a *correct* pass.
+  - **Bug 2: it re-parsed inside the helper**, so it compared node *identity*
+    across two different trees — which can never match. Fixed by parsing once
+    and caching. **Node identity only means anything within one parse.**
+  - **Verified by negative control** (`_diag_short_guard.py`): restoring defect
+    A makes the guard go **RED (1 failed, 12 passed)**, and the file is
+    restored **byte-identical** (asserted, 533,419 chars). A green guard that
+    has never been seen to fail is not a guard.
+
 ## KEY PASSES AND ASSISTS (2026-10-02) — the coordinates were real; the CAUSATION is not
 
 Asked: "key passes / chance-creation events had end points but not start
@@ -1366,6 +1625,12 @@ were not. He was right about the symptom and wrong about the object, as before.
      object for both cases.
 
 ## CHANCE CREATION FROM REAL TRACKED DATA (2026-10-03, third pass)
+
+> **SEASON DATA BOUNDARY.** The season has played 5 matchdays. MD1–MD5
+> chance creation, shot assists and assists are **fabricated**; MD6 onwards is
+> the first honest data. Full statement, including what must not be done with
+> MD1–MD5: **⛔ SEASON BOUNDARY** further down this file. Do not read the
+> before/after tables in this section as a matchday trend.
 
 The user rejected the residue list: *"i dont like this, like you have the
 capability of finishing it and making true chance creation counts from real
@@ -2083,6 +2348,507 @@ fix only touches three lines of noise seeding.
   surrogate files/surrogates (`surrogate_pos*.json`) are never overwritten,
   `auto_run_match.py`/season state are never touched. `--smoke` = fast
   end-to-end; `--no-collect --no-evolve` = re-gate an existing challenger.
+
+## RECEIVERS: THE BRAIN'S CHOSEN RECEIVER IS DEAD CODE (2026-10-05)
+
+Started from two photos of RCB/LCB pass maps and the observation that the
+passes "look right" in real football and wrong here. The trail ended somewhere
+much larger than a missing sensor. Probes: `_diag_receiver_signal.py`,
+`_diag_receiver_counterfactual.py`, `_diag_receiver_owner.py`,
+`_diag_receiver_lever.py`, `_diag_lever_decisive.py`, `_diag_target_join.py`,
+`_diag_receiver_layer_split.py`, `_diag_matrix_sensitivity.py`.
+
+- **THE NEURAL BRAIN PICKS THE INTENT AND NOTHING ELSE.** `_find_target` runs
+  ~896 times a match and returns a receiver, and that receiver governs the pass
+  endpoint in **1 of 686 passes**. `event_chain.py:2111` reads
+  `receiver = forced_receiver` — set earlier from `phase_decision.target`
+  (1722) or `matrix_decision.target` (1817) — and only if that is `None` does
+  line 2152 ever read `active_decision.target`.
+- **FORCED 70 RECEIVERS, GOT A BYTE-IDENTICAL MATCH.** Arm `off` and arm `far`,
+  same seed: 2827 events, digest `b075ecc2520f50ca`, 3-1, identical in every
+  event field. A forcing probe that reports "no effect" is worthless unless the
+  lever is proven live first (`team_offball_probe.py --intervene` sets the
+  decision *before* the rule sees it), so `_diag_lever_decisive.py` re-ran it
+  with no `importlib.reload` — the first version reloaded
+  `brain_integration`, rebinding `NeuralDecisionBrain` while `event_chain`
+  held the old class. A probe bug that reads exactly like an inert lever.
+- **`_diag_receiver_owner.py` — the actual owner.** Endpoint from
+  `forced_end` (phase/matrix) **1206**; wide-combo 225; `_pick_receiver` 13;
+  from the brain's receiver **1**. `_pick_receiver` running 13 times in 685
+  passes is what proves the policy path is live ~98% of the time *within* its
+  branch — the branch itself is simply rarely reached.
+- **SPLIT: AttackingMatrix 80%, TacticalPhase 20%** (1178 vs 296 of 1474
+  targets produced; `_diag_receiver_layer_split.py`). The matrix barely
+  abstains — 1178/1195. So there is effectively **one** owner, not two, and
+  gating only the phase layer would move ~a fifth of passes.
+- **NEITHER IS BRAIN-DERIVED.** `possession_phases._pick_circulation_target` is
+  a role table × `1/(1+d/9)` × a marking factor × a 1.25 favored-flank pull,
+  then a weighted-random draw. `attacking_matrix.py:550` is six hand-placed
+  coefficients. **Emergent receiver choice is unreachable until one of them
+  defers to the policy.**
+- **SENSITIVITY (`_diag_matrix_sensitivity.py`, gates below).** Doubling one
+  coefficient, count argmax flips: **bonuses block 13.9%**, progress 11.3%,
+  freedom 4.7%, depth 4.7%. Nothing inert. The bonuses are the MOST
+  load-bearing term — and `same_flank_bonus` lives in them.
+- **THE HOLE, AND THE FIX.** `same_flank_bonus` fired **only** for LB→LW and
+  RB→RW. A centre-back passing out of defence had **no same-side preference
+  at all**. Added `_cb_same_side_corridor()` (`attacking_matrix.py:88`): a CB
+  passing to a pivot on his own side **and ahead of the ball** gets the same
+  0.06. The ahead-test is deliberate — `progress` already scores recycling, so
+  a same-side bonus firing backwards would fight it. Fires **155x/match**.
+  8/8 unit cases; `test_football_brain` 34/34; `test_positional_play` exit 0.
+- **TWO GATES THAT EARNED THEIR KEEP.** *Fidelity:* the bonuses are inline
+  literals folded into `_Option.value`, so they are recovered by algebra
+  (`value/lane - (0.30p + 0.45f + 0.20d)`) and the recomputation must equal
+  the engine's own value — **1.1e-16**, exact. *Oracle:* the first
+  sensitivity table reported `unperturbed argmax == engine's pick: 0/1195`,
+  because `decide` selects from **SUBSETS** (`best_far`/`best_close`/
+  `target_opt`) via a rule cascade, not a global argmax. Fixing the oracle
+  dropped `progress` from 19.3% to 11.3%. **A sensitivity study that measures
+  its own reimplementation is worse than none** — the oracle disagreement is
+  the only thing that caught it.
+- **⚠️ POSITIONS ARE NUMBERED — this nearly shipped as a dead rule.** The first
+  `_cb_same_side_corridor` tested `tpos not in ("CDM","CM","CAM")`. Live
+  positions are `CM1`/`CM2`/`CB1`/`CB2` (see *Starter name template*), so it
+  matched **nothing** — a guard that read as a working rule and was inert on
+  arrival. Strip digits with `.rstrip("0123456789")`, exactly as
+  `role_features._role_family` does. **Fourth instance this session of a
+  condition that looks right and matches nothing**, after the wide-boost probe
+  pairing, the atomic collector, and the phase detector.
+- **WHAT IS STILL NOT KNOWN.** (1) The four bonuses are recovered as a **sum**,
+  so `same_flank_bonus` was never measured INDIVIDUALLY — "the bonuses are
+  most sensitive" does not prove `same_flank` is. (2) 0.06 is still a **guess**,
+  fitted to nothing; the fix makes the corridor present, not correct. (3) Only
+  **13%** of CBs in their own half have a same-side forward option available at
+  all, so this improves the choice among men who are present and cannot create
+  the ones who are not — the pitch is still 33-35 m wide against a real
+  45-55 m (*WIDTH* below). (4) One match, one seed, throughout; every
+  percentage is a single sample.
+- **CONSEQUENCE FOR OPTION "A POINTER HEAD".** It is **dead**, not merely
+  weak: a head driving `_find_target` would change ~1 pass in 686, so it cannot
+  produce any pass-map difference. The real sequence, if emergent receiver
+  choice is ever wanted, is (1) make the policy authoritative over
+  `forced_receiver`, then (2) a learned target head. Weeks, not hours.
+- **WHY NO RETRAINING AND NO NEURAL WORK WAS NEEDED.** The receiver is not
+  chosen by the network at all, so nothing about the brains was relevant. The
+  two CB sensors added to `role_features.MENU_NAMES["CB"]` (`same_side_lane_open`,
+  `far_side_gap`) are **INERT against the shipped brain**: `brains/CB.json` is
+  arch `[31,32,32,10]` = 24+7, and `brain_integration.py:524` truncates the
+  33-wide vector back to 31. Measured: padded vector bit-identical pre/post,
+  argmax differs on **0/4000** random inputs. They are harmless and are a
+  prerequisite for (2) above, so they were KEPT — but **do not cite them as a
+  fix.** ⚠️ That truncation is also **silent**: a schema change that
+  invalidates every trained CB brain logs nothing and just degrades to the old
+  behaviour. Unguarded.
+
+## WIDTH: THE SHAPE CHAIN IS THE CAUSE, AND THE INTEGRATOR IS EXONERATED (2026-10-05)
+
+Asked to stop the shape collapsing into a narrow block and to hold a 45–55 m
+band. The diagnosis below **overturns** the hypothesis I formed from the first
+measurement. Probe: `_diag_wide_target.py` / `_diag_wide_target.txt`.
+
+- **THE INTEGRATOR IS NOT AT FAULT.** I expected a shape-holding jog to be
+  failing to arrive — the same category of mistake as the low-block recovery
+  branch at `match_engine.py:3001-3018`. Measured instead, on ~300k live
+  samples: median lag between a wide player's chain target and his actual
+  position is **1.2–1.4 m**, at every boost setting, in both phases. He walks
+  to the target he is given. **Do not "fix" the approach speed.**
+- **THE TARGET IS ALREADY NARROW.** Side-to-side separation *from the chain
+  target* is 33–35 m against a real 45–55 m, and per-player distance to the
+  touchline is 15.2 m in possession / 18.3 m in a block, against a real 3–12 m.
+  Instrument: `PositionEngine.live_spacing_redirect(team, cx, cy, tx, ty)` is
+  called at `match_engine.py:2917` with the **finished** target of the whole
+  chain, so its arguments are the answer; it receives no player name, so the
+  wrapper reads `pname`/`pos`/`has_ball`/`_in_block` from the caller's frame
+  locals (`sys._getframe(1)`) — the `_diag_touch_sites.py` join.
+- **THE INTEGRATOR IS THE RED HERRING; `_JOG_SPEED` 1.75–1.90 m/s and the
+  `arrive = 2.0` deadband are both fine at a 1.2 m lag.**
+- **THE ONLY TWO CHAIN TERMS THAT TOUCH A WIDE ROLE** are the live run targets
+  (`match_engine.py:2835-2843`) and the CK35 pitch stretch (`:2859-2862`).
+  CK36/37/38 are midfielder and backline terms keyed by player name, so they
+  **cannot** reach LW/RW/LB/RB — which is what narrowed the search to two.
+  - **CK35 is dead out of possession.** `stretch_w = 0.0 if _in_block else …`,
+    and the count confirms it: it was called on **139,991 of 301,955** samples —
+    exactly the in-possession count (301,955 − 161,964 "out, in block" =
+    139,991). Out of possession the block substitution owns the anchor.
+  - CK35 fires on 65.8% of in-possession samples and is doing its job: when it
+    is OFF the ball is already 10.2 m off a touchline (no stretch needed), when
+    ON the ball is 26.5 m off one (stretch needed). The rule is not misfiring.
+  - **The live run target fires on 18% of samples at a median 24.0 m off the
+    line, blend 0.30.** A winger cutting inside is real football and is
+    deliberately wired (2026-09-29); this is the source of the p90 excursions,
+    not a defect.
+- **THE KNOB WAS RAISED TO 0.55 AND 0.75 AND REVERTED.** In-possession actual
+  distance to the touchline went **15.4 → 14.6 → 12.1 m** — monotone, and into
+  the real 3–12 m band at 0.75. It was reverted anyway, and the reasons are the
+  point:
+  1. **It does not fix the collapse.** Team-width **p05 stayed 4.2–6.6 m and
+     p10 16–18 m at all three settings.** The reported symptom is a *tail*, and
+     a rule that raises the *mean* cannot move a tail. This is the same
+     discipline as CORNER STEP 6: the thing measured is not the thing asked for.
+  2. **It does not reach the band.** Median separation 36.2 → 38.9 m.
+  3. **It costs real football.** CK35 runs *after* the run targets, so a higher
+     weight directly undoes the winger's cut-inside. Trading a deliberate cut for
+     3 m of average width while leaving both symptoms untouched is a bad trade.
+  Full numbers kept as a comment block on `STRETCH_TARGET_BOOST`
+  (`position_engine.py:143`) so the next attempt starts from evidence.
+- **GATE:** `tests/test_positional_play.py` + `tests/test_touchline_wide.py`
+  = **48 passed, 1 failed** at 0.75 and again at 0.30. The failure is the
+  documented pre-existing `test_out_of_possession_touchline_press_gated_by_
+  press_intensity` — an **x**-axis LB-forward-push assertion, and
+  `STRETCH_TARGET_BOOST` only ever feeds `ty`. Not caused by this work.
+- **PROBE ERRORS, both the documented class.** (1) `pname in TGT` against a
+  `defaultdict` is **always False** for a first sighting — membership does not
+  create the key — so the first run recorded zero samples and then divided by
+  an empty list. A member test against the collection you are about to append to
+  is not a filter. (2) I paired the two flanks by **list index**, then "fixed"
+  it onto `MatchEngine._offball_tick_seq()` — and the separation numbers went
+  degenerate (p10 **2.7 m**) at one setting and plausible (p10 38.7 m) at
+  another with identical code. **`_offball_tick_seq` is not a per-player tick
+  identity and must not be used to pair players.** Both separation figures from
+  that probe are void; the trustworthy numbers are the per-player,
+  index-free ones (target-to-line, actual-to-line, lag) at ~140k samples.
+  `_diag_wide_channel.py` pairs correctly — one dict per `_offball_run` call,
+  both flanks same-instant by construction — but samples only 414 times a match,
+  and its absolutes disagree with the dense instrument by ~2–3 m. **Two
+  instruments, different cadences, different absolute values: quote the dense
+  one for medians and the sparse one for structure.**
+- **THE OPEN QUESTION IS THE TAIL, AND IT IS NOT ISOLATED.** The collapse is
+  both wide roles being central *at the same instant*. Candidates, in order,
+  none measured: (a) the run target firing for **both** flanks off one cached
+  `(team, minute, ball-zone)` key — a winger's cut is on the ball's side, so
+  both flanks cutting in is one cache entry serving two players; (b) the block
+  anchor substitution putting both wide roles in the same narrow slot band.
+  Do not raise another constant until one of these is measured.
+
+## TWO MORE DEAD MECHANISMS, BOTH FIXED (2026-10-05) — `geometric_awareness`, and form on the shot
+
+The third and fourth instances of the project's standing pathology (a mechanism
+that exists, is wired to something, and never runs), found in one pass and both
+closed. Probes: `_diag_live_dna.py`/`.txt` (sections A–E),
+`_diag_awareness_gates.py`/`.txt`, `_diag_drift_bisect.py`,
+`_diag_dna_guard.py` (negative control).
+
+### FIX 1 — `geometric_awareness` was never generated, so three LIVE shape rules were inert
+
+- **THE DEFECT.** `MentalAttributes.geometric_awareness` is declared at
+  `player_dna.py:80` with a `50.0` default. **Eight archetype templates have
+  always specified a band for it** — `ball_winning_mid (60,72)`, `anchor
+  (65,76)`, `box_to_box (68,80)`, `shadow_striker (72,84)`, `progressive_
+  midfielder (74,86)`, `deep_playmaker (78,90)`, `regista (80,91)`, `classic_ten
+  (82,93)`. `_build_mental` assigned **10 of its 11 mental fields and never this
+  one**, so the templates were dead weight and the attribute read exactly
+  `50.0` for every player ever created (measured `[50.0]` across 400).
+- **THREE RULES CONSUMED IT AND NONE COULD WORK.** `position_engine.py:3292`
+  `awareness_bonus` was **exactly 0.0**; `:3431` midfielder half-space coverage
+  needs `>= 55.0` and **never fired once**; `:3519` attacker drift ran at a flat
+  `awareness_factor = 0.091` for every player ever built. All three are live —
+  `_midfielder_geometric_coverage` is reached from `position_engine.py:1739`.
+- **THE FIX IS ONE LINE**, with a comment carrying the whole story:
+  `cls._attr(arch, "mental.geometric_awareness", (50, 70), mental_age)`.
+- **MY FIRST BAND WAS WRONG AND MY OWN PROBE KILLED IT BEFORE ANY GATE RAN.**
+  I first used `(55, 74)` — `work_rate`'s band, on the argument that the eight
+  template bands (60–93) mean "above average". Measurement: with a floor of 55
+  **exactly equal to the `:3431` gate floor, 100% of 400 players cleared BOTH
+  gates**, so the rules stopped selecting anyone and became *uniform* rules —
+  the same inertness as the 50.0 constant, aimed the other way. **A gate has to
+  reject.** Shipped `(50, 70)`, the house mental default five of that builder's
+  other ten fields already use.
+- **THE LESSON, and it generalises past this fix: A RULE'S GATE IS A STATEMENT
+  ABOUT THE DISTRIBUTION IT WAS WRITTEN AGAINST.** Filling in a missing
+  attribute is therefore a *coupled* change — you cannot generate the
+  distribution and leave the thresholds untouched without re-deriving what they
+  now mean.
+- **AND THE GATES ARE ANYWAY CLOSE TO VACUOUS FOR THE TEMPLATED POPULATION** —
+  a pre-existing property that only became *visible* once the attribute stopped
+  being constant. The lowest template floor is **60**, already above the 55
+  gate, so any player landing on one of the eight clears it on every draw.
+  Sweeping five candidate default bands moved the combined midfielder clear
+  rate only 52.8% / 64.4% / 67.1% / 74.9% / 97.0%, and only by dragging the
+  template population down. **Whether `:3431` *should* select is a design
+  question about a tuned threshold and is deliberately NOT answered here** —
+  per the CORNER STEP 6 discipline, do not tune real behaviour to satisfy an
+  assertion, and equally do not tune it to make a test pass.
+- **MEASURED AFTER (400 players, 3 seeds):** median 61.1, 241 distinct values,
+  min 46.0 max 90.9 — inside the same band the rest of the mental block
+  occupies, not a new axis. `:3431` factor 0.000 → 0.317/0.410/0.663
+  (CDM/CM/CAM); `:3519` 0.091 → 0.213–0.694; `:3292` bonus 0.000 → 0.095
+  (blend 0.40 → 0.495).
+- **SUITE `tests/test_dna_awareness_shots.py` (13 tests), and why it is a NEW
+  FILE.** The existing suites are *green about this*: `test_positional_realism`
+  and `test_shot_blocking` both build a `_FakeDNA` that sets
+  `geometric_awareness` **by hand**, so they exercise the shape rules against
+  a value the real builder never produced. They would pass identically if the
+  builder emitted nonsense. A suite that is green and silent about a feature is
+  not evidence about it — same conclusion the short-corner work reached for the
+  same reason. It also carries an **AST pin** (the shot path must read
+  `effective_*`, must NOT read the raw attributes), matching the
+  `test_chance_provenance.py` precedent.
+- **NEGATIVE CONTROL (`_diag_dna_guard.py`, 5 mutations, ALL CAUGHT, tree
+  restored byte-identical at 72532 bytes).** This earned its keep immediately:
+  mutation **M2 (restore the rejected `(55,74)` band) left the entire file
+  GREEN** — the band, the single most consequential choice in the fix, was
+  pinned by nothing. Hence `test_the_default_band_is_the_house_mental_default`.
+  **A test that cannot fail is not a test, and the only way to find out is to
+  run the negative control, not to reason about it.**
+- **TWO OF MY OWN TEST BUGS, both the documented shape.** (1) A
+  `test_a_constant_other_than_50_would_also_be_wrong` / band assertion set
+  `min(vals) == 50.0` at **age 30**, which is `AGE_CURVE[range(30,33)] == 0.97`
+  and therefore reads 48.7 — the peak bracket is `range(27, 30)`. The multiplier
+  is not a rounding detail; the test now asserts the bracket it depends on.
+  (2) The band-separation floor was set at `0.25`, which is **exactly**
+  `Uniform(50,70)`'s theoretical `5/20 = 25.0%`, and a 300-sample draw crossed
+  it (measured 24.3%). A threshold sitting on the theoretical value is a
+  knife-edge — the same trap as the CM assertion in *WIDE PLAY* that fails by
+  1.5 cm. Floor moved to 0.15 with the arithmetic in the comment.
+
+### FIX 2 — the live shot read raw attributes, so form and fatigue could not reach it
+
+- **`_shot_on_target_prob` (`event_chain.py`, `AttackChain`) read
+  `dna.mental.composure` and `dna.technical.finishing` raw** while every other
+  live consumer folds the same multipliers in (`get_shooter_quality`,
+  `get_pass_accuracy`, `get_dribble_success_rate`). A tired striker in a slump
+  shot identically to a fresh one in form.
+- Added `PlayerDNA.effective_composure`, mirroring `effective_finishing`
+  exactly (`player_dna.py:361-376` pattern), and switched the shot path to
+  `effective_finishing` / `effective_composure`.
+- **⚠️ SCOPE, AND IT IS NARROWER THAN IT SOUNDS. NO A/B IN THIS PROJECT CAN
+  DEMONSTRATE IT.**
+  - `live_performance_mult` has **NO WRITER** anywhere (dataclass default 1.0 at
+    `player_dna.py:292`; one test at `tests/test_defensive_awareness.py:672`).
+    So "live stamina" contributes exactly 1.0 — here and in **every**
+    `effective_*` consumer, including the ones that predate this pass. **I did
+    not invent a writer**: that means giving `SubstitutionController.stamina` a
+    per-player, per-minute hook into the DNA, a real subsystem change.
+  - `PlayerFormState.update_after_match` (`player_dna.py:212`) has **ZERO call
+    sites**; `season_manager.py:632` reimplements the rating→confidence mapping
+    inline. So **form cannot move within a match anywhere** — another instance
+    of the pathology, recorded, not fixed here.
+  - Only the production season path writes pre-kickoff fatigue
+    (`auto_run_match.py:622`), and it clamps starting stamina to `[70, 100]`, so
+    fatigue is capped at 30 → multiplier floor **0.955**. Form is the real
+    lever at ±20%.
+  - **Consequence: the scratch roster sees this fix as exact identity**
+    (confidence 50 → `form_multiplier` exactly 1.00; fatigue 0 → exactly 1.00;
+    live 1.0; and `x * 1.0` is bit-identical in IEEE-754). Every A/B harness
+    here runs the scratch roster, so **no historical number moves** — a
+    property worth stating, not celebrating, because it also means none of them
+    can evidence the fix. The gate had to be a unit test plus the static
+    call-site argument, not an A/B. **Do not quote a pitch impact for it.**
+  - Magnitude where it *is* live: the attribute term is 0.05 weight on the SUM
+    of two 0–100 values, so a ±20% form swing moves `base` by ~2.6% relative.
+    Deliberately small — the right size for a state modifier.
+
+### GATE — targeted files only, per the user's no-hour-regression rule
+
+`test_positional_play` + `test_touchline_wide` + `test_small_game` +
+`test_chance_provenance` + `test_set_piece_routines` + `test_full_wiring` +
+`test_dna_awareness_shots` → **123 passed, 1 failed, 1 strict xfailed**
+(3m57s). The single failure is the documented pre-existing
+`test_out_of_possession_touchline_press_gated_by_press_intensity`, and a
+second pre-existing (`test_preservation_properties::test_position_engine_
+drift_toward_home`, x-axis) was found and **bisected, not assumed**.
+
+- **THE BISECT IS THE PART WORTH COPYING.** Both "documented pre-existing"
+  failures were last verified *before* this fix, so "documented" is not evidence
+  that a later change did not cause them. `_diag_drift_bisect.py` applies the
+  **exact pre-fix state** (`geometric_awareness = 50.0`) to the real file, runs
+  the real pytest node **3× per arm**, and restores byte-exactly. Both nodes
+  failed **3/3 in both arms** → pre-existing, and the fix is not the cause.
+  The same argument retired a third failure (`test_preservation_properties::
+  test_realistic_shot_woodwork_and_rebound_preserved`).
+- **THE FIRST PROBE AT THIS QUESTION MEASURED NOTHING AND WAS DELETED.**
+  `_diag_drift_regression.py` rebuilt the fixture on a one-player team and the
+  player never moved at all (`start == final`, 4.27 → 4.27 in **both** arms),
+  so it could not distinguish the two hypotheses. **A probe that reproduces
+  nothing is not evidence in either direction** — deleted rather than left to be
+  quoted. It also silently disagreed with the real test's numbers, which is the
+  signature to watch for.
+- **Likely overlap, recorded not chased:** `:3519` attacker drift steers the
+  same axis as `winger_behavior.should_cut_inside`, which already pulls a wide
+  player inward from archetype `byline_instinct`. **Two systems now pull the same
+  man inward and neither knows about the other.** This is worth a probe before
+  anything touches the band — and it is a candidate explanation for the
+  un-isolated width-collapse tail above.
+- **NOT GATED BY THE 26/27 REGRESSION**, by the user's standing instruction.
+
+## ⛔ SEASON BOUNDARY — MD1–MD5 CHANCE CREATION IS FABRICATED. MD6 ONWARDS IS NOT.
+
+**The 2026-27 season has played 5 matchdays. Everything recorded in MD1–MD5
+about chances created, shot assists and assists is FABRICATED and must never
+be compared with anything from MD6 onwards.** MD6 is the first matchday
+simulated by the honest code. That is a hard boundary in the data, not a soft
+one, and it is the reason this note exists rather than a line in a changelog.
+
+**WHAT WAS FABRICATED, precisely.** Up to and including MD5:
+
+- `CHANCE_CREATED`'s **origin** was `location_x = x - random.uniform(5, 20)`
+  — a draw from the **global football RNG**, matching no pass that player ever
+  made (0/15 against every real pass origin by that player).
+- `CHANCE_CREATED`'s **`player`** was `_pick_creator`, a role- and
+  distance-weighted **RANDOM DRAW over the whole squad**. It had no
+  connection to who actually passed the ball.
+- The **assist on the GOAL event's `secondary_player`** — the field the Goals
+  sheet and `alltime_db` ASSISTS actually read — was the same draw. So the
+  headline assist number was fabricated too, not just the upstream event.
+- The **shooter** on the bulk of shots came from `_pick_shooter`, the same kind
+  of draw, because the chain that fires the shot was never told who had the
+  ball.
+
+**WHAT IT IS FROM MD6.** The passer is the **previous value of `last_player`
+at the carrier change** — a real event, not a draw. The shooter is the man
+who actually held the ball, threaded through `ChainDispatcher.attack(shooter_name=…)`
+and resolved by a strict `_named_shooter` (an outfielder in the squad passed
+in; a stale name returns `None` rather than shooting with a ghost).
+`ChainResult.ball_carrier` / `ball_carrier_passed_by` carry it, stamped at
+`_absorb_chain`, *"the single point where chain outputs become match facts"*.
+
+**EXPECT FEWER ASSISTS FROM MD6, AND THAT IS THE CORRECT RESULT, NOT A
+REGRESSION.** `_resolve_assister` has **no fallback, on purpose** — do not add
+one. Measured on real matches, 6 of 9 goals are **genuinely unassisted** (the
+scorer won the ball and dribbled it in, so there is no pass to be the key
+pass). An unassisted strike emits **no `CHANCE_CREATED` at all** rather than
+crediting the shooter, because crediting him would make the engine disagree
+with `ChanceCreationLedger._find_setup_pass` (which correctly returns `None` for
+a dribble) about the SAME shot — which would break the relationship the user
+explicitly protected. **The shot still appears.** A rise in assists at MD6 is
+a red flag, not a success.
+
+**WHAT MUST NOT BE DONE WITH MD1–MD5 DATA:**
+
+1. **No trend line across the boundary.** Pass-end → shot-origin gap fell from
+   a median 30.4 m to 4.4 m (that 4.4 m is the carry, measured). Reading that
+   as "the team improved at MD6" is reading a code change as a result.
+2. **No xA / chances-created accumulation across the boundary.**
+   `creation_event.xa` is `xg` by definition, but it was banked against the
+   DRAWN creator, so it is only real from MD6. Season totals mixing the two are
+   meaningless.
+3. **No player leaderboard for chance creation, MD1–MD5.** The names in it came
+   from a draw weighted by role and distance to the ball. Assists in
+   `alltime_db` for those five matchdays are the same fiction and need purging
+   or flagging before any career stat is published.
+4. **The fabrication audit is NOT complete.** Do not report "chance creation is
+   honest" — only "the shooter's pass is now real where the chain knew it".
+
+**SEPARATE AND ALSO TRUE:** the *receiving* end was never the problem. `PASS`
+events carried a real destination and a real `secondary_player` = receiver all
+along (655/680 sampled). "Passes have no start point" was false; the fabricated
+start point was on the `CHANCE_CREATED` event, not on the pass.
+
+## WIDE PLAY — do the wingers and full-backs actually hold the touchline? (2026-10-04)
+
+Asked after watching a match: *"do wingers/fullbacks stick to the touchline to
+spread play like modern wingers? cause i see sometimes drifts inside, sometimes
+its well, maybe they follow managers instructions i dont know."*
+
+**Short answer: yes, the model exists and it does reach the pitch. The drift is
+real but TRANSIENT, not resident. The manager CAN move them and, measured, DID
+NOT in this match. And the pitch is under-stretched by about 8 m versus real
+football.** Probe: `_diag_wide_channel.py` (writes `_diag_wide_channel.txt`).
+
+**THE MANAGER CHANNEL IS REAL — my grep was wrong, and the probe caught it.**
+`grep manager_brain.py 'width|wide|touchline|flank'` returns **no matches**, and
+I nearly reported "the manager does not influence this". `manager_brain.py` is
+the neural module; the tactical profile it feeds is a different object, and it
+carries **`width`** (`match_engine.py:716`, `0=narrow, 1=wide`, 0.30–0.90 per
+philosophy). There are **TWO** manager-side width channels that reach the wide
+players' anchors:
+
+1. `FormationEngine.compute_home(pos, profile, slot)` reads `profile.width` —
+   **+3 m outward at width=1.0, −3 m inward at width=0.0**
+   (`position_engine.py:362-371`). Both sides here ran BALANCED → width=0.5,
+   the exact neutral midpoint, so channel 1 contributed **zero** this match.
+2. `coach_instructions.instructions_for_manager(manager, pattern)` reads
+   `manager._current_posture` and returns a **`width_cmd` (+1 stay wide, −1
+   tuck in)**, applied through `PositionEngine.apply_coach_width` →
+   `_recompute_homes`. The whole command is **±2.5 m / ±1.5 m** on wide roles
+   (`position_engine.py:753-759`). Gated on `USE_MANAGER_BRAIN` (True) and on
+   the posture being ATTACK or DEFEND.
+
+**MEASURED: `width_cmd` was 0.0 in 3,272 of 3,272 wide-player samples — both
+teams, all 409 samples.** Since `_ATTACK→+1`, `_DEFEND→−1` and BALANCED emits
+none, the manager's posture never left BALANCED at any point the width command
+is evaluated. **The user's instinct ("maybe they follow manager's instructions")
+is the right question and the right subsystem — it just did not fire here.**
+
+**THE DRIFT IS TRANSIENT, NOT RESIDENT — which is why it reads as "sometimes".**
+Sampled live by wrapping `MatchEngine._offball_run`, reading `current_y` AND
+`home_y` **at the same instant** (see the trap below). `in_ch%` = share of
+samples within the engine's own `FLANK_CHANNEL_HALF_WIDTH_M` (10 m), i.e.
+`winger_behavior.in_flank_channel`:
+
+| player | pos | archetype | med drift | p90 | p99 | in_ch% | max | excursions off-flank | typical ON-flank spell |
+|---|---|---|---|---|---|---|---|---|---|
+| Jake Jivan | RW | traditional_winger | **2.7** | 15.0 | 20.8 | **80.7** | 22.1 | 24 | 8 samples ≈ 32 s |
+| Moffart Randier | RB | attacking_fullback | 5.5 | 13.6 | 35.2 | 77.0 | 45.5 | 24 | 7 ≈ 28 s |
+| Coupey-Daniels | LW | traditional_winger | 5.1 | 22.7 | 45.9 | 61.4 | 47.8 | 41 | 4 ≈ 16 s |
+| Denis Doxel | RW | traditional_winger | 7.6 | 17.8 | 38.1 | 59.2 | 43.4 | 46 | 4 ≈ 16 s |
+| Lewis Driutt | LB | attacking_fullback | 7.7 | 20.6 | 32.8 | 61.1 | 35.6 | 27 | 6 ≈ 24 s |
+| Nashan Gwum | RB | attacking_fullback | 7.9 | 30.1 | 44.7 | 63.6 | 52.5 | 38 | 5 ≈ 20 s |
+| Francis Sesina | LB | **inverted_fullback** | 7.5 | 27.5 | 40.6 | 64.3 | 42.7 | 36 | 5 ≈ 20 s |
+| Pablo Antares | LW | **inverted_winger** | 7.8 | 20.6 | 34.4 | **55.0** | 38.7 | 45 | 3 ≈ 12 s |
+
+He is wide **55–81% of the time**, in spells of 12–32 s, and goes inside **24–46
+times a match** for a shorter spell each time. That is a player holding a line
+and periodically cutting in — which is real football, and is a completely
+different finding from a player parking in the half-space. **A median could not
+have distinguished them; the run-lengths are what makes the verdict.**
+
+**PER-PLAYER DNA EXPLAINS THE SPREAD, and it is per-player.** The archetype sets
+`byline_instinct`, which sets `should_cut_inside`'s baseline
+`(1 − byline_instinct) × 0.60`: traditional wingers land at **0.13**, the
+inverted winger at **0.48** — and inverted_winger Antares has the worst
+in-channel share on the sheet while traditional_winger Jivan has the best.
+**So part of what the user sees as inconsistency is the engine correctly playing
+two different player archetypes.** `inverted_fullback` Sesina carries
+`flank_commitment = 0.50` against 0.75 for an attacking full-back, the weakest
+commitment of the eight, and he has the worst p90.
+
+**THE PITCH IS UNDER-STRETCHED — the one number that is a genuine gap.**
+Side-to-side separation, sampled at the same instant for both flanks:
+
+| | measured | real PL |
+|---|---|---|
+| winger-to-winger (LW–RW) | **37.8 / 38.3 m** | ~45–55 m |
+| full-back-to-full-back | **34.8 / 38.6 m** | ~45–55 m |
+| pitch | 68 m wide | 68 m |
+
+A **~8–16 m shortfall**, and Natrican's p10 of **21.9 m** (full-backs **11.4 m**)
+means the shape genuinely collapses into a narrow block sometimes. **Not
+fixed** — this is a calibration question with a genuine trade-off (wider shape =
+more space behind, fewer through-balls), not an oversight, and it needs its own
+measurement across seeds before anything moves.
+
+**THREE PROBE ERRORS OF MINE, all instances of documented traps, recorded
+because each one produced a clean wrong answer.**
+
+- **I assumed `_offball_run` was a 0.1 s tick.** It is called 409 times over 90
+  minutes — **median gap 4.1 s** (min 0.1, max 114.0). Every duration the first
+  version printed was wrong by ~40×. This is the `top_speed_mpm` trap verbatim
+  (AGENTS.md MEASUREMENTS: *read the units from the source, not the field name*).
+  The probe now **measures** the cadence from `state.match_clock_s` deltas and
+  prints it, and run lengths are returned **in samples first** so the raw count
+  stays visible if the cadence assumption ever changes.
+- **`WingerSpatialProfile` / `FullbackSpatialProfile` do NOT store the DNA they
+  were built from.** The first style table read `p.dna.archetype`, got `None`
+  from `getattr`, and printed **`?` for all eight players** — which reads as
+  "no archetype" rather than "wrong attribute". `PlayerProfile.dna.archetype` is
+  the real source, read via `engine.squads[team]["starters"]`. (`FullbackSpatialProfile`
+  has no `byline_instinct` at all, so `cutBase` is genuinely undefined for
+  full-backs — left as `nan`, not filled in.)
+- **Index-aligned pairing is not sample-aligned.** Team width was first
+  reconstructed from per-player list **indices**, which silently misaligns the
+  moment one player is skipped (a `None` coordinate shifts everyone after him in
+  roster order). It reported *"never both flanks occupied at the same tick"* —
+  a probe artefact that reads as a football finding. Fixed by keeping one dict
+  per `_offball_run` **call**, so both flanks are same-instant by construction.
+- **`home_y` is MUTATED mid-match** (`_recompute_homes`, called by
+  `apply_coach_width` / `apply_attack_pattern` / every stance change), so
+  reading it after `simulate()` returns attributes final-whistle state to a
+  mid-match moment — and would have silently mislabelled every coach-width
+  excursion. The probe reads `current_y` and `home_y` together inside the live
+  loop. Same family as the seven existing instances of *read position state
+  after the match*.
 
 ## Next Move
 **ACTIVE — THE FABRICATION AUDIT IS NOT FINISHED.** The assist/shooter work closed

@@ -1238,6 +1238,46 @@ SET_PIECE_JOSTLE_S = 7.0
 # NOT offered to the aerial duel.
 SET_PIECE_ARRIVED_M = 3.0
 
+# ── CORNER DELIVERY: AIM AT A ZONE, NOT AT A MAN ───────────────────────
+# Real taker behaviour, replacing a delivery computed at the receiver's own
+# placed position (see the comment at the target computation). All three
+# figures are in metres and all three are deliberately modest; the reasoning
+# and the measurements are in AGENTS.md under CORNER STEP 4.
+#   LEAD    how far in front of his runner a good crosser plays the ball
+#   ERROR   the miss, scaled by how badly he crosses (triangular)
+#   MAX     the cap that keeps the ball contestable by somebody
+CORNER_LEAD_M = 2.2
+CORNER_ERROR_M = 2.0
+CORNER_ERROR_MAX_M = 3.2
+
+# ── SHORT CORNER ────────────────────────────────────────────────────────
+# The height of the short pass. Not clamped, unlike a cross: the [2.0, 3.0]
+# clamp exists to keep a CROSS inside players' vertical reach, and applying it
+# to a short pass silently lofted it (measured apex 3.4-9.1 m before this
+# guard existed). See the delivery block in `_corner_chain`.
+SHORT_CORNER_HEIGHT_M = 0.35
+# How far from the flag the short-corner receiver runs to support. Real short
+# corners are received around the edge of the penalty area, 10-15 m from the
+# flag, which is what makes the pass short (8-18 m).
+SHORT_CORNER_SUPPORT_M = 13.0
+
+# ── THE FIRST MAN ───────────────────────────────────────────────────────
+# Where on the corner-flag-to-target line he stands, and how far goal-side of
+# it. The goal-side offset is small: his job is to meet the ball, and a man who
+# drifts goal-side again is back to arriving second.
+#
+# NOTE ON THE FRACTION: the corner flag sits ON the goal line, so the flag is at
+# goal-distance 0 and the delivery target is at 10.5-15 m. A first man who
+# MEETS the cross stands about 8-10 m out, which is 0.62-0.78 of the way along
+# that line. An earlier value of (0.30, 0.42) put him 2.9 m from his own goal
+# -- in the corner quadrant, effectively beside the taker. The probe reported
+# "every defender is behind the target" and it took reading the geometry to see
+# that what it really reported was "the first man is standing on the corner
+# flag". Same shape as the dead candidate pool in `_corner_box_occupancy`: a
+# clean measurement of a mechanism that never did what its name says.
+FIRST_MAN_LINE_FRAC = (0.62, 0.78)
+FIRST_MAN_GOALSIDE_M = 1.0
+
 
 class PossessionChain(BaseChain):
     """
@@ -6652,9 +6692,21 @@ class AttackChain(BaseChain):
     ) -> float:
         # xG drives on-target probability
         base = 0.20 + (xg * 0.65)
-        # Composure and finishing improve it
-        comp = shooter.dna.mental.composure / 100.0
-        fin  = shooter.dna.technical.finishing / 100.0
+        # Composure and finishing improve it.
+        # 2026-10-05: these read `effective_*` so form, fatigue and live
+        # stamina reach shooting. They were the only two live shot inputs still
+        # reading RAW attributes — every other consumer (get_shooter_quality,
+        # get_pass_accuracy, get_dribble_success_rate) folds the same three
+        # multipliers in. A tired striker in a slump used to shoot identically
+        # to a fresh one in form.
+        # NOTE the scope honestly: `live_performance_mult` has NO writer
+        # anywhere in the repo (dataclass default 1.0, one test), so "live
+        # stamina" contributes exactly 1.0 here as it does everywhere else.
+        # What is live is form (±20%) and fatigue (auto_run_match.py:622 maps
+        # starting stamina, clamped to 70-100, so at most -4.5%). On the scratch
+        # roster both default to 1.0, so this is a no-op for every A/B harness.
+        comp = shooter.dna.effective_composure / 100.0
+        fin  = shooter.dna.effective_finishing / 100.0
         base += (comp + fin) * 0.05
         base = _get_soul_applicator().modify_shot_quality(shooter, base)
         if WeatherPhysics.enabled:
@@ -6879,6 +6931,52 @@ class SetPieceChain(BaseChain):
             marked.add(dname)
             return True
 
+        # ── 3a. THE FIRST MAN — the man who goes and MEETS the ball ──────
+        # Every other defender in this function is marked GOAL-SIDE of his man
+        # (`at(depth - 1.4)`, 1.4 m nearer the goal). That is correct defensive
+        # positioning for a ball contested AT A POINT, and it is exactly wrong
+        # for a corner, because the delivery travels from the corner flag
+        # inward: goal-side is FURTHER ALONG the ball's journey, so every
+        # marker arrives second by roughly the marking distance.
+        #
+        # The probe made it concrete: a defender at (99.0, 22.0) — out on the
+        # flight line, in front of the ball — wins the duel 'controlled', while
+        # the same man tucked 1.4 m behind his attacker does not.
+        #
+        # PLACED BEFORE the marking loops, and that ordering is load-bearing.
+        # It was written after them first and **never fired**: 3b pairs every
+        # unplaced defender with a loose attacker until the pool is empty, so
+        # by section 4 there was nobody left to be the first man. The probe
+        # caught it as "every defender is behind the target", which read like a
+        # football result and was a candidate-selection bug.
+        #
+        # Put in `out` rather than written directly, so `advance_to_slots` runs
+        # him there and `arrived_setpiece_players` offers him to the duel. A man
+        # positioned but never offered changes nothing -- the trap this file has
+        # walked into repeatedly.
+        _fman_name = getattr(marking, "first_man", "") or ""
+        _pool = sorted((p for p in def_players
+                        if getattr(p, "position", "") != "GK"
+                        and p.name not in out),
+                       key=lambda p: -aerial(p))
+        if _pool and _fman_name not in out:
+            _chosen = next((p for p in _pool if p.name == _fman_name), None)
+            if _chosen is None:
+                _chosen = _pool[0]        # best aerial defender available
+            _origin = (own_goal_x, corner_y)
+            _tgt = out.get(getattr(receiver, "name", ""), at(13.5, 36.5))
+            _frac = random.uniform(*FIRST_MAN_LINE_FRAC)
+            _fx = _origin[0] + (_tgt[0] - _origin[0]) * _frac
+            _fy = _origin[1] + (_tgt[1] - _origin[1]) * _frac
+            # a metre goal-side of the line, toward the goal being defended.
+            # Small on purpose: drift goal-side again and he is back to
+            # arriving second, which is the bug this section exists to fix.
+            _d = abs(own_goal_x - _fx)
+            if _d > 1e-6:
+                _fx += (own_goal_x - _fx) / _d * FIRST_MAN_GOALSIDE_M
+            out[_chosen.name] = (_fx, _fy)
+            marked.add(_chosen.name)
+
         # 3a. the marking grid's own assignments take precedence
         for dname, aname in (getattr(marking, "assignments", None) or {}).items():
             if aname in out:
@@ -6956,7 +7054,42 @@ class SetPieceChain(BaseChain):
         # keeps the classic pure aerial-threat pick.
         params = corner_delivery(routine)
         zone = params.get("target_zone")
-        receiver = cls._pick_set_piece_target(att_players, zone, exclude=taker.name)
+
+        # ── SHORT CORNER: the routine that was never honoured ──────────────
+        # `SHORT_CORNER` was in the enum and in all eight style pools, so it
+        # was being SELECTED routinely — and `event_chain.py` referenced it
+        # zero times. It played as a low cross to the edge of the box, which is
+        # the opposite of a short corner and is the whole reason the mechanic
+        # appeared not to exist.
+        #
+        # A short corner is a different action, not a different target: a quick
+        # GROUND ball to a team-mate near the flag, taken under pressure, often
+        # lost, and only sometimes worked back into the box. So it changes three
+        # things, not one:
+        #   1. the receiver is the man NEAREST THE TAKER, not the best aerial
+        #      threat 30 m away;
+        #   2. the box is NOT packed — the crowd parameter is deliberately low
+        #      and running thirteen men in would defeat the entire point;
+        #   3. the ball is played low and hard rather than lofted, so the
+        #      contest is a short-pass interception, not a header.
+        is_short = bool(params.get("short"))
+        if is_short:
+            _tx, _ty = delivery_x, delivery_y      # the flag itself
+            _cands = []
+            for p in att_players:
+                if p.name == taker.name or getattr(p, "position", "") == "GK":
+                    continue
+                _pp = position_engine.tracked_position(p.name) \
+                    if position_engine is not None else None
+                if _pp is None:
+                    continue
+                _cands.append((math.hypot(_pp[0] - _tx, _pp[1] - _ty), p))
+            receiver = (min(_cands)[1] if _cands
+                        else cls._pick_set_piece_target(
+                            att_players, zone, exclude=taker.name))
+        else:
+            receiver = cls._pick_set_piece_target(
+                att_players, zone, exclude=taker.name)
         gk       = cls._pick_gk_player(def_players)
 
         # ── CHECKPOINT P1: SET-PIECE DEFENSIVE MARKING GRID ────────────────
@@ -7091,8 +7224,11 @@ class SetPieceChain(BaseChain):
         # any conflict, and BEFORE the 3D flight, so the aerial duel happens in
         # the positions the marking grid asked for. Gated on `is_corner`: a
         # crossed free kick reaches this function too (23 of the 28 calls in a
-        # typical match) and must NOT get a corner's box.
-        if is_corner:
+        # typical match) and must NOT get a corner's box. ALSO gated on
+        # `not is_short`: a short corner exists precisely because the box is
+        # NOT packed — running thirteen men in would leave the short pass
+        # surrounded by our own attackers with nobody to receive it.
+        if is_corner and not is_short:
             try:
                 box = cls._corner_box_occupancy(
                     attacks_right=attacks_right,
@@ -7151,6 +7287,30 @@ class SetPieceChain(BaseChain):
                 if receiver is not None and receiver.name in box:
                     rx, ry = box[receiver.name]
 
+        if is_short and receiver is not None and position_engine is not None:
+            # A short pass goes to a man who has come SHORT to support the
+            # corner. Measured by `_diag_short_corner_q.py`: picking the nearest
+            # attacker to the flag produced passes of **17.7-34.2 m** — a short
+            # corner is 8-18 m — because in this engine the whole team is
+            # 20-40 m up the pitch and nobody stands near the corner. The
+            # mechanic was "short" only in its name.
+            #
+            # So the receiver is RUN to a support slot, the same way the box is
+            # run in via `advance_to_slots`. That is what a midfielder actually
+            # does: come short, offer yourself, receive on the half-turn. It is
+            # also why a short corner works in real football and would not work
+            # here otherwise -- it requires someone to have moved.
+            _dz = 34.0 if corner_y < 34 else 34.0
+            _dx, _dy = (91.5 - delivery_x), (_dz - delivery_y)
+            _dl = math.hypot(_dx, _dy) or 1.0
+            _ux, _uy = _dx / _dl, _dy / _dl
+            _sup = (delivery_x + _ux * SHORT_CORNER_SUPPORT_M,
+                    delivery_y + _uy * SHORT_CORNER_SUPPORT_M)
+            rx, ry = _sup
+            position_engine.advance_to_slots(
+                {receiver.name: _sup}, SET_PIECE_JOSTLE_S,
+                exclude={getattr(taker, "name", None)})
+
         # ── 3D FLIGHT ──────────────────────────────────────────────
         # The ball always leaves the taker's boot. Delivery quality is encoded
         # in the flight parameters, not a separate success roll.
@@ -7163,15 +7323,78 @@ class SetPieceChain(BaseChain):
         # Good crossers (80+) put it in the 2.0–2.4 m sweet spot.
         # Poor crossers (0) float it 2.6–3.0 m (too high) or drive it 1.6–1.9 m (too low).
         corner_height = 2.0 + (1.0 - cross_quality) * random.uniform(0.3, 0.9)
+        if is_short:
+            # A short corner is played along the GROUND to a man a few metres
+            # away, not lofted into a crowd. Lofting it would hand the defenders
+            # a header they win every time and quietly turn the routine back
+            # into the cross it was meant to replace.
+            corner_height = SHORT_CORNER_HEIGHT_M
         # Feature #3: routines only bend the flight of a crosser who CAN
         # bend it — a poor crosser's ball stays a poor crosser's ball.
-        corner_height = max(2.0, min(3.0, corner_height + params.get("height_bias", 0.0) * cross_quality))
+        #
+        # THE CLAMP IS NOT ROUTINE-AWARE, and it silently undid the short
+        # corner. Measured by `_diag_short_corner_q.py`: with `corner_height`
+        # set to 0.35 immediately above, the forced-short arm still produced
+        # flights of **apex 3.4-9.1 m over 1.36-2.72 s** — i.e. a long, lofted
+        # cross. This `max(2.0, ...)` overwrote it on the very next line. The
+        # clamp exists to keep a CROSS inside players' vertical reach
+        # (~2.1-2.4 m), which is a real constraint and is kept — for a
+        # cross. A short pass has no such constraint and must not be clamped
+        # into one.
+        if not is_short:
+            corner_height = max(2.0, min(3.0, corner_height
+                                         + params.get("height_bias", 0.0)
+                                         * cross_quality))
         corner_speed = aerial_delivery_speed(
             float(getattr(taker.dna.passing, "long_passing", 55.0))
         )
-        # Target is slightly ahead of the attacker so they run onto it
-        target_x = rx + random.uniform(-1.0, 1.0)
-        target_y = ry + random.uniform(-1.0, 1.0)
+        # THE KICKER IS NOT AIMING AT A MAN.
+        # This used to be `rx + uniform(-1, 1)` — the receiver's OWN placed
+        # position, plus a metre. The delivery was therefore computed at the
+        # exact spot the receiver was standing on, so `resolve_aerial_delivery`
+        # scored him at ~0 arrival and no marker could beat him. That is the
+        # geometry behind "attackers win 93-100% of corners", and it is not
+        # football: a taker aims at a ZONE and plays the ball in front of his
+        # runner, because the runner is moving.
+        #
+        # Three terms, all from things the engine already measures:
+        #   LEAD  -- how far in front of his man a good crosser plays it,
+        #             scaled by `cross_quality`, toward the goal.
+        #   ERROR -- triangular (the sum of two uniforms, so misses are
+        #             concentrated near the aim point rather than spread flat),
+        #             scaled by how badly he crosses. A poor delivery is a
+        #             genuinely worse delivery.
+        #   CAP   -- the total miss is bounded so the ball always lands within
+        #             reach of somebody. Measured: past ~5.5 m of error NOBODY
+        #             can contest the flight at all and the cross simply drops,
+        #             because a 1.3 s flight gives a man 5 m away no time to get
+        #             under it. That cliff is recorded as unexplained in
+        #             AGENTS.md rather than papered over here; capping below it
+        #             is a choice, and it is a choice to keep corners playable.
+        #
+        # STREAM: this replaces two `random.uniform` draws with four, so the
+        # match's random stream shifts from here on. That is accepted, not
+        # overlooked: it is an intentional change to the football, and the root
+        # fix for comparability is seed reproducibility, not a shim.
+        _lead = CORNER_LEAD_M * cross_quality
+        _err = CORNER_ERROR_M * max(0.15, 1.0 - cross_quality)
+
+        def _tri(scale):
+            return (random.uniform(-scale, scale)
+                    + random.uniform(-scale, scale)) * 0.5
+
+        _off_x = _tri(_err)
+        _off_y = _tri(_err * 1.25)
+        _mag = math.hypot(_off_x, _off_y)
+        if _mag > CORNER_ERROR_MAX_M:
+            _sc = CORNER_ERROR_MAX_M / _mag
+            _off_x *= _sc
+            _off_y *= _sc
+        # Lead is toward the goal being attacked, which is a different
+        # direction for each side -- the same mistake as the half-time mirror.
+        _goalward = 1.0 if attacks_right else -1.0
+        target_x = rx + _goalward * _lead + _off_x
+        target_y = ry + _off_y
         # The flight arc is now ballistic: launch angle and apex fall out of
         # the taker's crossing speed, not a tuned apex.
         # An in-swinger bends toward the goalmouth (side spin from the taker's
@@ -7279,10 +7502,19 @@ class SetPieceChain(BaseChain):
         # previous test) would have filed every other attacker header as a
         # loose ball the moment step 3 let more than one attacker compete.
         headerer = None
-        if winner_name and winner_team == att_team:
+        if winner_team == att_team:
             headerer = next((p for p in att_players
                              if p.name == winner_name), None)
-        if headerer is None and attacker_mp is not None:
+        # Fall back to the receiver ONLY when nobody won the duel at all. It
+        # used to fire whenever `headerer` was None, which is ALSO true when a
+        # DEFENDER won -- so `att_wins` came out True for every controlled or
+        # contested corner, and the delivery-quality flag read 93-100% attacker
+        # while the duel underneath was genuinely split. Measured at the duel
+        # with `_diag_race_in_match.py`: 6 of 11 corner aerials won by the
+        # defence, against 9 of 9 reported by the event flag. A fallback that
+        # cannot tell "no winner" from "the other side won" is not a fallback,
+        # it is an override.
+        if headerer is None and not winner_name and attacker_mp is not None:
             headerer = receiver
         att_wins = (
             aerial.outcome in ("controlled", "contested")

@@ -242,6 +242,12 @@ _ROUTINE_DELIVERY: Dict[SetPieceRoutine, DeliveryParams] = {
         "swing": "in",
         "height_bias": -0.3,
         "crowd": 0.2,
+        # `short` is the flag that makes this a short corner AT ALL. Without it
+        # this routine was a low cross aimed at the edge of the box -- the
+        # `target_zone` was honoured and the word "short" was not, so a routine
+        # selected from EVERY style pool (all eight) silently played a cross.
+        # `event_chain.py` had zero references to `SHORT_CORNER` before this.
+        "short": True,
     },
 }
 

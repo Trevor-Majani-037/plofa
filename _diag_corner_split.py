@@ -66,7 +66,11 @@ att = sum(1 for e in corners if e.outcome)
 gk = sum(1 for r in rows if r[0] and r[0].endswith("GK")) if rows else 0
 split = {}
 for r in rows:
-    who = "GK" if r[0].endswith("GK") else ("attacker" if r[0] else "loose")
+    # NB: this column CANNOT tell which side won -- it only knows whether the
+    # winner is the keeper. Labelling it "attacker" was actively misleading
+    # once the defence started winning: a clean-looking column that is not
+    # measuring what it says.
+    who = "keeper" if r[0].endswith("GK") else ("outfield" if r[0] else "loose")
     split[who] = split.get(who, 0) + 1
 n = max(1, len(rows))
 print(f"seed {seed:>3} | corners {len(corners):>2} | attacker-won {att:>2} "
