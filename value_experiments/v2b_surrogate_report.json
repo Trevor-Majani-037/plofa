@@ -1,0 +1,226 @@
+{
+  "rescale_max_raw": {
+    "GK": 0.1016,
+    "CB": 0.0521,
+    "LB": 0.6648,
+    "RB": 0.142,
+    "CDM": 0.1146,
+    "CM": 0.1369,
+    "CAM": 0.2972,
+    "LW": 0.8266,
+    "RW": 0.0569,
+    "ST": 1.0917,
+    "CF": 0.0635,
+    "": 1.108
+  },
+  "positions": {
+    "GK": {
+      "n_buckets": 15,
+      "intents": {
+        "SHOOT": 5,
+        "THROUGH_BALL": 9,
+        "PROTECT_POSSESSION": 8,
+        "SWITCH": 10,
+        "PROGRESSIVE_PASS": 1
+      },
+      "scoring_bucket_means": {
+        "SHOOT": 0.8189,
+        "SWITCH": 0.4583,
+        "PROTECT_POSSESSION": 0.4569,
+        "THROUGH_BALL": 0.4218,
+        "PROGRESSIVE_PASS": 0.4
+      }
+    },
+    "CB": {
+      "n_buckets": 21,
+      "intents": {
+        "CARRY": 8,
+        "PROTECT_POSSESSION": 16,
+        "SAFE_PASS": 7,
+        "SWITCH": 16,
+        "CROSS": 10,
+        "RECYCLE": 3,
+        "SHOOT": 1
+      },
+      "scoring_bucket_means": {
+        "SWITCH": 0.8465,
+        "PROTECT_POSSESSION": 0.694,
+        "CARRY": 0.628,
+        "SAFE_PASS": 0.4,
+        "CROSS": 0.4,
+        "RECYCLE": 0.4
+      }
+    },
+    "LB": {
+      "n_buckets": 24,
+      "intents": {
+        "CROSS": 13,
+        "SAFE_PASS": 10,
+        "THROUGH_BALL": 18,
+        "PROTECT_POSSESSION": 5,
+        "DRIBBLE": 2,
+        "PROGRESSIVE_PASS": 5
+      },
+      "scoring_bucket_means": {
+        "PROTECT_POSSESSION": 1.5,
+        "PROGRESSIVE_PASS": 0.4525,
+        "THROUGH_BALL": 0.4408,
+        "SAFE_PASS": 0.4103,
+        "DRIBBLE": 0.4,
+        "CROSS": 0.4
+      }
+    },
+    "RB": {
+      "n_buckets": 26,
+      "intents": {
+        "SWITCH": 14,
+        "PROTECT_POSSESSION": 12,
+        "DRIBBLE": 8,
+        "CROSS": 23,
+        "THROUGH_BALL": 6,
+        "CARRY": 8,
+        "SHOOT": 3,
+        "SAFE_PASS": 3,
+        "PROGRESSIVE_PASS": 13,
+        "RECYCLE": 1
+      },
+      "scoring_bucket_means": {
+        "CROSS": 0.524,
+        "PROGRESSIVE_PASS": 0.5228,
+        "CARRY": 0.4808,
+        "PROTECT_POSSESSION": 0.4,
+        "THROUGH_BALL": 0.4,
+        "DRIBBLE": 0.4,
+        "SWITCH": 0.4,
+        "SHOOT": 0.4,
+        "SAFE_PASS": 0.4
+      }
+    },
+    "CDM": {
+      "n_buckets": 18,
+      "intents": {
+        "SWITCH": 14,
+        "SHOOT": 3,
+        "SAFE_PASS": 8,
+        "DRIBBLE": 11,
+        "THROUGH_BALL": 3
+      },
+      "scoring_bucket_means": {
+        "THROUGH_BALL": 1.5,
+        "DRIBBLE": 0.6834,
+        "SWITCH": 0.4322,
+        "SAFE_PASS": 0.4
+      }
+    },
+    "CM": {
+      "n_buckets": 18,
+      "intents": {
+        "SHOOT": 11,
+        "RECYCLE": 16,
+        "SWITCH": 5,
+        "CROSS": 11,
+        "CARRY": 3,
+        "PROTECT_POSSESSION": 7,
+        "THROUGH_BALL": 8,
+        "DRIBBLE": 10
+      },
+      "scoring_bucket_means": {
+        "THROUGH_BALL": 0.8044,
+        "DRIBBLE": 0.7994,
+        "RECYCLE": 0.7657,
+        "SHOOT": 0.4552,
+        "CROSS": 0.4178,
+        "PROTECT_POSSESSION": 0.4,
+        "SWITCH": 0.4
+      }
+    },
+    "CAM": {
+      "n_buckets": 8,
+      "intents": {
+        "SAFE_PASS": 5,
+        "SWITCH": 5,
+        "CARRY": 6,
+        "PROTECT_POSSESSION": 3,
+        "CROSS": 2
+      },
+      "scoring_bucket_means": {
+        "SAFE_PASS": 0.95,
+        "SWITCH": 0.44,
+        "CARRY": 0.4,
+        "PROTECT_POSSESSION": 0.4
+      }
+    },
+    "LW": {
+      "n_buckets": 20,
+      "intents": {
+        "CROSS": 19,
+        "SHOOT": 7,
+        "RECYCLE": 5,
+        "SWITCH": 6
+      },
+      "scoring_bucket_means": {
+        "CROSS": 0.5053,
+        "SHOOT": 0.4314,
+        "SWITCH": 0.4,
+        "RECYCLE": 0.4
+      }
+    },
+    "RW": {
+      "n_buckets": 24,
+      "intents": {
+        "CARRY": 8,
+        "THROUGH_BALL": 14,
+        "PROGRESSIVE_PASS": 5,
+        "SHOOT": 5,
+        "SWITCH": 2,
+        "PROTECT_POSSESSION": 2,
+        "SAFE_PASS": 1
+      },
+      "scoring_bucket_means": {
+        "CARRY": 0.7973,
+        "SHOOT": 0.7735,
+        "THROUGH_BALL": 0.4627,
+        "PROGRESSIVE_PASS": 0.4,
+        "SWITCH": 0.4,
+        "PROTECT_POSSESSION": 0.4
+      }
+    },
+    "ST": {
+      "n_buckets": 18,
+      "intents": {
+        "SHOOT": 13,
+        "PROGRESSIVE_PASS": 11,
+        "DRIBBLE": 8,
+        "CARRY": 2,
+        "SWITCH": 4
+      },
+      "scoring_bucket_means": {
+        "SHOOT": 0.6875,
+        "CARRY": 0.419,
+        "PROGRESSIVE_PASS": 0.4125,
+        "SWITCH": 0.4048,
+        "DRIBBLE": 0.4005
+      }
+    },
+    "CF": {
+      "n_buckets": 10,
+      "intents": {
+        "SHOOT": 9,
+        "PROGRESSIVE_PASS": 3,
+        "CARRY": 2,
+        "CROSS": 2,
+        "THROUGH_BALL": 4,
+        "DRIBBLE": 2
+      },
+      "scoring_bucket_means": {
+        "SHOOT": 1.1201,
+        "CROSS": 0.785,
+        "THROUGH_BALL": 0.4,
+        "DRIBBLE": 0.4,
+        "PROGRESSIVE_PASS": 0.4,
+        "CARRY": 0.4
+      }
+    }
+  },
+  "prior": 0.4
+}

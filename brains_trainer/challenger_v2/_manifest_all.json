@@ -1,0 +1,88 @@
+{
+  "surrogate": "brains_trainer/surrogate_v2.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.25,
+  "total_elapsed_s": 500.6,
+  "results": {
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 185.1,
+      "summary": "RB: fitness=0.3475 (184.1s) -> brains_trainer/challenger_v2\\RB.json",
+      "err": ""
+    },
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 185.6,
+      "summary": "GK: fitness=0.3298 (184.5s) -> brains_trainer/challenger_v2\\GK.json",
+      "err": ""
+    },
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 185.6,
+      "summary": "LB: fitness=0.4305 (184.5s) -> brains_trainer/challenger_v2\\LB.json",
+      "err": ""
+    },
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 186.1,
+      "summary": "CB: fitness=0.3870 (185.1s) -> brains_trainer/challenger_v2\\CB.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 193.7,
+      "summary": "CM: fitness=0.3445 (192.7s) -> brains_trainer/challenger_v2\\CM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 193.4,
+      "summary": "LW: fitness=0.3319 (192.4s) -> brains_trainer/challenger_v2\\LW.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 194.6,
+      "summary": "CDM: fitness=0.4057 (193.3s) -> brains_trainer/challenger_v2\\CDM.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 194.3,
+      "summary": "CAM: fitness=0.2980 (193.1s) -> brains_trainer/challenger_v2\\CAM.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 118.7,
+      "summary": "CF: fitness=0.3973 (118.1s) -> brains_trainer/challenger_v2\\CF.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 119.6,
+      "summary": "ST: fitness=0.3366 (118.9s) -> brains_trainer/challenger_v2\\ST.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 120.7,
+      "summary": "RW: fitness=0.3335 (120.0s) -> brains_trainer/challenger_v2\\RW.json",
+      "err": ""
+    }
+  }
+}

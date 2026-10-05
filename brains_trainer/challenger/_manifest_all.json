@@ -1,0 +1,88 @@
+{
+  "surrogate": "brains_trainer\\surrogate_refit.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.25,
+  "total_elapsed_s": 501.9,
+  "results": {
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 180.9,
+      "summary": "GK: fitness=0.9996 (179.8s) -> brains_trainer\\challenger\\GK.json",
+      "err": ""
+    },
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 181.2,
+      "summary": "CB: fitness=1.0000 (180.2s) -> brains_trainer\\challenger\\CB.json",
+      "err": ""
+    },
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 181.4,
+      "summary": "RB: fitness=1.0000 (180.3s) -> brains_trainer\\challenger\\RB.json",
+      "err": ""
+    },
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 182.6,
+      "summary": "LB: fitness=1.0000 (181.6s) -> brains_trainer\\challenger\\LB.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 180.1,
+      "summary": "CM: fitness=1.0000 (179.1s) -> brains_trainer\\challenger\\CM.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 180.6,
+      "summary": "CDM: fitness=1.0000 (179.6s) -> brains_trainer\\challenger\\CDM.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 180.4,
+      "summary": "CAM: fitness=1.0000 (179.4s) -> brains_trainer\\challenger\\CAM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 180.3,
+      "summary": "LW: fitness=1.0000 (179.4s) -> brains_trainer\\challenger\\LW.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 139.5,
+      "summary": "RW: fitness=1.0000 (138.6s) -> brains_trainer\\challenger\\RW.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 139.5,
+      "summary": "ST: fitness=1.0000 (138.6s) -> brains_trainer\\challenger\\ST.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 139.6,
+      "summary": "CF: fitness=1.0000 (138.7s) -> brains_trainer\\challenger\\CF.json",
+      "err": ""
+    }
+  }
+}

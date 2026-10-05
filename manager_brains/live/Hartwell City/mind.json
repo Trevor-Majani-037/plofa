@@ -1,0 +1,18 @@
+{
+  "kind": "manager_mind",
+  "version": 1,
+  "pedagogy": 0.5,
+  "eq": 0.5,
+  "empathy": 0.5,
+  "dogma": 0.5,
+  "youth_trust": 0.5,
+  "rotation_discipline": 0.5,
+  "pressure_baseline": 0.5,
+  "composure_current": 1.0,
+  "stress_accumulator": 0.0,
+  "history_posture_counts": {
+    "DEFEND": 863,
+    "BALANCED": 1028,
+    "ATTACK": 0
+  }
+}

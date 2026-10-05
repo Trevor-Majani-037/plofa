@@ -1,0 +1,88 @@
+{
+  "surrogate": "brains_trainer/critic_v3.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.25,
+  "total_elapsed_s": 1387.6,
+  "results": {
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 358.4,
+      "summary": "LB: fitness=0.4621 (356.8s) -> brains_v2\\LB.json",
+      "err": ""
+    },
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 359.4,
+      "summary": "GK: fitness=0.5481 (357.8s) -> brains_v2\\GK.json",
+      "err": ""
+    },
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 362.5,
+      "summary": "CB: fitness=0.5360 (360.9s) -> brains_v2\\CB.json",
+      "err": ""
+    },
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 365.7,
+      "summary": "RB: fitness=0.5716 (363.9s) -> brains_v2\\RB.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 584.0,
+      "summary": "CDM: fitness=0.4372 (580.3s) -> brains_v2\\CDM.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 585.3,
+      "summary": "CM: fitness=0.5725 (581.9s) -> brains_v2\\CM.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 584.9,
+      "summary": "CAM: fitness=0.5781 (580.9s) -> brains_v2\\CAM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 587.1,
+      "summary": "LW: fitness=0.4851 (582.8s) -> brains_v2\\LW.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 440.4,
+      "summary": "RW: fitness=0.6024 (437.5s) -> brains_v2\\RW.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 440.9,
+      "summary": "ST: fitness=0.4956 (438.6s) -> brains_v2\\ST.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 439.4,
+      "summary": "CF: fitness=0.5073 (436.7s) -> brains_v2\\CF.json",
+      "err": ""
+    }
+  }
+}

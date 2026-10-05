@@ -72,6 +72,13 @@ MENU_NAMES: Dict[str, List[str]] = {
         "box_threat",           # opp attackers inside ~25 m of our goal
         "ball_own_third",       # ball in the defensive third
         "aerial_boundary",      # ball near goal while opp forwards camp the box
+        # Build-up geometry (the two sensors missing for emergent corridor behavior):
+        "same_side_lane_open",  # openness of the best fwd teammate on the CB's OWN pitch half
+                                # (high = same-side forward option available; network learns
+                                #  to prefer this lane when here and open, WITHOUT a rule)
+        "far_side_gap",         # lateral width to the best far-side teammate
+                                # (high = switch target wide open; network learns to switch
+                                #  when this is high and same_side is congested, WITHOUT a rule)
     ],
     "FB": [
         "wide_marker_dist",     # nearest opp wide attacker ahead (the fullback's man)
@@ -289,8 +296,33 @@ def _cb_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
         aerial_boundary = _clamp(sum(1 for d in fwds
                                      if _d_goal(*_pos(pe, d.name, (x, y)), own_gx) < 25.0) / 2.0)
 
+    # ── Build-up geometry (emergent corridor + switch behavior) ──────────────
+    # same_side_lane_open: openness of the best forward teammate on the SAME
+    # half of the pitch width as this CB.  RCB at y<34 → looks at low-y fwd
+    # options; LCB at y>34 → looks at high-y fwd options.  The network can
+    # learn "when same_side_lane_open is high I'm in own half, pass forward
+    # into my corridor" — zero hand-coded rule, pure geometry signal.
+    PITCH_Y_MID = 34.0
+    same_side = y < PITCH_Y_MID  # True = CB sits on right/low half
+    same_side_open = 0.0
+    far_best_gap = 0.0
+    for t in tms_n:
+        tx, ty = _pos(pe, t.name, (x, y))
+        progress = _prog(tx, x, ar)
+        if progress < 4.0:
+            continue
+        t_same_side = ty < PITCH_Y_MID
+        openv = _openness(tx, ty, defs, pe)
+        if t_same_side == same_side:
+            same_side_open = max(same_side_open, openv)
+        else:
+            # far_side_gap: how far across the pitch this far-side teammate is
+            gap = _clamp(abs(ty - y) / 55.0)  # 55 m ≈ full pitch width usable
+            far_best_gap = max(far_best_gap, gap * openv)
+
     return [own_line_height, space_behind, marking_coverage, runner_danger,
-            box_threat, ball_own_third, aerial_boundary]
+            box_threat, ball_own_third, aerial_boundary,
+            same_side_open, far_best_gap]
 
 
 def _fb_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],

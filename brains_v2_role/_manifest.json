@@ -1,0 +1,22 @@
+{
+  "positions": [
+    "RW"
+  ],
+  "generations": 80,
+  "population": 32,
+  "states": 300,
+  "role_features": true,
+  "perception": true,
+  "perception_roles": true,
+  "results": {
+    "RW": {
+      "best_fitness": 0.8692,
+      "generations": 80,
+      "seed": 123,
+      "elapsed_s": 482.3,
+      "saved_to": "brains_v2_role\\RW.json",
+      "input_size": 32,
+      "sensor_schema": "v2_role_features"
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "surrogate": "brains\\surrogate_pos.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "total_elapsed_s": 440.6,
+  "results": {
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 300.1,
+      "summary": "RW: fitness=1.0000 (299.1s) -> brains\\RW.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 300.6,
+      "summary": "ST: fitness=0.9426 (299.6s) -> brains\\ST.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 301.2,
+      "summary": "LW: fitness=1.0000 (300.2s) -> brains\\LW.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 301.3,
+      "summary": "CF: fitness=0.9258 (300.3s) -> brains\\CF.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 139.9,
+      "summary": "CAM: fitness=0.9801 (139.0s) -> brains\\CAM.json",
+      "err": ""
+    }
+  }
+}

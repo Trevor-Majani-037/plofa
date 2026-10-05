@@ -1,6 +1,0 @@
-streamlit==1.61.1
-plotly==6.9.0
-pandas==2.0.3
-numpy==1.26.4
-matplotlib==3.9.4
-mplsoccer==1.6.1

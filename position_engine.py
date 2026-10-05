@@ -160,8 +160,22 @@ STRETCH_TARGET_BOOST: float = 0.30  # off-ball target steer (match_engine)
 #      that "sometimes collapses into a narrow block", and the collapse is
 #      unchanged -- it is a tail event, and a rule that raises the AVERAGE
 #      cannot touch a tail.
+#      >>> 2026-10-05 CORRECTION: REASONS 1 AND 2 ARE VOID, BOTH NUMBERS. They
+#      >>> come from the mispaired separation column of _diag_wide_target.py.
+#      >>> _offball_tick_seq is a plain int ATTRIBUTE (match_engine.py:1990),
+#      >>> not a method; the probe called it, TypeError was swallowed by the
+#      >>> probe's own `except Exception: return -1`, and every wide player
+#      >>> collapsed into ONE tick group. The touchline-distance column above
+#      >>> is per-player and needs no pairing, so IT STANDS; only the side-
+#      >>> to-side separation figures do not.
+#      >>> The REASONING survives -- a rule that raises the mean cannot move a
+#      >>> tail -- and is now independently supported by _diag_width_gate.py
+#      >>> (p90 = 36.5 m: the 45-55 m band is geometrically unreachable, and
+#      >>> lifting the median REDUCES the share inside the band). But the
+#      >>> measurement offered for it here was not evidence. Do not quote it.
 #   2. IT DOES NOT REACH 45-55 m. Median side-to-side separation moved 36.2
-#      -> 38.9 m, nowhere near the band.
+#      -> 38.9 m, nowhere near the band.   [VOID -- see correction above.
+#      Trustworthy equivalent is the target-side median 30.6 m.]
 #   3. IT COSTS REAL FOOTBALL. CK35 is applied AFTER the live run targets
 #      (match_engine.py:2835-2843 then :2859), so a higher weight directly
 #      undoes the winger's "cut inside" / box-entry run -- measured firing on

@@ -1,0 +1,17 @@
+{
+  "positions": [
+    "CF"
+  ],
+  "generations": 2,
+  "population": 8,
+  "states": 40,
+  "results": {
+    "CF": {
+      "best_fitness": 0.3718,
+      "generations": 2,
+      "seed": 123,
+      "elapsed_s": 0.1,
+      "saved_to": "brains_trainer_smoke2\\challenger\\CF.json"
+    }
+  }
+}

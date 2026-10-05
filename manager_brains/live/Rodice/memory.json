@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "max_entries": 100,
+  "decay": 0.97,
+  "table": {
+    "('level', '75-90', 'DEFEND')": {
+      "wins": 0,
+      "draws": 1,
+      "losses": 0,
+      "xg_for": 2.34,
+      "xg_against": 0.58,
+      "count": 0
+    },
+    "('level', '75-90', 'BALANCED')": {
+      "wins": 0,
+      "draws": 1,
+      "losses": 0,
+      "xg_for": 2.34,
+      "xg_against": 0.58,
+      "count": 1
+    }
+  }
+}

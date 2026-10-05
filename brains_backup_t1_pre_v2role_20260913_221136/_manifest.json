@@ -1,0 +1,17 @@
+{
+  "positions": [
+    "CAM"
+  ],
+  "generations": 80,
+  "population": 32,
+  "states": 300,
+  "results": {
+    "CAM": {
+      "best_fitness": 0.9801,
+      "generations": 80,
+      "seed": 123,
+      "elapsed_s": 139.0,
+      "saved_to": "brains\\CAM.json"
+    }
+  }
+}

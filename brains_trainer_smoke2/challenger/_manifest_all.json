@@ -1,0 +1,88 @@
+{
+  "surrogate": "brains_trainer_smoke2\\surrogate_refit.json",
+  "states": 40,
+  "generations": 2,
+  "population": 8,
+  "seed": 123,
+  "goal_bias": 0.25,
+  "total_elapsed_s": 5.7,
+  "results": {
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 0.9,
+      "summary": "GK: fitness=0.4686 (0.2s) -> brains_trainer_smoke2\\challenger\\GK.json",
+      "err": ""
+    },
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 0.9,
+      "summary": "CB: fitness=0.2381 (0.2s) -> brains_trainer_smoke2\\challenger\\CB.json",
+      "err": ""
+    },
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 0.8,
+      "summary": "LB: fitness=0.2995 (0.1s) -> brains_trainer_smoke2\\challenger\\LB.json",
+      "err": ""
+    },
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 0.8,
+      "summary": "RB: fitness=0.2215 (0.1s) -> brains_trainer_smoke2\\challenger\\RB.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 0.9,
+      "summary": "CDM: fitness=0.7233 (0.2s) -> brains_trainer_smoke2\\challenger\\CDM.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 0.9,
+      "summary": "CM: fitness=0.2941 (0.2s) -> brains_trainer_smoke2\\challenger\\CM.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 1.3,
+      "summary": "CAM: fitness=0.1780 (0.1s) -> brains_trainer_smoke2\\challenger\\CAM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 1.3,
+      "summary": "LW: fitness=0.3705 (0.1s) -> brains_trainer_smoke2\\challenger\\LW.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 0.8,
+      "summary": "RW: fitness=0.2895 (0.2s) -> brains_trainer_smoke2\\challenger\\RW.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 0.8,
+      "summary": "ST: fitness=0.3261 (0.2s) -> brains_trainer_smoke2\\challenger\\ST.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 0.6,
+      "summary": "CF: fitness=0.3718 (0.1s) -> brains_trainer_smoke2\\challenger\\CF.json",
+      "err": ""
+    }
+  }
+}

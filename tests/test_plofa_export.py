@@ -361,8 +361,8 @@ def test_shot_ends_are_populated_for_both_teams():
     in one frame with no per-event flag. xfail: see the reason — the engine
     does not populate shot `end_x` reliably yet, so this cannot pass."""
     import random
-    from _diag_watch import build
-    from _diag_plofa_export import roster_from
+    from tools.diag._diag_watch import build
+    from tools.diag._diag_plofa_export import roster_from
     eng, _, _ = build()
     eng.enable_virtual_gps(0.1)
     random.seed(31)
@@ -416,8 +416,8 @@ def test_shot_ends_are_populated_for_both_teams():
     "fixing it turns this RED."))
 def test_frame_which_half_the_team_operates_in():
     import random
-    from _diag_watch import build
-    from _diag_plofa_export import roster_from
+    from tools.diag._diag_watch import build
+    from tools.diag._diag_plofa_export import roster_from
     eng, _, _ = build()
     eng.enable_virtual_gps(0.1)
     random.seed(31)
@@ -445,8 +445,8 @@ def test_real_match_export_is_valid():
     shooting at their own ends, coordinates on the pitch, and the pass
     vocabulary the project actually produces."""
     import random
-    from _diag_watch import build
-    from _diag_plofa_export import roster_from
+    from tools.diag._diag_watch import build
+    from tools.diag._diag_plofa_export import roster_from
 
     eng, _, _ = build()
     eng.enable_virtual_gps(0.1)

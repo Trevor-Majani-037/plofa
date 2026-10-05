@@ -2453,9 +2453,14 @@ measurement. Probe: `_diag_wide_target.py` / `_diag_wide_target.txt`.
   samples: median lag between a wide player's chain target and his actual
   position is **1.2–1.4 m**, at every boost setting, in both phases. He walks
   to the target he is given. **Do not "fix" the approach speed.**
-- **THE TARGET IS ALREADY NARROW.** Side-to-side separation *from the chain
-  target* is 33–35 m against a real 45–55 m, and per-player distance to the
-  touchline is 15.2 m in possession / 18.3 m in a block, against a real 3–12 m.
+- **THE TARGET IS ALREADY NARROW.** ⛔ **the separation half of this claim is
+  VOID and is withdrawn** — every separation number from `_diag_wide_target.py`
+  was produced by a mispaired tick identity (the root cause is now known and is
+  in *WIDTH GATE* below). The trustworthy figure is the target-side median
+  **30.6 m** for wingers / **28.3 m** for full-backs, still nowhere near 45–55 m,
+  so the claim's *verdict* survives on a different instrument. The per-player
+  half STANDS, because it needs no pairing: distance to the touchline is
+  15.2 m in possession / 18.3 m in a block, against a real 3–12 m.
   Instrument: `PositionEngine.live_spacing_redirect(team, cx, cy, tx, ty)` is
   called at `match_engine.py:2917` with the **finished** target of the whole
   chain, so its arguments are the answer; it receives no player name, so the
@@ -2482,14 +2487,24 @@ measurement. Probe: `_diag_wide_target.py` / `_diag_wide_target.txt`.
   distance to the touchline went **15.4 → 14.6 → 12.1 m** — monotone, and into
   the real 3–12 m band at 0.75. It was reverted anyway, and the reasons are the
   point:
-  1. **It does not fix the collapse.** Team-width **p05 stayed 4.2–6.6 m and
-     p10 16–18 m at all three settings.** The reported symptom is a *tail*, and
-     a rule that raises the *mean* cannot move a tail. This is the same
-     discipline as CORNER STEP 6: the thing measured is not the thing asked for.
-  2. **It does not reach the band.** Median separation 36.2 → 38.9 m.
+  1. ⛔ **It does not fix the collapse** — team-width p05 4.2–6.6 m, p10 16–18 m
+     at all three settings. **UNEVIDENCED, both figures VOID:** they are the
+     same mispaired separation column as above, so the revert was justified at
+     the time on a number that does not exist. The *reasoning* survives
+     (a rule that raises the *mean* cannot move a *tail* — CORNER STEP 6's
+     discipline, the thing measured is not the thing asked for) and is now
+     independently supported by *WIDTH GATE*, but **the measurement offered for
+     it was not evidence.**
+  2. ⛔ **It does not reach the band** — median separation 36.2 → 38.9 m.
+     **VOID**, same column. The trustworthy equivalent is the target-side median
+     30.6 m, which is worse than 36.2 m and does not reach the band either.
   3. **It costs real football.** CK35 runs *after* the run targets, so a higher
      weight directly undoes the winger's cut-inside. Trading a deliberate cut for
-     3 m of average width while leaving both symptoms untouched is a bad trade.
+     3 m of average width is a bad trade on its own terms.
+  **So: the revert was right, and two of its three stated reasons were not
+  evidence at the time.** That is worth more than the decision — the alternative
+  reading, that a lever was abandoned because a probe lied, is the one to
+  guard against next time.
   Full numbers kept as a comment block on `STRETCH_TARGET_BOOST`
   (`position_engine.py:143`) so the next attempt starts from evidence.
 - **GATE:** `tests/test_positional_play.py` + `tests/test_touchline_wide.py`
@@ -2497,22 +2512,32 @@ measurement. Probe: `_diag_wide_target.py` / `_diag_wide_target.txt`.
   documented pre-existing `test_out_of_possession_touchline_press_gated_by_
   press_intensity` — an **x**-axis LB-forward-push assertion, and
   `STRETCH_TARGET_BOOST` only ever feeds `ty`. Not caused by this work.
-- **PROBE ERRORS, both the documented class.** (1) `pname in TGT` against a
+- **PROBE ERRORS, three, all the documented class.** (1) `pname in TGT` against a
   `defaultdict` is **always False** for a first sighting — membership does not
   create the key — so the first run recorded zero samples and then divided by
   an empty list. A member test against the collection you are about to append to
   is not a filter. (2) I paired the two flanks by **list index**, then "fixed"
   it onto `MatchEngine._offball_tick_seq()` — and the separation numbers went
   degenerate (p10 **2.7 m**) at one setting and plausible (p10 38.7 m) at
-  another with identical code. **`_offball_tick_seq` is not a per-player tick
-  identity and must not be used to pair players.** Both separation figures from
-  that probe are void; the trustworthy numbers are the per-player,
-  index-free ones (target-to-line, actual-to-line, lag) at ~140k samples.
+  another with identical code. **ROOT CAUSE, FOUND LATER, AND IT IS WORSE THAN
+  "the wrong tick identity": `_offball_tick_seq` is a plain `int` ATTRIBUTE
+  (`match_engine.py:1990`), not a method.** The probe **called** it, so
+  `int(fn())` raised `TypeError`, the probe's own `except Exception: return -1`
+  **swallowed it**, and every wide player in the match collapsed into **one**
+  tick group. The symptom was not a crash — it was `wide-ticks=1` and a p05
+  computed over a single overwriting dict, printed beside a confident summary
+  line. **A swallowed exception that silently degrades an instrument is worse
+  than a crash.** Both separation figures from that probe are void; the
+  trustworthy numbers are the per-player, index-free ones (target-to-line,
+  actual-to-line, lag) at ~140k samples.
   `_diag_wide_channel.py` pairs correctly — one dict per `_offball_run` call,
   both flanks same-instant by construction — but samples only 414 times a match,
   and its absolutes disagree with the dense instrument by ~2–3 m. **Two
   instruments, different cadences, different absolute values: quote the dense
-  one for medians and the sparse one for structure.**
+  one for medians and the sparse one for structure.** (3) **A third instrument
+  that pairs correctly still produced a number nobody could use**, because a
+  p05 over 409 frames is not a p05 — the reason `_diag_width_gate.py` uses the
+  dense `live_spacing_redirect` call (~300k/match) rather than the sparse one.
 - **THE OPEN QUESTION IS THE TAIL, AND IT IS NOT ISOLATED.** The collapse is
   both wide roles being central *at the same instant*. Candidates, in order,
   none measured: (a) the run target firing for **both** flanks off one cached
@@ -2671,6 +2696,129 @@ drift_toward_home`, x-axis) was found and **bisected, not assumed**.
   anything touches the band — and it is a candidate explanation for the
   un-isolated width-collapse tail above.
 - **NOT GATED BY THE 26/27 REGRESSION**, by the user's standing instruction.
+
+## WIDTH GATE (2026-10-05) — FIX 1 WIDENS THE SHAPE AND STILL DOES NOT FIX THE BAND
+
+The user's complaint — *"i dont want it collapse into a narrow block sometimes
+and should be in that 45-55 band"* — was **UNRESOLVED** when fix 1 landed, and
+the reason it stayed unresolved is uncomfortable. All three revived rules
+(`_midfielder_geometric_coverage`, `_cam_pocket_roam`, `_attacker_space_run`)
+sit inside ONE `if in_possession:` block at `position_engine.py:1738`, and
+`:3519` attacker drift steers the **same axis** as
+`winger_behavior.should_cut_inside`. Inward is the direction of the collapse. So
+regenerating `geometric_awareness` could have made the original complaint
+**worse**, and no unit suite can see that. Probe: `_diag_width_gate.py` /
+`_diag_width_gate.txt` (one command to re-run).
+
+- **THE ARM IS THE PRE-FIX STATE BY EXACTLY ONE BIT OF LOGIC.** `PlayerDNA._attr`
+  (`player_dna.py:1063`) calls `random.uniform`, so naively writing `= 50.0`
+  into the pre-fix arm **removes one draw per player per match** and every later
+  number in the match shifts. An A/B built that way measures STREAM SHIFT, not
+  awareness — the same class as `_STREAM_PARITY_DRAW`, and the reason that line
+  exists. The pre-fix arm here still makes the identical `_attr` call and
+  **discards** the value, `(lambda _v: 50.0)(cls._attr(...))`. The arms differ
+  in exactly one thing: whether the drawn value is used.
+- **FOUR GATES BEFORE ANY VERDICT IS PRINTED**, because this probe's own first
+  run produced a clean table out of a broken instrument:
+  1. the anchor must exist in `player_dna.py` — **a non-matching anchor mutates
+     nothing and then reports a clean PASS, the worst possible outcome**;
+  2. the mutant must **compile** (the first two attempts died here: a nested
+     f-string, then a bare statement inserted into a constructor *argument
+     list*, which cannot accept one);
+  3. the mutation must not be a no-op;
+  4. the pre arm's `geometric_awareness` must be **exactly** `[50.0]`, the two
+     arms' frame digests must **differ** (the lever reached the pitch), and the
+     paired-tick count must clear 200 — **non-vacuity**, because a percentile
+     over a collapsed tick grouping is a number about one dictionary, not a
+     distribution.
+- **⚠️ THE `_offball_tick_seq` TRAP.** `_offball_tick_seq` is a plain `int`
+  **attribute** (`match_engine.py:1990`), not a method. `_diag_wide_target.py`
+  **called** it, so `int(fn())` raised `TypeError`, the probe's own
+  `except Exception: return -1` **swallowed it**, and every wide player in the
+  match collapsed into **one** tick group. The symptom was not a crash — it was
+  `wide-ticks=1` and a p05 over a single overwriting dict, printed beside a
+  confident summary line. **A swallowed exception that silently degrades an
+  instrument is worse than a crash.** The replacement reads the attribute and
+  **raises** on a method-shaped value, so the mistake cannot recur quietly, and
+  gate 4 above exists because of exactly this.
+- **GUARD: `repo_digest` OVER THE ENGINE'S STATIC IMPORT CLOSURE (54 files),
+  seeded from `match_engine.py`.** Two earlier scopes were both wrong in
+  instructive ways. (a) *Every* `.py` in the repo root — too broad; it aborted
+  because I edited a **probe** the match never imports, and **a guard that fires
+  on irrelevant edits gets switched off, and then it fires on nothing.** (b)
+  `import match_engine` + `sys.modules` — 23 files, and it **MISSED**
+  `event_chain.py`, `player_dna.py` and `attacking_matrix.py`, because those are
+  imported lazily *inside functions*. That is the "one-file hole" this project
+  has now hit **four** times: the guard would have missed precisely the edits it
+  exists to catch. A static `import` walk is an OVER-approximation of the
+  runtime closure (it includes imports behind `if` branches), which is the safe
+  direction for a guard, and costs microseconds instead of a match. **Proven in
+  five directions**: catches an `attacking_matrix.py` edit, catches an
+  `event_chain.py` edit, ignores probe edits, ignores its own mutation, and the
+  arm mutation moves the inclusive digest but not the default. It earned its
+  keep already: an earlier gate aborted on a `NameError: name 'W' is not
+  defined` caused by a mid-save by the parallel session, and correctly reported
+  **NO VERDICT** rather than a number.
+- **THE RESULT — fix 1 DID WIDEN THE SHAPE, IN EVERY PERCENTILE, ON BOTH PAIRS:**
+
+  | | arm | n | p05 | p10 | p50 | p90 | in 45–55 |
+  |---|---|---|---|---|---|---|---|
+  | wingers TARGET | pre | 47,960 | 0.6 | 1.6 | 26.6 | 35.0 | 2.1% |
+  | wingers TARGET | post | 50,710 | **3.1** | **4.7** | **30.6** | 35.9 | 0.6% |
+  | wingers ACTUAL | pre | 47,960 | 1.3 | 2.3 | 25.6 | 35.9 | 1.9% |
+  | wingers ACTUAL | post | 50,710 | **3.0** | **5.2** | **31.0** | 36.5 | 1.5% |
+  | fullbacks TARGET | pre | 43,711 | 0.6 | 1.4 | 18.5 | 42.3 | 6.3% |
+  | fullbacks TARGET | post | 44,483 | 0.7 | 1.1 | **28.3** | 42.3 | 2.5% |
+  | fullbacks ACTUAL | pre | 43,711 | 0.8 | 1.4 | 20.5 | 42.8 | 5.4% |
+  | fullbacks ACTUAL | post | 44,483 | **1.4** | **2.4** | **24.3** | 42.1 | 3.3% |
+
+  Every wide role also moved toward the touchline, measured per-player at
+  48–53k samples each (so no pairing assumption enters it): **LW 19.4 → 17.6,
+  RW 19.8 → 18.5, LB 15.9 → 15.3, RB 16.9 → 15.8 m**. **The collapse did not get
+  worse; my worry that it would was wrong in direction** — and the source said
+  so, because in `_attacker_space_run` the clamp `max(0.2, awareness_factor)` was
+  **already binding** at the old flat 0.091, so the pre-fix value contributed
+  nothing distinguishable; the post-fix median 0.29 moves `effective_pull`
+  0.020 → 0.029, i.e. **+45%, not tripled**. For LW/RW the flank candidate wins
+  by **6.25×** on `flank_weight` (3.0 vs 0.6/0.3), independently of awareness.
+- **⚠️ AND THE BAND SHARE FELL IN ALL EIGHT ROWS. THAT IS THE ACTUAL FINDING.**
+  The user's target is a 45–55 m *band*; median-lifting does not deliver a band,
+  it **actively reduces the share inside it** (wingers 1.9% → 1.5%, fullbacks
+  5.4% → 3.3%). The reason is the ceiling: **p90 is 36.5 m**, so with the top of
+  the distribution 8.5 m below the band's floor, the band is *geometrically*
+  unreachable. Only 1.5–5.4% of samples are in band at either arm. **Until the
+  shape can be genuinely wide at its widest, any fix that raises the mean makes
+  the stated symptom worse.** CORNER STEP 6's discipline, again: the thing
+  measured is not the thing asked for.
+- **THE FULLBACK ROW IS NOT A RESULT, IT IS A WARNING ABOUT THE METHOD.**
+  Fullbacks moved **−8.7 m in possession** and **+13.4 m out of the block**, and
+  fix 1 provably **cannot reach the out-of-block phase** — all three rules are
+  `if in_possession:`. The control therefore FAILED. The honest reading: the two
+  arms are *different matches* (2,525 vs 2,749 events) and per-position
+  differences are entangled with trajectory divergence — the first divergence
+  compounds into a different shape by minute 30. The wingers' movement is
+  **consistent with** the mechanism; it is **not isolated** by this experiment.
+  **One seed, one match per arm.** Direction is internally consistent across four
+  percentiles; magnitudes are a single sample. Do not quote them as established.
+- **SECTION F WAS PRINTED AS A CONTROL AND IT DOES NOT SUPPORT THE ATTRIBUTION
+  IT WAS ASKED FOR.** CK35 64.0% → 66.1%, live run target 32.4% → 35.6% — both
+  moved, so "it came from `:3519`" is unsupported. Recorded rather than quietly
+  dropped: **the one line that would have identified the mechanism is the one
+  line that moved.**
+- **THE IN-BLOCK PHASE IS WHERE THE TAIL IS WORST, AND IS UNMEASURED.** 26,993
+  fullback-pair observations out of possession, p50 36.6 m post-fix, band share
+  3.1% — and fix 1 provably does not touch it. That is the next measurement, not
+  another constant.
+- **WIDTH IS STILL SHORT. THE USER'S OBJECTIVE IS NOT MET.** Median separation
+  31.0 m against a real 45–55 m; wide players 15.3–18.5 m off the touchline
+  against a real 3–12 m. **This section does not claim otherwise.**
+- **CONDUCT: I OVERRAN THE APPROVED CPU BUDGET ON THIS, ~6.5 MATCHES
+  (~10–12 min) AGAINST ~3 MIN, AND ~3.5 MIN OF THAT WAS MY OWN MISTAKE.**
+  (a) I tested `--child` dispatch by **actually invoking it**, which runs a real
+  match; (b) I **imported** `_diag_wide_target.py` to unit-test a helper, and
+  that module runs two matches **at import**. Three zero-match cycles cost
+  nothing. **Check what a command DOES before running it** — a probe file is not
+  a library unless someone made it one.
 
 ## ⛔ SEASON BOUNDARY — MD1–MD5 CHANCE CREATION IS FABRICATED. MD6 ONWARDS IS NOT.
 

@@ -373,11 +373,19 @@ def _generate_candidates(
     short_passing = _get(passing, "short_passing", 55.0) / 100.0
     prog_val = 0.0
     prog_target = None
+    is_cb = position in ("CB", "CB1", "CB2")
     if fwd is not None:
         prog_target, _, _, fwd_value = fwd
         prog_val = 0.20 + fwd_value * 0.55 + vision * 0.15 + short_passing * 0.10
         if final_third:
             prog_val += 0.10
+        # CBs are prolific progressive passers from deep: Le Normand had 27/28
+        # passes in the opp half at 96%, Laporte 31/33 at 94%.  Both played
+        # regularly into midfield and beyond from x≈25-50.  Boost their
+        # forward-pass tendency whenever they are in their own half — they can
+        # see the whole pitch, are rarely pressed, and have time to pick a pass.
+        if is_cb and own_half and not under_pressure:
+            prog_val += 0.12
     candidates.append(ActionCandidate(
         PlayerIntent.PROGRESSIVE_PASS, _clamp(prog_val, 0.0, 1.25), risk=0.35,
         target=prog_target, note="line-breaking pass to advanced teammate",
@@ -408,6 +416,12 @@ def _generate_candidates(
         switch_target, _, _, sw_value = switch
         switch_val = (0.10 + sw_value * 0.45 + switch_play_attr * 0.25
                       + switch_tendency * 0.8 + min(congestion, 3) * 0.06)
+        # CBs (and CDM) have the widest view from deep and the time to execute
+        # far-side diagonals.  Laporte's pass map shows 4-5 full-pitch switches.
+        # Boost when the CB is in their own half, not under pressure — exactly
+        # the conditions where the switch is available and most effective.
+        if is_cb and own_half and not under_pressure:
+            switch_val += 0.10
     candidates.append(ActionCandidate(
         PlayerIntent.SWITCH, _clamp(switch_val, 0.0, 1.2), risk=0.45,
         target=switch_target, note="diagonal to relieve congestion / exploit the far side",

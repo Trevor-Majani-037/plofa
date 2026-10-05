@@ -50,6 +50,50 @@ GOAL_X_DEFENDING = 0.0        # attacking left (away)
 # the goal mouth under 2·atan(3.66/11.0). This normalises the angle term.
 REFERENCE_ANGLE = 2.0 * math.atan2(3.66, 11.0)
 
+# ─────────────────────────────────────────────────────────────────────
+# RECEIVER-SCORING WEIGHTS  (learnable — see `fit_matrix_weights.py`)
+# ─────────────────────────────────────────────────────────────────────
+# These numbers decide who receives the ball on ~80% of all passes
+# (`_diag_receiver_layer_split.py`: AttackingMatrix 1178 targets vs
+# TacticalPhase 296). They were INLINE LITERALS in `_build_options`, which is
+# part of why nobody fitted them: you cannot evolve a number you cannot name.
+# Lifted here verbatim — values IDENTICAL to the previous literals, so this is
+# behaviourally a no-op and the incumbent is `dict(MATRIX_WEIGHTS)`.
+#
+# They are a GUESS today, not a measurement, and the bonus block is the most
+# responsive part of the whole expression: doubling it flips 13.9% of all
+# receivers (`_diag_matrix_sensitivity.py`). Responsiveness is not evidence a
+# value is wrong — but it does mark these as the values most likely to be.
+MATRIX_WEIGHTS: Dict[str, float] = {
+    "w_progress": 0.30,        # forward gain toward the goal
+    "w_freedom": 0.45,         # unmarked / support
+    "w_depth": 0.20,           # absolute penetration of the pitch
+    "w_same_flank": 0.06,      # LB->LW / RB->RW
+    "w_winger_flank": 0.12,    # winger standing in a dangerous wide zone
+    "w_mid_halfspace": 0.06,   # CDM/CM/CAM in a half-space, not central traffic
+    "w_mid_ahead": 0.04,       # midfielder between ball and goal
+    "w_mid_width": 0.04,       # midfielder's distance from the centre line
+    "w_false_nine": 0.12,      # deep striker pulling a midfielder forward
+}
+
+
+def matrix_weights() -> Dict[str, float]:
+    """A defensive copy, so a caller cannot mutate the module defaults."""
+    return dict(MATRIX_WEIGHTS)
+
+
+def set_matrix_weights(**kw: float) -> None:
+    """Override selected weights (used by the fitter and by probes).
+
+    Unknown keys are REJECTED rather than ignored: a typo'd parameter name that
+    silently does nothing is the same failure shape as a guard that matches
+    nothing -- and that is how this whole investigation started.
+    """
+    unknown = set(kw) - set(MATRIX_WEIGHTS)
+    if unknown:
+        raise KeyError(f"unknown matrix weight(s): {sorted(unknown)}")
+    MATRIX_WEIGHTS.update({k: float(v) for k, v in kw.items()})
+
 # Lane blocking ramp: a defender ≤1.2m off the passing lane blocks it,
 # ≥3.0m clears it, linear between.
 LANE_BLOCK_DIST = 1.2
@@ -440,6 +484,10 @@ class AttackingMatrix:
         x: float, y: float, position_engine, attacks_right: bool,
         team_profile=None,
     ) -> List[_Option]:
+        # Read the weights ONCE per option set, not per candidate: the fitter
+        # mutates `MATRIX_WEIGHTS` between matches, never mid-call, so binding
+        # here is safe and keeps the inner loop a plain dict lookup.
+        W = MATRIX_WEIGHTS
         opts: List[_Option] = []
         for tm in teammates or []:
             if getattr(tm, "position", None) == "GK":
@@ -470,9 +518,18 @@ class AttackingMatrix:
             # side instead of overly centralising a safe/fullback recycle.
             same_flank_bonus = 0.0
             if carrier.position == "LB" and y < 34.0 and tm.position == "LW" and ty < 34.0:
-                same_flank_bonus = 0.06
+                same_flank_bonus = W["w_same_flank"]
             elif carrier.position == "RB" and y > 34.0 and tm.position == "RW" and ty > 34.0:
-                same_flank_bonus = 0.06
+                same_flank_bonus = W["w_same_flank"]
+            # NOTE: a CB same-side corridor rule (`_cb_same_side_corridor`) was
+            # added here and then REVERTED after measurement.  The premise
+            # ("a CB has no same-side preference") was TRUE -- same_flank_bonus
+            # fired only for LB->LW and RB->RW -- but the baseline it was meant
+            # to improve was already saturated: CBs passed same-side 94.5% of
+            # the time WITHOUT it, and the change moved that to 94.1% while
+            # costing 2.4 points of completion (93.1% -> 90.7%).  Sensitivity
+            # to a coefficient is not evidence the coefficient is wrong.
+            # See AGENTS.md "RECEIVERS" for the full trail.
 
             # Checkpoint 18: modern winger flank geometry — modern wingers
             # (Vini Jr, Saka, Salah) are touchline-hugging flank attackers.
@@ -495,7 +552,7 @@ class AttackingMatrix:
                     cutback_station = (tx > goal_line) if attacks_right else (tx < goal_line)
                     if cutback_station:
                         danger = 0.0
-                    winger_flank_bonus = danger * 0.12
+                    winger_flank_bonus = danger * W["w_winger_flank"]
 
             # Checkpoint 6.2 — midfield geometric coverage: reward midfielders
             # (CDM/CM/CAM) who occupy half-spaces, modelling Enzo/Rice/Pedri
@@ -504,14 +561,14 @@ class AttackingMatrix:
             midfield_coverage_bonus = 0.0
             if tm.position in ("CDM", "CM", "CAM"):
                 if ty < 22.0 or ty > 46.0:
-                    midfield_coverage_bonus += 0.06
+                    midfield_coverage_bonus += W["w_mid_halfspace"]
                 between_ball_and_goal = (
                     (x < tx < gx) if attacks_right else (gx < tx < x)
                 )
                 if between_ball_and_goal:
-                    midfield_coverage_bonus += 0.04
+                    midfield_coverage_bonus += W["w_mid_ahead"]
                 width_factor = max(0.0, (abs(ty - 34.0) - 8.0) / 18.0)
-                midfield_coverage_bonus += width_factor * 0.04
+                midfield_coverage_bonus += width_factor * W["w_mid_width"]
 
             # Checkpoint 18.1 — false nine triangle overload (Barcelona-style).
             # When a midfielder passes to a deep striker, it creates a numerical
@@ -529,8 +586,7 @@ class AttackingMatrix:
                             is_deep = target_state.current_x > 52.5
                             depth_ratio = max(0.0, min(1.0, (target_state.current_x - 52.5) / 25.0))
                         if is_deep:
-                            false_nine_bonus = depth_ratio * 0.12
-
+                            false_nine_bonus = depth_ratio * W["w_false_nine"]
             # Checkpoint 20 — ball-centric elliptical weighting: the receive
             # pool is an anisotropic ellipse anchored just ahead of the ball
             # along the axis of play. A runner 25m upfield is a live option;
@@ -547,7 +603,7 @@ class AttackingMatrix:
             # support term (freedom) raised to 0.45 so the ball circulates
             # more before trying the killer ball — still progressive, just
             # not direct-on-touch.
-            value = lane * (0.30 * progress + 0.45 * freedom + 0.20 * depth + same_flank_bonus + winger_flank_bonus + midfield_coverage_bonus + false_nine_bonus)
+            value = lane * (W["w_progress"] * progress + W["w_freedom"] * freedom + W["w_depth"] * depth + same_flank_bonus + winger_flank_bonus + midfield_coverage_bonus + false_nine_bonus)
             # Checkpoint 24 — a WIDE carrier playing INTO the box is the
             # cross mechanism's job; the generic pass path must stop aiming
             # there or every disposal gets stamped (and counted) as a cross.

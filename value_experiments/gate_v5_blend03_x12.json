@@ -1,0 +1,29 @@
+{
+  "matches": 12,
+  "seed": 21,
+  "critic": "brains_trainer/critic_v5.json",
+  "blend": 0.3,
+  "policy_fitness": 0.6217,
+  "reasoning_fitness": 0.6455,
+  "fitness_delta": 0.0238,
+  "policy_goals": 42,
+  "reasoning_goals": 46,
+  "goal_diff": 4,
+  "policy_xg": 1.8575,
+  "reasoning_xg": 1.9717,
+  "policy_possession": 49.85,
+  "reasoning_possession": 50.0167,
+  "policy_intent_mix": {
+    "CARRY": 52,
+    "DRIBBLE": 58
+  },
+  "reasoning_intent_mix": {
+    "CARRY": 50,
+    "DRIBBLE": 61
+  },
+  "intent_deltas": {
+    "CARRY": -2,
+    "DRIBBLE": 3
+  },
+  "elapsed_s": 443.9
+}

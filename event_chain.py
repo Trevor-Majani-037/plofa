@@ -7084,7 +7084,15 @@ class SetPieceChain(BaseChain):
                 if _pp is None:
                     continue
                 _cands.append((math.hypot(_pp[0] - _tx, _pp[1] - _ty), p))
-            receiver = (min(_cands)[1] if _cands
+            # `key=lambda c: c[0]` is REQUIRED, not tidiness: `_cands` holds
+            # (distance, PlayerProfile) tuples, so on an exact distance tie
+            # `min` falls through to comparing the second element -- two
+            # `PlayerProfile` objects, which define no ordering. That raised
+            # `TypeError: '<' not supported between instances of 'PlayerProfile'`
+            # out of a live match (caught by
+            # `tests.py::test_match_has_goal_events`). Keying on the distance
+            # alone also makes ties deterministic: first one wins.
+            receiver = (min(_cands, key=lambda c: c[0])[1] if _cands
                         else cls._pick_set_piece_target(
                             att_players, zone, exclude=taker.name))
         else:

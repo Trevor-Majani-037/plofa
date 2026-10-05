@@ -376,6 +376,19 @@ class PlayerDNA:
         return self.technical.dribbling * self.form.form_multiplier * self.live_performance_mult
 
     @property
+    def effective_composure(self) -> float:
+        """Composure adjusted for form, fatigue AND live stamina.
+
+        Added 2026-10-05 alongside effective_finishing. The three existing
+        properties all folded these multipliers in; composure was the one
+        shot-path input that did not, so `_shot_on_target_prob` read raw
+        `mental.composure` while every other live consumer read an effective
+        value. Same multipliers, same order, so it is directly comparable to
+        effective_finishing.
+        """
+        return self.mental.composure * self.form.form_multiplier * self.form.fatigue_multiplier * self.live_performance_mult
+
+    @property
     def press_resistance(self) -> float:
         """How well player retains ball under pressure (0-100)."""
         return (self.technical.ball_control + self.mental.composure) / 2
@@ -1126,6 +1139,29 @@ class DNAFactory:
             leadership    = cls._attr(arch, "mental.leadership",    (38, 62), mental_age),
             concentration = cls._attr(arch, "mental.concentration", (50, 70), mental_age),
             bravery       = cls._attr(arch, "mental.bravery",       (50, 70), mental_age),
+            # Added 2026-10-05. This field existed on MentalAttributes (line 80)
+            # and eight archetype templates have always specified a band for it
+            # (anchor 65-76 ... classic_ten 82-93), but NO builder ever assigned
+            # it, so it sat at the 50.0 default for every player ever created.
+            # Three LIVE shape rules in position_engine.py consumed it and were
+            # therefore inert: :3292 awareness_bonus was exactly 0.0, :3431
+            # midfielder half-space coverage needed >= 55 and could never fire,
+            # and :3519 attacker drift ran at a flat awareness_factor 0.091.
+            # Same class as the dead striker layer in drift_minute: a mechanism
+            # that exists, is wired to something, and never runs.
+            # Default is the HOUSE MENTAL DEFAULT (50, 70) — the band five of
+            # this builder's other ten fields already use (vision, composure,
+            # decisions, positioning, anticipation, concentration, bravery).
+            # Chosen deliberately OVER (55, 74): the first attempt used
+            # work_rate's band on the argument that the eight named templates
+            # treat this as an above-average trait, and measurement killed it.
+            # With a floor of 55 exactly equal to the :3431 gate floor, 100% of
+            # 400 generated players cleared BOTH gates — :3431 and :3519
+            # stopped selecting anyone and became uniform rules, which is the
+            # same inertness as the 50.0 constant, pointing the other way.
+            # A gate has to reject. (50, 70) puts the floor below both gates so
+            # the rules scale continuously from 0 to ~0.4 across the band.
+            geometric_awareness = cls._attr(arch, "mental.geometric_awareness", (50, 70), mental_age),
         )
         if "captain" in specs or "leadership" in specs:
             m.leadership  = min(99, m.leadership * 1.25)

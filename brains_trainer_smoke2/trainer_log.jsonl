@@ -1,0 +1,1 @@
+{"ts": "2026-09-12 18:24:26", "promoted": true, "gate": {"challenger_fitness": 0.731, "incumbent_fitness": 0.6804, "challenger_goals": 5, "incumbent_goals": 4, "elapsed_s": 43.3, "goal_diff": 1, "fitness_delta": 0.0506}, "config": {"goal_bias": 0.25, "seed": 123, "gate_matches": 1}}

@@ -1,0 +1,93 @@
+﻿{
+    "surrogate":  "brains\\surrogate_pos.json",
+    "states":  300,
+    "generations":  80,
+    "population":  32,
+    "seed":  123,
+    "goal_bias":  0.0,
+    "role_features":  true,
+    "perception":  true,
+    "perception_roles":  true,
+    "total_elapsed_s":  1552.4,
+    "results":  {
+                    "CB":  {
+                               "pos":  "CB",
+                               "ok":  true,
+                               "elapsed_s":  483.7,
+                               "summary":  "CB: fitness=0.7964 (482.3s) -\u003e brains_v2_role\\CB.json",
+                               "err":  ""
+                           },
+                    "LB":  {
+                               "pos":  "LB",
+                               "ok":  true,
+                               "elapsed_s":  499.0,
+                               "summary":  "LB: fitness=0.7098 (497.6s) -\u003e brains_v2_role\\LB.json",
+                               "err":  ""
+                           },
+                    "RB":  {
+                               "pos":  "RB",
+                               "ok":  true,
+                               "elapsed_s":  499.1,
+                               "summary":  "RB: fitness=0.9131 (497.8s) -\u003e brains_v2_role\\RB.json",
+                               "err":  ""
+                           },
+                    "GK":  {
+                               "pos":  "GK",
+                               "ok":  true,
+                               "elapsed_s":  513.0,
+                               "summary":  "GK: fitness=0.7438 (511.5s) -\u003e brains_v2_role\\GK.json",
+                               "err":  ""
+                           },
+                    "LW":  {
+                               "pos":  "LW",
+                               "ok":  true,
+                               "elapsed_s":  554.9,
+                               "summary":  "LW: fitness=0.8615 (554.0s) -\u003e brains_v2_role\\LW.json",
+                               "err":  ""
+                           },
+                    "CAM":  {
+                                "pos":  "CAM",
+                                "ok":  true,
+                                "elapsed_s":  573.0,
+                                "summary":  "CAM: fitness=0.7978 (572.2s) -\u003e brains_v2_role\\CAM.json",
+                                "err":  ""
+                            },
+                    "CDM":  {
+                                "pos":  "CDM",
+                                "ok":  true,
+                                "elapsed_s":  588.7,
+                                "summary":  "CDM: fitness=1.0000 (587.8s) -\u003e brains_v2_role\\CDM.json",
+                                "err":  ""
+                            },
+                    "CM":  {
+                               "pos":  "CM",
+                               "ok":  true,
+                               "elapsed_s":  581.5,
+                               "summary":  "CM: fitness=0.9745 (580.6s) -\u003e brains_v2_role\\CM.json",
+                               "err":  ""
+                           },
+                    "CF":  {
+                               "pos":  "CF",
+                               "ok":  true,
+                               "elapsed_s":  458.5,
+                               "summary":  "CF: fitness=0.8745 (457.4s) -\u003e brains_v2_role\\CF.json",
+                               "err":  ""
+                           },
+                    "ST":  {
+                               "pos":  "ST",
+                               "ok":  true,
+                               "elapsed_s":  460.1,
+                               "summary":  "ST: fitness=0.8309 (458.7s) -\u003e brains_v2_role\\ST.json",
+                               "err":  ""
+                           },
+                    "RW":  {
+                               "pos":  "RW",
+                               "ok":  true,
+                               "elapsed_s":  483.7,
+                               "summary":  "RW: fitness=0.8692 (482.3s) -\u003e brains_v2_role\\RW.json",
+                               "err":  ""
+                           }
+                },
+    "promoted_from":  "brains_v2_role",
+    "promoted_on":  "2026-09-13 (after _COSMETIC_RNG harness fix)"
+}

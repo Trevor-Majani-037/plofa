@@ -1,0 +1,17 @@
+{
+  "positions": [
+    "RW"
+  ],
+  "generations": 80,
+  "population": 32,
+  "states": 300,
+  "results": {
+    "RW": {
+      "best_fitness": 0.3335,
+      "generations": 80,
+      "seed": 123,
+      "elapsed_s": 120.0,
+      "saved_to": "brains_trainer/challenger_v2\\RW.json"
+    }
+  }
+}

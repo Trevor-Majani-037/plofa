@@ -1,0 +1,253 @@
+{
+  "kind": "value_critic",
+  "n_records": 9161,
+  "holdout": 1832,
+  "method": "backprop",
+  "epochs": 200,
+  "train_loss": 0.011908,
+  "test_loss": 0.011518,
+  "rho_all": 0.0252,
+  "rho_holdout": 0.0172,
+  "rho_raw_holdout": 0.0259,
+  "separation_holdout": 0.0096,
+  "payoff_indicator_share": 1.0,
+  "raw_top_decile_catch": 0.3808,
+  "raw_mean": 0.3555,
+  "reward_band": [
+    0.2,
+    1.5
+  ],
+  "shrink_k": 5.0,
+  "generations": 100,
+  "population": 32,
+  "seed": 123,
+  "scoring_profiles": {
+    "ST": {
+      "samples": 1790,
+      "top": [
+        [
+          "SHOOT",
+          0.407226866828019
+        ],
+        [
+          "RECYCLE",
+          0.36977758927238696
+        ],
+        [
+          "CARRY",
+          0.36818749678790685
+        ],
+        [
+          "SWITCH",
+          0.3571752498630105
+        ],
+        [
+          "SAFE_PASS",
+          0.3548791768644331
+        ],
+        [
+          "CROSS",
+          0.3542393888651273
+        ]
+      ]
+    },
+    "CM": {
+      "samples": 7740,
+      "top": [
+        [
+          "SHOOT",
+          0.4293989136006274
+        ],
+        [
+          "SAFE_PASS",
+          0.39001538481723014
+        ],
+        [
+          "RECYCLE",
+          0.38672922490566364
+        ],
+        [
+          "CARRY",
+          0.3673525520951663
+        ],
+        [
+          "SWITCH",
+          0.36587235882043334
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.3528756860189569
+        ]
+      ]
+    },
+    "CAM": {
+      "samples": 300,
+      "top": [
+        [
+          "SHOOT",
+          0.40122350761486075
+        ],
+        [
+          "CARRY",
+          0.3683656140550867
+        ],
+        [
+          "RECYCLE",
+          0.36520091755520684
+        ],
+        [
+          "CROSS",
+          0.35546316403739536
+        ],
+        [
+          "SWITCH",
+          0.3545058405851942
+        ],
+        [
+          "THROUGH_BALL",
+          0.34853344863660535
+        ]
+      ]
+    },
+    "LW": {
+      "samples": 730,
+      "top": [
+        [
+          "SHOOT",
+          0.431271171398077
+        ],
+        [
+          "SAFE_PASS",
+          0.3932859148101561
+        ],
+        [
+          "RECYCLE",
+          0.3881637478537912
+        ],
+        [
+          "CARRY",
+          0.36769758803005703
+        ],
+        [
+          "SWITCH",
+          0.36694099537354447
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.3539356578213586
+        ]
+      ]
+    },
+    "RW": {
+      "samples": 690,
+      "top": [
+        [
+          "SHOOT",
+          0.42578821459763455
+        ],
+        [
+          "SAFE_PASS",
+          0.3844099281012996
+        ],
+        [
+          "RECYCLE",
+          0.3839823945496504
+        ],
+        [
+          "CARRY",
+          0.36770436893631797
+        ],
+        [
+          "SWITCH",
+          0.3643827363155998
+        ],
+        [
+          "CROSS",
+          0.3505561265421797
+        ]
+      ]
+    }
+  },
+  "synthetic_argmax": {
+    "ST_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "SHOOT",
+          0.973,
+          0.41
+        ],
+        [
+          "SAFE_PASS",
+          0.027,
+          0.64
+        ]
+      ]
+    },
+    "CM_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "SHOOT",
+          0.993,
+          0.403
+        ],
+        [
+          "SAFE_PASS",
+          0.007,
+          0.597
+        ]
+      ]
+    },
+    "CAM_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "SHOOT",
+          0.977,
+          0.41
+        ],
+        [
+          "SAFE_PASS",
+          0.023,
+          0.647
+        ]
+      ]
+    },
+    "LW_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "SHOOT",
+          0.973,
+          0.41
+        ],
+        [
+          "SAFE_PASS",
+          0.027,
+          0.64
+        ]
+      ]
+    },
+    "RW_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "SHOOT",
+          0.983,
+          0.408
+        ],
+        [
+          "SAFE_PASS",
+          0.017,
+          0.66
+        ]
+      ]
+    }
+  }
+}

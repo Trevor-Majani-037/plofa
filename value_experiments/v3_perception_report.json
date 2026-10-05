@@ -1,0 +1,395 @@
+{
+  "kind": "value_critic",
+  "n_records": 3222,
+  "holdout": 644,
+  "train_loss": 0.04220246012244875,
+  "test_loss": 0.056446,
+  "rho_all": -0.0274,
+  "rho_holdout": -0.0462,
+  "generations": 100,
+  "population": 32,
+  "seed": 123,
+  "reward_band": [
+    0.4,
+    1.5
+  ],
+  "scoring_profiles": {
+    "ST": {
+      "samples": 510,
+      "top": [
+        [
+          "SAFE_PASS",
+          0.5815348356260319
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.5454082583638672
+        ],
+        [
+          "SWITCH",
+          0.5192346265958798
+        ],
+        [
+          "CARRY",
+          0.49788069597502554
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.4847527451306271
+        ],
+        [
+          "THROUGH_BALL",
+          0.43252078653384196
+        ]
+      ]
+    },
+    "CM": {
+      "samples": 2600,
+      "top": [
+        [
+          "SAFE_PASS",
+          0.5669766623868107
+        ],
+        [
+          "SWITCH",
+          0.5323620394336916
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.5007875137721066
+        ],
+        [
+          "CARRY",
+          0.4787966618523153
+        ],
+        [
+          "DRIBBLE",
+          0.4772162301539584
+        ],
+        [
+          "RECYCLE",
+          0.46391617655425893
+        ]
+      ]
+    },
+    "CAM": {
+      "samples": 80,
+      "top": [
+        [
+          "SAFE_PASS",
+          0.9893423791991477
+        ],
+        [
+          "SWITCH",
+          0.720280120767463
+        ],
+        [
+          "RECYCLE",
+          0.5825343917282543
+        ],
+        [
+          "SHOOT",
+          0.5785854720147947
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.5544290416608837
+        ],
+        [
+          "CROSS",
+          0.5079473475132067
+        ]
+      ]
+    },
+    "LW": {
+      "samples": 210,
+      "top": [
+        [
+          "PROGRESSIVE_PASS",
+          0.6447691290866592
+        ],
+        [
+          "CARRY",
+          0.6199901077921398
+        ],
+        [
+          "SWITCH",
+          0.5765383905502892
+        ],
+        [
+          "SAFE_PASS",
+          0.5646009063854306
+        ],
+        [
+          "CROSS",
+          0.484690421984107
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.4846318520287166
+        ]
+      ]
+    },
+    "RW": {
+      "samples": 200,
+      "top": [
+        [
+          "CARRY",
+          0.6968699810687027
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.6339624494105673
+        ],
+        [
+          "SWITCH",
+          0.5689038556748122
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.5507091186562268
+        ],
+        [
+          "RECYCLE",
+          0.5328168784175414
+        ],
+        [
+          "SAFE_PASS",
+          0.5241438612275788
+        ]
+      ]
+    }
+  },
+  "synthetic_argmax": {
+    "ST_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "DRIBBLE",
+          0.427,
+          0.841
+        ],
+        [
+          "THROUGH_BALL",
+          0.21,
+          0.991
+        ],
+        [
+          "CARRY",
+          0.18,
+          0.903
+        ],
+        [
+          "SAFE_PASS",
+          0.113,
+          0.71
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.03,
+          0.627
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.027,
+          0.555
+        ],
+        [
+          "SWITCH",
+          0.01,
+          0.713
+        ],
+        [
+          "RECYCLE",
+          0.003,
+          0.776
+        ]
+      ]
+    },
+    "CM_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "DRIBBLE",
+          0.5,
+          0.993
+        ],
+        [
+          "RECYCLE",
+          0.227,
+          0.919
+        ],
+        [
+          "THROUGH_BALL",
+          0.073,
+          0.914
+        ],
+        [
+          "SWITCH",
+          0.073,
+          0.661
+        ],
+        [
+          "SAFE_PASS",
+          0.063,
+          0.792
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.043,
+          0.638
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.01,
+          0.54
+        ],
+        [
+          "SHOOT",
+          0.007,
+          0.664
+        ]
+      ]
+    },
+    "CAM_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "DRIBBLE",
+          0.33,
+          0.852
+        ],
+        [
+          "THROUGH_BALL",
+          0.27,
+          0.948
+        ],
+        [
+          "RECYCLE",
+          0.157,
+          0.879
+        ],
+        [
+          "SAFE_PASS",
+          0.093,
+          0.732
+        ],
+        [
+          "CARRY",
+          0.05,
+          0.956
+        ],
+        [
+          "SWITCH",
+          0.03,
+          0.622
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.03,
+          0.518
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.023,
+          0.635
+        ]
+      ]
+    },
+    "LW_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "DRIBBLE",
+          0.527,
+          1.06
+        ],
+        [
+          "THROUGH_BALL",
+          0.22,
+          1.096
+        ],
+        [
+          "RECYCLE",
+          0.107,
+          0.863
+        ],
+        [
+          "SWITCH",
+          0.05,
+          0.646
+        ],
+        [
+          "SAFE_PASS",
+          0.047,
+          0.69
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.02,
+          0.555
+        ],
+        [
+          "CARRY",
+          0.013,
+          0.991
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.01,
+          0.565
+        ]
+      ]
+    },
+    "RW_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "DRIBBLE",
+          0.413,
+          0.935
+        ],
+        [
+          "RECYCLE",
+          0.307,
+          0.907
+        ],
+        [
+          "SWITCH",
+          0.07,
+          0.752
+        ],
+        [
+          "THROUGH_BALL",
+          0.06,
+          0.974
+        ],
+        [
+          "PROTECT_POSSESSION",
+          0.053,
+          0.667
+        ],
+        [
+          "SAFE_PASS",
+          0.053,
+          0.923
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.027,
+          0.618
+        ],
+        [
+          "CARRY",
+          0.013,
+          0.556
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "clubs": {
+    "CLB-A": {
+      "club_id": "CLB-A",
+      "history": [],
+      "honours": [],
+      "name": "CLB-A",
+      "per_season": {}
+    },
+    "CLB-B": {
+      "club_id": "CLB-B",
+      "history": [],
+      "honours": [],
+      "name": "CLB-B",
+      "per_season": {}
+    }
+  },
+  "competitions": {
+    "CMP-CUP": {
+      "competition_id": "CMP-CUP",
+      "country_id": "CTR-TOL",
+      "name": "Toland Cup",
+      "results": [],
+      "rules": {
+        "aggregate": false,
+        "away_goals": false,
+        "double_round_robin": false,
+        "extra_time": true,
+        "legs": 1,
+        "max_bench": 7,
+        "penalties": true,
+        "points_draw": 1,
+        "points_loss": 0,
+        "points_win": 3,
+        "promotion_slots": 0,
+        "qualification_out": [],
+        "relegation_slots": 0,
+        "rounds": null,
+        "schedule_kind": "knockout",
+        "substitutions_max": 3,
+        "suspension_threshold": 5,
+        "suspension_type": "yellow_accum",
+        "suspension_window": 6,
+        "tie_breakers": [
+          "pts",
+          "gd",
+          "gf"
+        ],
+        "type": "cup"
+      },
+      "season_id": "26/27",
+      "type": "cup"
+    },
+    "CMP-D1": {
+      "competition_id": "CMP-D1",
+      "country_id": "CTR-TOL",
+      "name": "Toland D1",
+      "results": [
+        {
+          "away_goals": 0,
+          "away_id": "CLB-B",
+          "home_goals": 0,
+          "home_id": "CLB-A",
+          "is_neutral": false,
+          "match_date": "2026-08-08",
+          "round_name": "",
+          "season_id": "26/27",
+          "stage_name": ""
+        }
+      ],
+      "rules": {
+        "aggregate": false,
+        "away_goals": false,
+        "double_round_robin": true,
+        "extra_time": false,
+        "legs": 1,
+        "max_bench": 7,
+        "penalties": false,
+        "points_draw": 1,
+        "points_loss": 0,
+        "points_win": 3,
+        "promotion_slots": 0,
+        "qualification_out": [],
+        "relegation_slots": 0,
+        "rounds": null,
+        "schedule_kind": "round_robin",
+        "substitutions_max": 3,
+        "suspension_threshold": 5,
+        "suspension_type": "yellow_accum",
+        "suspension_window": 6,
+        "tie_breakers": [
+          "pts",
+          "gd",
+          "gf"
+        ],
+        "type": "league"
+      },
+      "season_id": "26/27",
+      "type": "league"
+    },
+    "CMP-EUCL": {
+      "competition_id": "CMP-EUCL",
+      "country_id": "CTR-EU",
+      "name": "Continental",
+      "results": [],
+      "rules": {
+        "aggregate": false,
+        "away_goals": false,
+        "double_round_robin": true,
+        "extra_time": false,
+        "legs": 1,
+        "max_bench": 7,
+        "penalties": false,
+        "points_draw": 1,
+        "points_loss": 0,
+        "points_win": 3,
+        "promotion_slots": 0,
+        "qualification_out": [],
+        "relegation_slots": 0,
+        "rounds": null,
+        "schedule_kind": "round_robin",
+        "substitutions_max": 3,
+        "suspension_threshold": 5,
+        "suspension_type": "yellow_accum",
+        "suspension_window": 6,
+        "tie_breakers": [
+          "pts",
+          "gd",
+          "gf"
+        ],
+        "type": "league"
+      },
+      "season_id": "26/27",
+      "type": "league"
+    }
+  },
+  "country_id": "CTR-TOL",
+  "match_history": [
+    {
+      "away_id": "CLB-B",
+      "competition_id": "CMP-D1",
+      "home_id": "CLB-A",
+      "match_date": "2026-08-08",
+      "score": "0-0",
+      "season_id": "26/27"
+    }
+  ],
+  "players": {
+    "PLY-ALEX": {
+      "appearances": 1,
+      "assists": 0,
+      "club_id": "CLB-A",
+      "confidence": 0.5,
+      "fatigue": 0.0,
+      "fitness": 1.0,
+      "form": "",
+      "goals": 1,
+      "injuries": [],
+      "match_history": [
+        {
+          "assists": 0,
+          "away_id": "CLB-B",
+          "competition_id": "CMP-D1",
+          "goals": 1,
+          "home_id": "CLB-A",
+          "match_date": "2026-08-08",
+          "minutes": 90,
+          "played": true,
+          "season_id": "26/27"
+        }
+      ],
+      "match_index": 1,
+      "minutes_played": 90,
+      "per_season": {
+        "26/27": {
+          "per_competition": {
+            "CMP-D1": {
+              "appearances": 1,
+              "assists": 0,
+              "competition_id": "CMP-D1",
+              "goals": 1,
+              "minutes": 90,
+              "red_cards": 0,
+              "season_id": "26/27",
+              "shots": 0,
+              "xg": 0.0,
+              "yellow_cards": 0
+            }
+          }
+        }
+      },
+      "player_id": "PLY-ALEX",
+      "red_cards": 0,
+      "shots": 0,
+      "suspensions": [],
+      "workload": 90.0,
+      "xg": 0.0,
+      "yellow_card_events": [],
+      "yellow_cards": 0
+    }
+  },
+  "schema_version": 1,
+  "season_id": "26/27",
+  "seasons": {
+    "26/27": {
+      "competitions": {
+        "CMP-CUP": {
+          "name": "Toland Cup",
+          "type": "cup"
+        },
+        "CMP-D1": {
+          "name": "Toland D1",
+          "type": "league"
+        },
+        "CMP-EUCL": {
+          "name": "Continental",
+          "type": "league"
+        }
+      }
+    }
+  }
+}
