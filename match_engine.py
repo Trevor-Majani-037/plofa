@@ -2940,9 +2940,19 @@ class MatchEngine:
         _sp_slot = self.position_engine.setpiece_target(pname)
         if _sp_slot is not None:
             tx, ty = _sp_slot
-        elif self._rest_defence_violator(team, ball_x, has_ball) == pname:
-            tx, ty = self.position_engine.rest_defence_clamp(
-                tx, ty, ball_x, _attacks_right)
+        else:
+            # The CB ceiling is a SHAPE invariant, not an in-possession
+            # preference: gate it on possession and the off-ball anchor (which
+            # is the player's own minute-start position) ratchets past it the
+            # moment the ball is lost, so a CB who stepped up walks deeper and
+            # never returns. Applied in every phase now, exactly like rest
+            # defence. Open play only -- a pending set-piece slot took the
+            # branch above and is deliberately exempt.
+            if pos == "CB":
+                tx = self.position_engine.cb_advance_clamp(tx, _attacks_right)
+            if self._rest_defence_violator(team, ball_x, has_ball) == pname:
+                tx, ty = self.position_engine.rest_defence_clamp(
+                    tx, ty, ball_x, _attacks_right)
         dx, dy = tx - cx, ty - cy
         dist = math.hypot(dx, dy)
         tgt = self._top_speed_cache.get(pname, 7.0)

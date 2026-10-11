@@ -2998,6 +2998,86 @@ because each one produced a clean wrong answer.**
   loop. Same family as the seven existing instances of *read position state
   after the match*.
 
+## CB ATTACKING CEILING — the clamp existed and was possession-gated (2026-10-11)
+
+Reported from a real pass map: a centre-back (Juan Massey, Pearls) with **39/58
+passes in the opponent half, 20 in the final third (x≥70 m), 22/26 carries in
+the opponent half clustering at x=75–88 m, 2 shots, offside twice at x=86.2**.
+A CB playing as a deep-lying playmaker, in the opponent's box.
+
+- **THE MECHANISM ALREADY EXISTED.** `PositionEngine.CB_MAX_ADVANCE_NX = 58.0`
+  (`position_engine.py:2499`) + `cb_advance_clamp` (`:2501`), called at exactly
+  ONE site repo-wide: `match_engine.py:2961` inside `_offball_move_player`.
+  Nothing new was added — no constant, no rule.
+- **THE DEFECT WAS ONE WORD: `and has_ball`.** The gate read
+  `if pos == "CB" and has_ball:`, so the ceiling bound only WHILE the CB was the
+  ball carrier and was OFF for the other ~98% of ticks. Out of possession the
+  CB's shape anchor is his own minute-start position (`_minute_start_snapshot`),
+  and `MatchEngine` never calls `drift_minute`, so **no home-pull restoring
+  force runs live** — the anchor creeps deeper each minute and never returns.
+  A one-way ratchet. Fixed to `if pos == "CB":`, binding in every phase exactly
+  as rest defence does (`position_engine.py:2963-2965` neighbour).
+- **SET PIECES STAY EXEMPT, and for free.** The `if _sp_slot is not None:`
+  branch sits ABOVE the clamp (`match_engine.py:2950-2953`), so a corner/FK slot
+  is returned before the ceiling can touch it. No new exemption logic.
+- **TWO HYPOTHESES KILLED BEFORE ANY CODE CHANGED**, both by reading rather than
+  guessing. (H2) *The label is `CB1`/`CB2`, so the gate never matched* — FALSE
+  for the production path: real-roster CBs normalise through `roster_loader
+  .POS_MAP` (43–58) → `PlayerRecord.engine_pos` → `SquadBuilder` → `dna.position
+  → `PlayerProfile.position` == **`"CB"`**. The clamp DID match. See *POSITIONS
+  ARE NUMBERED* for why the same trap is real for `.rstrip(digits)`-style
+  guards elsewhere. (H1) *On-ball players skip the whole integrator* — TRUE and
+  expected: `_offball_move_player` returns early at `match_engine.py:2755`
+  (`if pname in self._on_ball_this_minute: return`), populated from
+  `_ON_BALL_EVENTS` at `:5773/5775`, reset per minute at `:3793`. That early
+  return is why the `has_ball` arm of the gate was doubly redundant.
+- **MEASURED** (one real match per arm, seed 4000, Pearls v Justice; probe
+  `tools/diag/_diag_cb_ceiling3.py`, reusing `_diag_chance_coords.build_pair`):
+  team CB passes in the final third **28 → 1**; opponent-half passes 91 → 65;
+  CB deep position ticks (>58) 147,564 → 39,288 (**−73%**); deep
+  out-of-possession 84,821 → 16,623 (**−80%**). Juan Massey: 57 pass / 24
+  opp-half / **7 final-third** → 38 / 17 / **0**, carries 16 → 14, **no
+  final-third carries**, max carry nx 62.6.
+- **THE RESIDUAL, AND WHY IT IS NOT THE SYMPTOM.** After the fix, other CBs
+  still show max pass nx 82.3 and max carry nx 93.6, with 4 carries + 1 pass in
+  the final third. **Read the source before chasing it:** a PASS event's
+  `location_x` is the chain anchor (`_starting_anchor` = `0.75*state.last_ball_x
+  + 0.25*style_x`), and a CARRY event's `location_x` is `x` — the carry's START
+  (`event_chain.py:2079`) — i.e. **the BALL's position, not the passer's or
+  carrier's**. So a "CB carry at nx 93.6" means *the ball was at 93 and the CB
+  was the chain's carrier, with his advance already capped at 60 on success*
+  (`:2011-2012` main carry, `:1446-1447` micro-carry — the 60/45 pair that
+  predates this work). The deep number is the ball wearing a CB's name; the CB's
+  own tracked position is now bounded in every phase. Same lesson as *the
+  pass-map origin is NOT the passer's position*.
+- **ONE GENUINE LEAK LEFT OPEN DELIBERATELY.** `event_chain.py:2080` is
+  `end_x = new_x if carry_success else cls.clamp_x(fail_x, attacks_right)` — the
+  FAILED-carry branch is only `clamp_x`'d, never CB-capped, so a dispossessed
+  CB's loose ball can land deep and become the next anchor (`last_ball_x`
+  `match_engine.py:5869-5873`). Closing it changes `last_ball_x` and therefore
+  simulation data, so it needs its own gate. **The user reviewed this and chose
+  to STOP** (2026-10-11). Also open, and a different question: whether the chain
+  should pick a CB as its carrier at a deep anchor at all — that is
+  `_pick_builder`, not the position engine.
+- **GATE (72.8 s):** `test_cb_ceiling` (new, 7) + `test_small_game` +
+  `test_positional_play` + `test_touchline_wide` = **61 passed, 1 xfailed,
+  1 failed**. The failure is the documented pre-existing
+  `test_out_of_possession_touchline_press_gated_by_press_intensity` (an LB
+  assertion in a test that never calls `_offball_move_player`); the change is
+  provably CB-only, so it cannot be this work.
+- **`tests/test_cb_ceiling.py`** pins `cb_advance_clamp` behaviourally (binds
+  above the ceiling, passes through below, depth-only) **plus an AST guard that
+  the live call site is not possession-gated** — because the gate lives one file
+  away from the clamp and no behavioural test can see it. The guard asserts
+  non-vacuity first. Same reasoning as the `attacks_right` / `shooter_name`
+  guards: the omission is a defaulted or dropped condition, invisible at the
+  behavioural layer.
+- **CAVEAT ON THE NUMBERS:** the fix shifts the RNG stream, so the two arms are
+  different matches (2967 vs 2657 events; 2-1 vs 1-1) — hash-order-free
+  (crc32 since 2026-10-04) but not the same fixture. Direction is consistent
+  across four surfaces and mechanistically explained; each delta is one sample.
+  Multi-seed not run (cost, and matches are not cheap here).
+
 ## Next Move
 **ACTIVE — THE FABRICATION AUDIT IS NOT FINISHED.** The assist/shooter work closed
 one path, not the class. Do not report "fabrication eliminated". Remaining, in
