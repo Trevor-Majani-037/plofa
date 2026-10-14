@@ -86,18 +86,18 @@ class _BuiltSquad(TypedDict):
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 9, 20) # Year, Month, Day
-MATCHDAY     = 5 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 10, 11) # Year, Month, Day
+MATCHDAY     = 6 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "  "
-AWAY_TEAM  = "  "
+HOME_TEAM  = "Natrican"
+AWAY_TEAM  = "Ganester"
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = "   "
-CAPACITY  = 87_000
+VENUE     = "Natrican Stadium"
+CAPACITY  = 45_000
 
 # ── Referee (auto-assigned by default) ──────────────────────────────
 # Set FORCE_REF to a referee name to override rotation (e.g. for a derby).
@@ -1003,6 +1003,13 @@ def run(force_replay: bool = False):
     # ── Build PlayerProfile squads via SquadBuilder ───────────
     # The imported builder exposes a partially-typed signature in the IDE, so
     # we normalize the call to avoid false-positive unknown-member diagnostics.
+    #
+    # soul_assignments is threaded IN so the soul's attribute CEILINGS are known
+    # while the bands are drawn. Before 2026-10-14 the soul was attached after
+    # the squad was built (see _attach_souls below), which is too late for the
+    # character sheet — every soul in the game had an ordinary DNA with four
+    # outcome multipliers bolted on. The later attachment is kept so
+    # dna.soul is still set for non-DNA consumers; it is now idempotent.
     home_squad = cast(
         _BuiltSquad,
         cast(Any, SquadBuilder).build(
@@ -1011,6 +1018,7 @@ def run(force_replay: bool = False):
             substitutes=cast(list[Any], home_raw["substitutes"]),
             team_superstars=cast(list[str], home_raw["superstars"]),
             set_piece_takers=cast(list[str], home_raw["sp_takers"]),
+            soul_assignments=SOUL_PLAYERS,
         ),
     )
     away_squad = cast(
@@ -1021,6 +1029,7 @@ def run(force_replay: bool = False):
             substitutes=cast(list[Any], away_raw["substitutes"]),
             team_superstars=cast(list[str], away_raw["superstars"]),
             set_piece_takers=cast(list[str], away_raw["sp_takers"]),
+            soul_assignments=SOUL_PLAYERS,
         ),
     )
 
@@ -1343,6 +1352,23 @@ def run(force_replay: bool = False):
           f"({home_mgr.job_status()})")
     print(f"  🧑‍💼 {AWAY_TEAM} manager risk: {away_mgr.sack_risk():.0%}  "
           f"({away_mgr.job_status()})")
+
+    # ── Automatic Warehouse & Stats Hub Refresh ───────────────────────
+    try:
+        from alltime_db import connect, sync_output_root, export_app_json
+        with connect() as conn:
+            sync_res = sync_output_root(conn)
+            export_app_json(conn)
+            print(f"  [alltime_db] All-Time DB updated: +{sync_res.get('ingested', 0)} match ingested into warehouse.")
+
+        stats_hub_builder = Path(r"C:\Users\Trevor Majani\Documents\antigravity\adventurous-mendel\build_history.py")
+        if stats_hub_builder.is_file():
+            import subprocess
+            subprocess.run([sys.executable, str(stats_hub_builder), "--no-refresh"],
+                           cwd=str(stats_hub_builder.parent), capture_output=True)
+            print("  [stats_hub] Stats Hub player_history.json refreshed.")
+    except Exception as exc:
+        print(f"  [alltime_db] Notice: warehouse sync: {exc}")
 
 
 # ── Entry guard ─────────────────────────────────────────────────────

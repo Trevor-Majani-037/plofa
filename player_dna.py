@@ -27,10 +27,134 @@ Architecture:
 from __future__ import annotations
 import random
 import math
+import zlib
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
+
+
+# ─────────────────────────────────────────────
+# DETERMINISTIC DNA IDENTITY  (added 2026-10-14)
+# ─────────────────────────────────────────────
+# WHY: DNAFactory.create() drew every attribute from the GLOBAL random
+# stream, and it is called ONCE PER MATCHDAY by SquadBuilder.build(). A
+# player's 36 attributes, his footedness and his superstar boost were
+# therefore re-rolled every time he played — Perćy Luka's finishing was
+# 37.6 / 61.3 / 60.5 on matchdays 1 / 2 / 6 of 26/27. Nothing persisted a
+# character sheet, and the roster workbook has no attribute columns to read
+# one back from.
+#
+# WHAT: the variation now comes from a crc32 counter stream keyed on
+# (player name, attribute key) instead of the global stream, so a player is
+# the same person every matchday. zlib.crc32 and NOT hash(), because builtin
+# string hashing is PYTHONHASHSEED-salted and would make a player's DNA
+# differ between processes — the exact defect fixed on 2026-10-04 in
+# ball_vision.py / perception.py, and pinned by tests/test_determinism.py at
+# a count of ZERO. This is the same pattern already in use at
+# position_engine.py:2481, world/squads.py:47 and world/proof.py:168.
+#
+# WHY age is NOT part of the seed: _attr multiplies the drawn base by
+# age_mult AFTERWARDS, so seeding on age would make every attribute jump
+# discontinuously on a player's birthday. Keying on (name, key) alone lets
+# the age curve ride on top of a stable base.
+#
+# WHY the global draw is still MADE and discarded (stream parity): removing
+# ~1,400-1,500 draws per match shifts every subsequent number in the
+# global stream, and every calibration figure recorded in AGENTS.md was
+# taken on the current stream. Keeping the draw means the stream is
+# byte-identical, so the DNA change is the ONLY variable in any A/B.
+# This is the same trade as _STREAM_PARITY_DRAW in event_chain.py — a
+# deliberate open decision, NOT dead code to be cleaned up later. See
+# tests/test_dna_determinism.py.
+#
+# LIMITATION: the seed is the player's NAME only, because DNAFactory.create
+# is not handed a club and the rest of the project already treats name as a
+# unique per-player key (SOUL_PLAYERS, the brain registry, season_state).
+# Two clubs fielding the identical name would share a DNA.
+
+_DNA_IDENTITY: Dict[str, str] = {"name": ""}
+
+# Which specialty chose the archetype, so the builders can skip the
+# multiplier for it. See ArchetypeLibrary.selecting_specialty for why.
+_DNA_ARCHETYPE_SPEC: Dict[str, Optional[str]] = {"spec": None}
+
+# The soul currently being built, if any. See _attr.
+_DNA_SOUL: Dict[str, object] = {"soul": None}
+
+# How G maps onto "how close to the soul ceiling you get". G_FLOOR is the
+# coefficient of an ordinary, unremarkable player — a soul at G=1.0 gets NO
+# lift at all, and only a genuine freak approaches the ceiling.
+SOUL_LIFT_G_FLOOR = 1.00
+SOUL_LIFT_G_CEIL  = 1.50
+
+# How much of the lift also raises the band's FLOOR. At 1.0 the floor is
+# lifted as hard as the ceiling and a soul can never draw low; at 0.0 only
+# the ceiling moves and a TRANSCENDENT soul could still come out average.
+# 0.5 puts a fully lifted soul in the top half of its range.
+SOUL_FLOOR_LIFT = 0.5
+
+# Where in its lifted band a soul lands, driven by the TALENT pillar:
+#   centre = 0.5 + (talent - 0.5) * SOUL_TALENT_SPAN
+# talent 0.90 -> 0.86 of the way up, 0.97 -> 0.92, 0.70 -> 0.68.
+SOUL_TALENT_SPAN = 0.90
+
+# How much the crc32 seed may move a soul off that centre, as a fraction of
+# the band. Deliberately small — the seed is fine detail, the pillar is the
+# level. See _attr for why the obvious alternative failed.
+SOUL_JITTER = 0.18
+
+
+def _spec_applies(spec: str) -> bool:
+    """False when this specialty already selected the archetype.
+
+    The archetype band embodies the specialty, so applying its multiplier
+    on top is a second charge for the same thing.
+    """
+    return _DNA_ARCHETYPE_SPEC.get("spec") != spec
+
+
+def _dna_unit(key: str) -> Optional[float]:
+    """Stable pseudo-uniform in [0,1) for (current player, attribute key).
+
+    crc32 is NOT uniform on near-identical short strings — it is linear over
+    GF(2), so names that differ only in a trailing digit produce clustered
+    outputs. MEASURED on the D0..D299 cohort: raw crc32 gave chi2 = 39.2 on
+    9 degrees of freedom (p < 0.001, one decile holding 55 of 300 against an
+    expected 30) and sd 0.2689 against an ideal 0.2887, which pushed the
+    geometric_awareness median to 62.3 on a band centred on 60 — 6.9 sigma.
+    The splitmix64 finalizer avalanches the 32-bit CRC into the full 64-bit
+    space and gives chi2 = 7.6, sd 0.2920, median 59.9 on the same cohort.
+    crc32 remains the entry point so the seed stays a short, readable,
+    process-independent string; only the mixing changed.
+
+    Returns None when no player identity is in scope — i.e. when a builder
+    was called directly rather than through DNAFactory.create(). The caller
+    then falls back to the global stream, which is the pre-2026-10-14
+    behaviour. That fallback is pinned by test_dna_determinism.py so a real
+    player build can never silently take it.
+    """
+    name = _DNA_IDENTITY.get("name") or ""
+    if not name:
+        return None
+    z = (zlib.crc32(f"{name}|{key}".encode("utf-8")) + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    return (z ^ (z >> 31)) / 18446744073709551616.0
+
+
+def _stream_parity_uniform(lo: float, hi: float) -> float:
+    """Make and discard a global-stream draw. Returns it; nobody reads it.
+
+    Exists so that making DNA deterministic does NOT change how many values
+    the global random stream yields per match. See the module banner.
+    """
+    return random.uniform(lo, hi)
+
+
+def _stream_parity_random() -> float:
+    """Make and discard a global-stream draw in [0,1). See the banner."""
+    return random.random()
 
 
 # ─────────────────────────────────────────────
@@ -900,19 +1024,36 @@ class ArchetypeLibrary:
     }
 
     @classmethod
-    def get_archetype_for_player(cls, position: str, specialties: List[str]) -> str:
-        """Determine best archetype given position and specialties."""
-        # Try to match specialty to archetype
+    def selecting_specialty(cls, position: str, specialties: List[str]) -> "tuple[str, str | None]":
+        """Resolve (archetype_key, which_specialty_selected_it).
+
+        WHY THE SECOND VALUE: 15 specialties BOTH select an archetype here
+        AND apply a multiplier in an attribute builder — `crosser` picks
+        traditional_winger and then multiplies crossing by 1.20;
+        `clinical_finisher` picks complete_striker and then multiplies
+        finishing by 1.22. The archetype band ALREADY embodies the
+        specialty, so the multiplier is a second charge for the same thing.
+
+        That double-charge is the root cause of the 99.0 pile-up: 49 of 57
+        strikers read EXACTLY 99.0 finishing, because complete_striker's
+        band tops out at 91 and 91 x 1.22 = 111 is clamped, so every raw
+        draw above 81.1 collapses onto the ceiling and the engine can no
+        longer tell the league's best finisher from its twentieth.
+
+        Callers use the second element to skip the multiplier for the ONE
+        specialty that chose the archetype. Specialties that did NOT select
+        it still apply, and a specialty whose archetype was rejected on
+        position (e.g. `creator` -> classic_ten, positions=['CAM'], at RW)
+        never selected anything and still applies.
+        """
         for spec in specialties:
             if spec in cls.SPECIALTY_ARCHETYPE_MAP:
                 candidate = cls.SPECIALTY_ARCHETYPE_MAP[spec]
                 arch_data = cls.ARCHETYPES.get(candidate, {})
                 arch_positions = arch_data.get("positions", [])
-                # Accept if position matches OR archetype has no position restriction
                 if not arch_positions or position in arch_positions:
-                    return candidate
+                    return candidate, spec
 
-        # Fallback by position
         position_defaults = {
             "GK":  "shot_stopper",
             "CB":  "stopper_cb",
@@ -926,7 +1067,12 @@ class ArchetypeLibrary:
             "ST":  "complete_striker",
             "CF":  "complete_striker",
         }
-        return position_defaults.get(position, "generic")
+        return position_defaults.get(position, "generic"), None
+
+    @classmethod
+    def get_archetype_for_player(cls, position: str, specialties: List[str]) -> str:
+        """Determine best archetype given position and specialties."""
+        return cls.selecting_specialty(position, specialties)[0]
 
 
 # ─────────────────────────────────────────────
@@ -967,10 +1113,26 @@ class DNAFactory:
         preferred_foot: str = "right",
         is_superstar: bool = False,
         is_set_piece_taker: bool = False,
+        soul=None,
     ) -> PlayerDNA:
-        """Build a complete PlayerDNA object."""
+        """Build a complete PlayerDNA object.
 
-        archetype_key = ArchetypeLibrary.get_archetype_for_player(position, specialties)
+        ``soul`` is an optional ``player_soul.PlayerSoul``. It must be passed
+        IN rather than attached afterwards, because the soul's attribute
+        CEILINGS have to be known while the bands are being drawn — attaching
+        it post-build (which is what auto_run_match.py did) is too late and is
+        why no soul ever influenced their own character sheet.
+        """
+
+        # Identity for the deterministic attribute stream (see the module
+        # banner). Set BEFORE any builder runs, so every _attr call inside
+        # create() resolves to this player.
+        _DNA_IDENTITY["name"] = name or ""
+        _DNA_SOUL["soul"] = soul
+
+        archetype_key, selected_spec = ArchetypeLibrary.selecting_specialty(
+            position, specialties)
+        _DNA_ARCHETYPE_SPEC["spec"] = selected_spec
         archetype = ArchetypeLibrary.ARCHETYPES.get(archetype_key, {})
         age_mult = cls._get_age_multiplier(age)
 
@@ -986,10 +1148,13 @@ class DNAFactory:
         # Footedness
         if "two_footed" in specialties:
             footedness = "both"
-        elif random.random() < 0.20:
-            footedness = "left" if preferred_foot == "right" else "right"
         else:
-            footedness = preferred_foot
+            _unit = _dna_unit("footedness")
+            flip = _stream_parity_random() < 0.20 if _unit is None else _unit < 0.20
+            if flip:
+                footedness = "left" if preferred_foot == "right" else "right"
+            else:
+                footedness = preferred_foot
 
         dna = PlayerDNA(
             name=name,
@@ -1009,6 +1174,12 @@ class DNAFactory:
             footedness=footedness,
             is_set_piece_taker=is_set_piece_taker,
             archetype=archetype_key,
+            # Attached HERE as well as used for the band lift above. Leaving it
+            # unset made the soul vanish from every export
+            # (exporter.py reads p.dna.soul.profile.label) while still lifting
+            # the bands — the band lift would have been invisible and
+            # unattributable in the data.
+            soul=soul,
         )
 
         # Superstar boost
@@ -1061,12 +1232,91 @@ class DNAFactory:
 
     @classmethod
     def _attr(cls, archetype: Dict, key: str, default_range: Tuple, age_mult: float) -> float:
-        """Get attribute value from archetype template with variation."""
+        """Get attribute value from archetype template with variation.
+
+        The variation is a crc32 stream keyed on (player, key), so a player
+        keeps the same rating every matchday instead of being re-rolled by
+        the global RNG. The global draw is still made and discarded — see
+        the module banner on stream parity.
+
+        SOUL LIFT: a soul player is not a better ordinary player, they are a
+        different character sheet. If the soul's archetype declares a ceiling
+        for this attribute, the BAND is lifted toward that ceiling by how much
+        greatness the player actually has:
+
+            lift    = clamp((G - 1.00) / (1.50 - 1.00), 0, 1)
+            hi      = arch_hi + (ceiling - arch_hi) * lift
+            lo      = arch_lo + (ceiling - arch_hi) * lift * SOUL_FLOOR_LIFT
+
+        A QUALITY soul at G=0.70 gets no lift at all. A GENERATIONAL soul at
+        G=1.35 gets 70% of the way to the ceiling. A TRANSCENDENT soul at
+        G=1.55 gets all of it — and SOUL_FLOOR_LIFT (0.5) raises the FLOOR by
+        half as much, so a fully transcendent soul lives in the TOP half of the
+        range rather than being able to draw at the bottom of it. Without that,
+        Haaland at G=1.45 could still come out as an 81-finishing striker,
+        which is not what TRANSCENDENT is supposed to mean. At lift=0 both ends
+        are untouched, so an ordinary player is bit-identical to before.
+
+        TALENT then sets WHERE inside that band, and this is the part that makes
+        greatness EMERGE from soulness rather than merely permit it. The seed
+        only supplies fine detail:
+
+            centre = 0.5 + (talent - 0.5) * SOUL_TALENT_SPAN
+            u      = clamp01(centre + (crc32_unit - 0.5) * SOUL_JITTER)
+
+        With SOUL_JITTER = 0.18 the seed can only move a soul plus or minus
+        0.09 of the band. The first version of this used the more obvious
+        `unit ** (1/(0.5+talent))` instead, and it failed exactly where it
+        mattered: a GENERATIONAL Attacking Prophet (Percy, talent 0.90) whose
+        crc32 happened to land low drew 48.1 finishing against a declared
+        ceiling of 95, and a TRANSCENDENT striker drew 82.9. Both read as
+        ordinary players wearing a soul's label. When the PILLAR decides the
+        level, a soul is reliably as good as its soul says it is, and two
+        players are different because their PILLARS differ, not because their
+        names hash differently.
+
+        At lift=0 both band ends are untouched and the soul branch is skipped
+        entirely, so an ordinary player is bit-identical to before this change.
+        """
         if key in archetype:
             lo, hi = archetype[key]
         else:
             lo, hi = default_range
-        base = random.uniform(lo, hi)
+
+        soul = _DNA_SOUL.get("soul")
+        ceiling = None
+        lifted = False
+        if soul is not None:
+            ceiling = getattr(getattr(soul, "profile", None),
+                              "attribute_ceilings", {}).get(key)
+            if ceiling is not None:
+                ceiling = min(float(ceiling), 99.0)
+                g = float(soul.greatness_coefficient)
+                lift = max(0.0, min(1.0, (g - SOUL_LIFT_G_FLOOR) /
+                                     (SOUL_LIFT_G_CEIL - SOUL_LIFT_G_FLOOR)))
+                if lift > 0.0:
+                    lo = lo + (ceiling - lo) * lift * SOUL_FLOOR_LIFT
+                    hi = hi + (ceiling - hi) * lift
+                    lifted = True
+                else:
+                    # A QUALITY-tier soul (G <= 1.00) must be indistinguishable
+                    # from an ordinary player, so the talent bias below is
+                    # gated on the lift too. Gating only the band was a bug:
+                    # a G=0.70 soul kept its whole band and still had its draw
+                    # pulled toward the ceiling it was never allowed to reach.
+                    ceiling = None
+
+        _stream_parity_uniform(lo, hi)          # burn the global draw, ignore it
+        unit = _dna_unit(key)
+        if unit is None:
+            base = random.uniform(lo, hi)
+        else:
+            if lifted:
+                talent = max(0.0, min(1.0, float(soul.pillars.talent)))
+                centre = 0.5 + (talent - 0.5) * SOUL_TALENT_SPAN
+                unit = centre + (unit - 0.5) * SOUL_JITTER
+                unit = max(0.0, min(1.0, unit))
+            base = lo + (hi - lo) * unit
         return round(min(99.0, max(30.0, base * age_mult)), 1)
 
     @classmethod
@@ -1080,7 +1330,7 @@ class DNAFactory:
             agility      = cls._attr(arch, "physical.agility",       (55, 72), age_mult),
         )
         # Specialty overrides
-        if "speedster" in specs:
+        if "speedster" in specs and _spec_applies("speedster"):
             p.pace         = min(99, p.pace * 1.22)
             p.acceleration = min(99, p.acceleration * 1.22)
         if "strong" in specs:
@@ -1088,7 +1338,7 @@ class DNAFactory:
             p.jumping  = min(99, p.jumping * 1.10)
         if "ironman" in specs:
             p.stamina = min(99, p.stamina * 1.15)
-        if "engine" in specs:
+        if "engine" in specs and _spec_applies("engine"):
             p.stamina = min(99, p.stamina * 1.12)
         return p
 
@@ -1106,15 +1356,16 @@ class DNAFactory:
             penalty_taking = cls._attr(arch, "technical.penalty_taking",(52, 70), age_mult),
             weak_foot     = cls._attr(arch, "technical.weak_foot",     (35, 60), age_mult),
         )
-        if "clinical_finisher" in specs or "cold_blooded" in specs:
+        if ("clinical_finisher" in specs and _spec_applies("clinical_finisher")) or (
+                "cold_blooded" in specs and _spec_applies("cold_blooded")):
             t.finishing     = min(99, t.finishing * 1.22)
             t.penalty_taking = min(99, t.penalty_taking * 1.15)
-        if "dribbler" in specs:
+        if "dribbler" in specs and _spec_applies("dribbler"):
             t.dribbling = min(99, t.dribbling * 1.22)
             t.ball_control = min(99, t.ball_control * 1.10)
-        if "grand_dribbler" in specs:
+        if "grand_dribbler" in specs and _spec_applies("grand_dribbler"):
             t.dribbling = min(99, t.dribbling * 1.35)
-        if "crosser" in specs:
+        if "crosser" in specs and _spec_applies("crosser"):
             t.crossing = min(99, t.crossing * 1.20)
         if "set_piece_specialist" in specs:
             t.free_kick = min(99, t.free_kick * 1.25)
@@ -1188,10 +1439,12 @@ class DNAFactory:
         if "passer" in specs:
             p.short_passing = min(99, p.short_passing * 1.18)
             p.long_passing  = min(99, p.long_passing * 1.15)
-        if "sup_vision" in specs or "regista" in specs:
+        if ("sup_vision" in specs and _spec_applies("sup_vision")) or (
+                "regista" in specs and _spec_applies("regista")):
             p.through_balls = min(99, p.through_balls * 1.25)
             p.switch_play   = min(99, p.switch_play * 1.20)
-        if "creator" in specs or "grand_creator" in specs:
+        if ("creator" in specs and _spec_applies("creator")) or (
+                "grand_creator" in specs and _spec_applies("grand_creator")):
             p.through_balls = min(99, p.through_balls * 1.20)
         return p
 
@@ -1206,11 +1459,11 @@ class DNAFactory:
         )
         if "tackler" in specs:
             d.tackling    = min(99, d.tackling * 1.22)
-        if "interceptor" in specs:
+        if "interceptor" in specs and _spec_applies("interceptor"):
             d.interceptions = min(99, d.interceptions * 1.22)
         if "blocker" in specs:
             d.blocking    = min(99, d.blocking * 1.22)
-        if "ball_winner" in specs:
+        if "ball_winner" in specs and _spec_applies("ball_winner"):
             d.tackling    = min(99, d.tackling * 1.18)
             d.interceptions = min(99, d.interceptions * 1.15)
         return d
@@ -1286,8 +1539,14 @@ class DNAFactory:
 
     @classmethod
     def _apply_superstar_boost(cls, dna: PlayerDNA):
-        """Superstars are 10-20% better across the board."""
-        boost = random.uniform(1.10, 1.20)
+        """Superstars are 10-20% better across the board.
+
+        The boost factor is a crc32 stream keyed on the player, so a
+        superstar is not a different magnitude of superstar every matchday.
+        """
+        _stream_parity_uniform(1.10, 1.20)
+        _unit = _dna_unit("superstar_boost")
+        boost = random.uniform(1.10, 1.20) if _unit is None else 1.10 + 0.10 * _unit
         for domain in [dna.physical, dna.technical, dna.mental, dna.passing, dna.defending]:
             for attr in vars(domain):
                 val = getattr(domain, attr)
@@ -1478,20 +1737,30 @@ class SquadBuilder:
         substitutes: List[Tuple] = None,
         team_superstars: List[str] = None,
         set_piece_takers: List[str] = None,
+        soul_assignments: Optional[Dict[str, object]] = None,
     ) -> Dict[str, List[PlayerProfile]]:
         """
         Build a squad dict with 'starters' and 'substitutes'.
 
         Tuple format: (name, position, specialties, [age], [nationality], [preferred_foot])
+
+        ``soul_assignments`` maps player name -> PlayerSoul. It is threaded
+        INTO DNAFactory.create rather than attached to the finished profile,
+        because soul attribute CEILINGS have to be known while the bands are
+        drawn. player_soul.WIRING_GUIDE has said to do this since the module
+        was written and it was never done, which is why every soul in the
+        game had an ordinary character sheet with odds multipliers bolted on.
         """
         superstars = team_superstars or []
         sp_takers  = set_piece_takers or []
+        souls      = soul_assignments or {}
         result = {'starters': [], 'substitutes': []}
 
         for entry in (starters or []):
             profile = SquadBuilder._build_player(
                 entry, team_name, is_starter=True,
-                superstars=superstars, sp_takers=sp_takers
+                superstars=superstars, sp_takers=sp_takers,
+                soul=souls.get(entry[0]),
             )
             result['starters'].append(profile)
 
@@ -1517,7 +1786,8 @@ class SquadBuilder:
 
             profile = SquadBuilder._build_player(
                 entry, team_name, is_starter=False,
-                superstars=superstars, sp_takers=sp_takers
+                superstars=superstars, sp_takers=sp_takers,
+                soul=souls.get(entry[0]),
             )
             profile.sub_in_minute = sub_in
             result['substitutes'].append(profile)
@@ -1531,6 +1801,7 @@ class SquadBuilder:
         is_starter: bool,
         superstars: List[str],
         sp_takers: List[str],
+        soul=None,
     ) -> PlayerProfile:
         """Parse a player tuple and build PlayerProfile."""
         name       = entry[0]
@@ -1551,6 +1822,7 @@ class SquadBuilder:
             preferred_foot=pref_foot,
             is_superstar=(name in superstars),
             is_set_piece_taker=(name in sp_takers),
+            soul=soul,
         )
 
         profile = PlayerProfile(dna=dna, team_name=team_name, is_starter=is_starter)

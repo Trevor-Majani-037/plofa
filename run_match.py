@@ -66,7 +66,31 @@ SOUL_PLAYERS = {
         archetype=SoulArchetype.CREATIVE_ORACLE,
         pillars=GreatnessPillars(hardwork=0.88, talent=0.90, luck=0.78)
     ),
-
+    "Adri Vela": PlayerSoul(
+        player_name="Adri Vela",
+        archetype=SoulArchetype.WIDE_DESTROYER,
+        pillars=GreatnessPillars(hardwork=0.83, talent=0.92, luck=0.54)
+    ),
+    "Mateo Sanz": PlayerSoul(
+        player_name="Mateo Sanz",
+        archetype=SoulArchetype.MIDFIELD_PHILOSOPHER,
+        pillars=GreatnessPillars(hardwork=0.77, talent=0.77, luck=0.63)
+    ),
+    "Bruno Reis": PlayerSoul(
+        player_name="Bruno Reis",
+        archetype=SoulArchetype.WIDE_DESTROYER,
+        pillars=GreatnessPillars(hardwork=0.83, talent=0.92, luck=0.54)
+    ),
+    "Finn Larsson": PlayerSoul(
+        player_name="Finn Larsson",
+        archetype=SoulArchetype.MIDFIELD_PHILOSOPHER,
+        pillars=GreatnessPillars(hardwork=0.77, talent=0.77, luck=0.63)
+    ),
+    "Darius Frost": PlayerSoul(
+        player_name="Darius Frost",
+        archetype=SoulArchetype.DEFENSIVE_PURIST,
+        pillars=GreatnessPillars(hardwork=0.77, talent=0.77, luck=0.63)
+    ),
 }
 
 
@@ -75,7 +99,7 @@ SOUL_PLAYERS = {
 # Edit these every matchday
 # ══════════════════════════════════════════════════════════════════════
 
-MATCH_DATE   = date(2026, 8, 16)    # Year, Month, Day
+MATCH_DATE   = date(2026, 10, 12)    # Year, Month, Day
 MATCHDAY     = 1                    # 1–34
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
@@ -267,12 +291,17 @@ def run():
           f"[{away_mgr.job_status()}]")
 
     # ── Build squads ─────────────────────────────────────────
+    # soul_assignments threaded IN for the same reason as auto_run_match.py:
+    # the soul's attribute ceilings must be known while the bands are drawn.
+    # The "attach souls to players" block below still runs and is idempotent,
+    # but on its own it was always too late to affect the character sheet.
     home_squad = SquadBuilder.build(
         team_name=HOME_TEAM,
         starters=HOME_STARTERS,
         substitutes=HOME_SUBS,
         team_superstars=HOME_SUPERSTARS,
         set_piece_takers=HOME_SP_TAKERS,
+        soul_assignments=SOUL_PLAYERS,
     )
 
     away_squad = SquadBuilder.build(
@@ -281,6 +310,7 @@ def run():
         substitutes=AWAY_SUBS,
         team_superstars=AWAY_SUPERSTARS,
         set_piece_takers=AWAY_SP_TAKERS,
+        soul_assignments=SOUL_PLAYERS,
     )
 
     # ── Attach souls to players ──────────────────────────────

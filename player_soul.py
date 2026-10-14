@@ -279,6 +279,26 @@ class SoulProfile:
     bonus_pressures_per_match:     Tuple[int,int] = (0, 0)
     bonus_carries_per_match:       Tuple[int,int] = (0, 0)
 
+    # ── ATTRIBUTE CEILINGS (added 2026-10-14) ───────────────────
+    # A soul is not a better ordinary player, it is a different character
+    # sheet. These are the CEILINGS the soul's archetype can reach, in the
+    # same "domain.field" keys DNAFactory._attr uses. DNAFactory lifts the
+    # archetype band's top toward the ceiling in proportion to the player's
+    # greatness coefficient G:
+    #
+    #     lift = clamp((G - 1.00) / (1.50 - 1.00), 0, 1)
+    #     hi   = archetype_hi + (ceiling - archetype_hi) * lift
+    #
+    # so a QUALITY soul (G=0.70) gets no lift, a GENERATIONAL one (G=1.35)
+    # gets ~70% of the way, and a TRANSCENDENT one (G=1.55) gets all of it.
+    # The archetype FLOOR is never lifted: a soul winger is still a winger
+    # everywhere their soul does not reach.
+    #
+    # BEFORE this existed the soul never touched the DNA at all — it was four
+    # outcome multipliers bolted onto an ordinary character sheet, and the
+    # pillars (hardwork/talent/luck) changed nothing that reached the pitch.
+    attribute_ceilings: Dict[str, float] = field(default_factory=dict)
+
 
 # ─────────────────────────────────────────────
 # SOUL LIBRARY — All defined archetypes
@@ -644,6 +664,115 @@ class SoulLibrary:
             if arch.value == name.lower():
                 return profile
         return None
+
+
+# ─────────────────────────────────────────────────────────────
+# ATTRIBUTE CEILINGS — the soul's character sheet (added 2026-10-14)
+# ─────────────────────────────────────────────────────────────
+# Kept as one table rather than nine scattered kwargs so that every soul's
+# ceiling is readable in one place. Keys are the same "domain.field" strings
+# DNAFactory._attr uses, so a soul only lifts the attributes its soul is
+# actually ABOUT — a Goaling Savant lifts finishing and composure and leaves
+# crossing alone, because Saliba and Rice are not attacking souls.
+#
+# Reference points for the numbers, all from the archetype bands in
+# player_dna.ArchetypeLibrary that these souls replace or sit above:
+#     complete_striker  finishing (80, 91)  ->  ceiling 96
+#     traditional_winger crossing  (68, 80)  ->  ceiling 93
+#     classic_ten       vision     (78, 90)  ->  ceiling 96
+#     stopper_cb        tackling   (62, 74)  ->  ceiling 93
+#     anchor            interceptions (68,80)->  ceiling 94
+# A soul's floor is untouched, so a soul is still recognisably its position.
+_SOUL_ATTRIBUTE_CEILINGS: Dict[SoulArchetype, Dict[str, float]] = {
+    SoulArchetype.ATTACKING_PROPHET: {
+        "technical.finishing": 95.0, "technical.long_shots": 92.0,
+        "technical.dribbling": 92.0, "technical.ball_control": 90.0,
+        "technical.first_touch": 89.0,
+        "mental.vision": 94.0, "mental.composure": 93.0, "mental.decisions": 92.0,
+        "mental.anticipation": 92.0, "mental.geometric_awareness": 91.0,
+        "passing.short_passing": 90.0, "passing.through_balls": 90.0,
+        "physical.pace": 94.0, "physical.acceleration": 95.0,
+    },
+    SoulArchetype.GOALSCORING_SAVANT: {
+        "technical.finishing": 96.0, "technical.penalty_taking": 92.0,
+        "technical.first_touch": 88.0, "technical.ball_control": 90.0,
+        "mental.composure": 94.0, "mental.positioning": 95.0,
+        "mental.anticipation": 94.0, "mental.decisions": 91.0,
+        "mental.geometric_awareness": 93.0, "mental.concentration": 92.0,
+        "physical.strength": 90.0, "physical.acceleration": 90.0,
+    },
+    SoulArchetype.CREATIVE_ORACLE: {
+        "mental.vision": 96.0, "mental.composure": 91.0,
+        "mental.anticipation": 92.0, "mental.decisions": 92.0,
+        "technical.dribbling": 93.0, "technical.ball_control": 92.0,
+        "technical.crossing": 93.0, "technical.first_touch": 90.0,
+        "passing.short_passing": 92.0, "passing.through_balls": 93.0,
+        "passing.long_passing": 90.0, "passing.switch_play": 91.0,
+        "physical.acceleration": 91.0, "technical.finishing": 88.0,
+    },
+    SoulArchetype.MIDFIELD_PHILOSOPHER: {
+        "mental.vision": 92.0, "mental.decisions": 93.0,
+        "mental.composure": 90.0, "mental.positioning": 92.0,
+        "mental.anticipation": 92.0, "mental.anticipation": 92.0,
+        "passing.short_passing": 92.0, "passing.long_passing": 92.0,
+        "passing.through_balls": 91.0, "passing.switch_play": 90.0,
+        "technical.ball_control": 90.0, "technical.first_touch": 90.0,
+        "physical.stamina": 93.0, "defending.tackling": 89.0,
+        "defending.interceptions": 90.0,
+    },
+    SoulArchetype.SWEEPER_SAGE: {
+        "mental.positioning": 94.0, "mental.anticipation": 95.0,
+        "mental.decisions": 91.0, "mental.composure": 90.0,
+        "mental.geometric_awareness": 94.0, "mental.concentration": 92.0,
+        "defending.interceptions": 94.0, "defending.tackling": 92.0,
+        "defending.clearances": 92.0, "passing.short_passing": 90.0,
+        "physical.stamina": 94.0, "physical.strength": 89.0,
+        "mental.work_rate": 94.0,
+    },
+    SoulArchetype.DEFENSIVE_PURIST: {
+        "mental.anticipation": 95.0, "mental.composure": 94.0,
+        "mental.positioning": 93.0, "mental.decisions": 92.0,
+        "mental.concentration": 93.0, "mental.jumping": 93.0,
+        "defending.tackling": 93.0, "defending.marking": 92.0,
+        "defending.interceptions": 92.0, "defending.clearances": 93.0,
+        "technical.heading": 90.0, "technical.first_touch": 89.0,
+        "passing.short_passing": 89.0, "physical.strength": 91.0,
+        "physical.jumping": 91.0,
+    },
+    SoulArchetype.WALL: {
+        "mental.anticipation": 92.0, "mental.concentration": 94.0,
+        "mental.composure": 92.0, "mental.positioning": 92.0,
+        "defending.marking": 95.0, "defending.tackling": 93.0,
+        "defending.blocking": 94.0, "defending.interceptions": 92.0,
+        "technical.heading": 92.0, "technical.first_touch": 88.0,
+        "physical.strength": 93.0, "physical.jumping": 92.0,
+        "physical.stamina": 90.0,
+    },
+    SoulArchetype.WIDE_DESTROYER: {
+        "technical.dribbling": 94.0, "technical.crossing": 92.0,
+        "technical.ball_control": 91.0, "technical.first_touch": 90.0,
+        "technical.long_shots": 91.0, "technical.finishing": 91.0,
+        "physical.pace": 95.0, "physical.acceleration": 95.0,
+        "physical.stamina": 92.0,
+        "mental.anticipation": 91.0, "mental.work_rate": 93.0,
+        "defending.tackling": 90.0, "defending.interceptions": 90.0,
+    },
+    SoulArchetype.PRESSING_EVANGELIST: {
+        "mental.work_rate": 96.0, "mental.anticipation": 93.0,
+        "mental.positioning": 92.0, "mental.aggression": 93.0,
+        "mental.concentration": 93.0, "mental.stamina": 96.0,
+        "defending.tackling": 92.0, "defending.interceptions": 92.0,
+        "defending.blocking": 91.0, "defending.marking": 91.0,
+        "technical.finishing": 90.0, "technical.dribbling": 89.0,
+        "physical.stamina": 95.0, "physical.agility": 92.0,
+    },
+}
+
+for _arch, _ceil in _SOUL_ATTRIBUTE_CEILINGS.items():
+    profile = SoulLibrary.PROFILES.get(_arch)
+    if profile is not None:
+        profile.attribute_ceilings = dict(_ceil)
+del _arch, _ceil
 
 
 # ─────────────────────────────────────────────
