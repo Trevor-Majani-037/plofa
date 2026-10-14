@@ -119,7 +119,14 @@ WEATHER_ENABLED = True
 
 # ── Substitution behaviour ─────────────────────────────────────────────
 MANAGER_STUBBORNNESS = 0.35   # 0 = subs quickly  |  1 = never subs for stamina
-MAX_SUBS  = 3
+# IFAB Laws of the Game 2026/27: five substitutions permitted, in at most
+# three windows (plus a free one at half-time). This was 3, which is the
+# pre-2022 Premier League limit — and it was NOT just a stale constant,
+# because line 1131 assigns it onto the controller, so it actively
+# overrode whatever SubstitutionController.MAX_SUBS said. The window
+# mechanic itself lives in the controller (MAX_WINDOWS = 3); the count
+# lives here because it is the competition's choice, not the controller's.
+MAX_SUBS  = 5
 
 # ── Persistence ───────────────────────────────────────────────────────
 #   After Matchday 1 this file accumulates injuries, suspensions and
@@ -620,6 +627,19 @@ def _apply_starting_stamina(
         # THEN override stamina/fatigue with the clamped starting values
         if hasattr(player, "dna") and hasattr(player.dna, "form"):
             player.dna.form.fatigue_level = max(0.0, 100.0 - starting)
+
+        # ALSO publish it where the stamina engine actually reads it.
+        # match_engine.py:2237 does
+        #     if hasattr(p.dna, '_starting_stamina'): starting = p.dna._starting_stamina
+        # and NOTHING ever assigned that attribute — so the hasattr was always
+        # False and every starter registered at 100.0 in every match. The whole
+        # season recovery chain (SeasonState.project_stamina, RECOVERY_PER_DAY,
+        # the fatigue briefing in season_manager.py:798) was computed, printed
+        # and persisted, and then discarded before it reached the engine.
+        # One line makes the computation that was already happening actually
+        # take effect. Verified by test_sub_quality.py.
+        if hasattr(player, "dna"):
+            player.dna._starting_stamina = starting
 
 
 def _persist_post_match(

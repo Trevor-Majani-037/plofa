@@ -394,6 +394,429 @@ class PlayerStaminaState:
         return max(0, int(days / 7))   # Approx 1 match per week
 
 
+# Roles whose player comes off first when chasing — the defensive spine,
+# which is the group a manager will least mind losing while chasing.
+DEFENSIVE_SPINE = ["CB", "CDM"]
+
+# Per-minute chance of a scoreline-driven change once the quality gate is
+# open. Unchanged from the previous 0.08 — see the comment at section 4.
+SUB_GAME_STATE_RATE = 0.08
+
+# Earliest minute a leading team makes a protective change. Previously 75.
+# Rey et al. found coaches act earlier when level or behind and later when
+# ahead, so this stays later than the chasing path but no longer sits in
+# the last quarter of the match where it can only ever be a token gesture.
+SUB_PROTECT_LEAD_MINUTE = 60
+
+# How much stamina a substitute recovers per minute spent on the bench.
+# A standing man recovers far slower than a seated one; 0.55/min means a
+# 45-minute stay on the bench is worth about 25 points of tank. This is what
+# makes "rest him" and "use him" different decisions, which the previous
+# hardcoded 100.0 made indistinguishable.
+SUB_SEATED_RECOVERY_PER_MIN = 0.55
+
+
+def _position_of(player) -> str:
+    """Position label for a bench or on-pitch object, tolerating wrappers.
+
+    PlayerProfile carries `.position` and `.dna.position`; some fixtures
+    carry only one. Returning "CM" rather than "" on total failure matters,
+    because "" matches nothing in ADJACENT_POS and a player whose position
+    cannot be read must still be selectable as a last resort — otherwise a
+    fixture that omits positions produces a bench nobody can draw from, and
+    the failure looks like "no substitutes available".
+    """
+    for src in (player, getattr(player, "dna", None)):
+        if src is None:
+            continue
+        pos = getattr(src, "position", None)
+        if isinstance(pos, str) and pos:
+            # Live positions are numbered ("CB1", "CM2"); the role family is
+            # what every position table in this module is keyed on. This is
+            # the same trap that made a same-side-passing rule match nothing
+            # in attacking_matrix because it tested "CB" against "CB1".
+            base = pos.rstrip("0123456789").upper()
+            return base or pos.upper()
+    return "CM"
+
+
+# Adjacent positions — who can plausibly fill a role. Identical to the table
+# the previous `_pick_sub` had inline; hoisted to module scope so the
+# ranking helpers and any test share one definition.
+ADJACENT_POS: Dict[str, List[str]] = {
+    "ST":  ["CF", "LW", "RW", "CAM"],
+    "CF":  ["ST", "CAM", "LW", "RW"],
+    "LW":  ["RW", "CAM", "ST", "LB"],
+    "RW":  ["LW", "CAM", "ST", "RB"],
+    "CAM": ["CM", "LW", "RW", "ST"],
+    "CM":  ["CAM", "CDM", "LW", "RW"],
+    "CDM": ["CM", "CB"],
+    "LB":  ["RB", "CB", "LW"],
+    "RB":  ["LB", "CB", "RW"],
+    "CB":  ["CDM", "LB", "RB"],
+    "GK":  ["GK"],
+}
+
+# Roles that count as "an attacker" for a chasing change.
+ATTACKING_POS = ["ST", "CF", "LW", "RW", "CAM"]
+
+
+# ─────────────────────────────────────────────
+# WHO IS WORTH BRINGING ON  (added 2026-10-14)
+# ─────────────────────────────────────────────
+#
+# BEFORE THIS SECTION every "who comes on" helper returned the FIRST unused
+# player in bench-list order. Bench order is (transitively) market value, so
+# the bench was used top-down by accident, and nothing in this module read
+# `overall_rating`, `form.confidence`, `recent_ratings`, `age` or `soul` even
+# ONCE — all zero occurrences. The manager was picking blind. This section is
+# the signal those picks now sort on.
+#
+# THE RESEARCH, and what it changes:
+#
+# * Wharton (2024, "the value of substitution", West Virginia) measured the
+#   marginal cost of a substitution as a loss of ten points of quality and
+#   found the answer is NOT symmetric. LEADING by one, a manager may accept
+#   ten points of OFFENSIVE quality from minute 47 but ten points of
+#   DEFENSIVE quality is NEVER advisable — protecting a lead is worth more
+#   than any attacking upgrade. TRAILING by one, the mirror holds: ten
+#   points of defensive quality becomes justifiable at only minute 32, while
+#   giving up ten points of ATTACKING quality is never advisable.
+#
+#   That is why `sub_quality` is split into an attacking and a defensive
+#   half. A single blended number cannot express "this change costs me
+#   something I can afford" — it can only express "is this man better",
+#   which is the question the research says managers do NOT ask.
+#
+# * Silva & Swartz (2016, "Choosing your players", Journal of Quantitative
+#   Analysis in Sports) fitted Bayesian logistic regressions over 4,226
+#   substitutions across ten seasons and found NO substitution minute beats
+#   any other. Their conclusion is literally "coaches should substitute
+#   whenever they notice tired players", and they explicitly reject the
+#   clock-driven timings that previous literature proposed. So the minute
+#   thresholds below are GATES on when a check happens, never the reason a
+#   change happens: a player must be in genuine difficulty, and the gate
+#   only decides whether anyone is looking yet.
+#
+# * Rey, Dellal & Gentilini (2015, 677 UCL substitutions) found coaches
+#   substitute EARLIER when level or behind and LATER when ahead, and use
+#   offensive substitutions more when behind. The scoreline weights below
+#   encode that as an explicit asymmetry rather than three unrelated ifs.
+#
+# * Kwest's analysis of the first five-sub Premier League season found the
+#   mode is three to four changes, managers overwhelmingly believe they have
+#   already fielded their best XI, and Chelsea's three managers — the ones
+#   substituting most frequently — are read as not knowing who their best XI
+#   was. Frequent, indiscriminate changing is a known failure mode, which is
+#   why `SUB_GAME_STATE_RATE` is deliberately low (8%/min) and unchanged
+#   from the previous value: this change improves WHICH player is chosen and
+#   WHEN a struggling one is noticed, not the appetite for change.
+
+
+def _get(dna, group: str, field: str, default: float = 50.0) -> float:
+    """Read one attribute group off a PlayerDNA without exploding on mocks.
+
+    The bench objects are PlayerProfile wrappers, not PlayerDNA, and several
+    tests build lightweight stand-ins. `_get` walks the real chain and falls
+    back to the position-average so a missing attribute degrades to neutral
+    rather than silently scoring the player zero — a zero would make an
+    incomplete fixture look like a terrible player, which is the documented
+    `get_position` returns the centre spot trap in a different guise.
+    """
+    obj = getattr(dna, group, None)
+    if obj is None:
+        return default
+    val = getattr(obj, field, None)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+# Attacking weight map: attribute -> weight. Sums to 1.0 before the form and
+# soul adjustments below.
+SUB_ATTACK_WEIGHTS: Dict[Tuple[str, str], float] = {
+    ("technical", "finishing"):     0.16,
+    ("technical", "dribbling"):     0.13,
+    ("technical", "first_touch"):   0.11,
+    ("technical", "crossing"):      0.09,
+    ("technical", "long_shots"):    0.05,
+    ("technical", "ball_control"):  0.07,
+    ("passing", "through_balls"):   0.11,
+    ("passing", "short_passing"):   0.09,
+    ("mental", "vision"):           0.12,
+    ("mental", "composure"):        0.07,
+}
+
+# Defensive weight map. Positions outside the defensive spine score low here
+# on purpose: a winger brought on to replace a left back is a real downgrade
+# in this column, and the scoreline rule is supposed to be able to see that.
+SUB_DEFEND_WEIGHTS: Dict[Tuple[str, str], float] = {
+    ("defending", "tackling"):       0.16,
+    ("defending", "marking"):        0.13,
+    ("defending", "interceptions"):  0.11,
+    ("defending", "blocking"):       0.08,
+    ("defending", "clearances"):     0.09,
+    ("mental", "positioning"):       0.13,
+    ("mental", "anticipation"):      0.10,
+    ("mental", "concentration"):     0.07,
+    ("physical", "strength"):        0.08,
+    ("mental", "aggression"):        0.05,
+}
+
+# Goalkeeping quality, used only when the slot being filled is the keeper's.
+SUB_GK_WEIGHTS: Dict[Tuple[str, str], float] = {
+    ("gk_attrs", "reflexes"):     0.30,
+    ("gk_attrs", "diving"):       0.25,
+    ("gk_attrs", "handling"):     0.18,
+    ("gk_attrs", "positioning_gk"): 0.15,
+    ("gk_attrs", "kicking"):      0.07,
+    ("gk_attrs", "sweeping"):     0.05,
+}
+
+
+def _weighted(player, weights: Dict[Tuple[str, str], float]) -> float:
+    dna = getattr(player, "dna", None)
+    if dna is None:
+        return 50.0
+    total = 0.0
+    norm = 0.0
+    for (group, field), w in weights.items():
+        total += _get(dna, group, field) * w
+        norm += w
+    return total / norm if norm else 50.0
+
+
+def sub_attacking_quality(player) -> float:
+    """How much ATTACKING quality this player is worth, 0-100.
+
+    Scaled by the player's own position-appropriate overall so a 75-rated
+    winger does not out-score a 75-rated centre-back purely because the
+    attribute map favours forwards — the two numbers answer different
+    questions and must stay comparable for the scoreline rule to be able to
+    say "this costs me attack".
+    """
+    base = _weighted(player, SUB_ATTACK_WEIGHTS)
+    ovr = _overall_of(player)
+    return base * (0.55 + 0.45 * (ovr / 100.0))
+
+
+def sub_defensive_quality(player) -> float:
+    """How much DEFENSIVE quality this player is worth, 0-100. See above."""
+    base = _weighted(player, SUB_DEFEND_WEIGHTS)
+    ovr = _overall_of(player)
+    return base * (0.55 + 0.45 * (ovr / 100.0))
+
+
+def _overall_of(player) -> float:
+    """PlayerDNA.overall_rating, or a neutral 60 when it is unavailable.
+
+    60 is the pool mean, so an unreadable rating makes a player neither
+    attractive nor repulsive; it does not make them a liability. Using 0
+    would make every incomplete fixture look like a garbage player and is
+    the same class of bug as `get_position` returning the centre spot for a
+    player it has no state for.
+    """
+    dna = getattr(player, "dna", None)
+    if dna is None:
+        return 60.0
+    ovr = getattr(dna, "overall_rating", None)
+    if ovr is None:
+        # Some fixtures carry a plain `rating` on the wrapper instead.
+        ovr = getattr(player, "overall_rating", None) or getattr(player, "rating", None)
+    try:
+        val = float(ovr)
+    except (TypeError, ValueError):
+        return 60.0
+    return max(0.0, min(100.0, val))
+
+
+def _form_of(player) -> float:
+    """Form confidence + recent match ratings folded into a 0-100 score.
+
+    `PlayerFormState.confidence` is already 0-100 (it is the thing the
+    exporter prints and the season manager rehydrates). `recent_ratings` is
+    a short list of post-match ratings; its mean is on the same scale.
+    """
+    dna = getattr(player, "dna", None)
+    form = getattr(dna, "form", None) if dna is not None else None
+    if form is None:
+        form = getattr(player, "form", None)
+    if form is None:
+        return 60.0
+
+    conf = getattr(form, "confidence", None)
+    try:
+        conf = float(conf) if conf is not None else 60.0
+    except (TypeError, ValueError):
+        conf = 60.0
+
+    ratings = getattr(form, "recent_ratings", None) or []
+    ratings = [float(r) for r in ratings if isinstance(r, (int, float))]
+    recent = (sum(ratings[-5:]) / len(ratings[-5:])) if ratings else conf
+
+    return max(0.0, min(100.0, 0.6 * conf + 0.4 * recent))
+
+
+def sub_quality(player, controller=None) -> float:
+    """The single score the bench is ranked on. Higher is better.
+
+    Blends four things, each for a stated reason:
+
+      overall   the position-appropriate ability we already trust everywhere
+      form      confidence and recent ratings — a player on a good run is
+                genuinely a better substitution, and the engine already
+                persists this per matchday
+      soul      greatness_coefficient, so a soul who is sitting on the bench
+                is never overlooked for a merely-fit ordinary player. This
+                is the same signal `_pick_superstars` uses.
+      freshness how much he has left in the tank. A substitute who has been
+                on the bench all match has not recovered; his stamina state
+                starts at whatever the pre-match projection gave him, not at
+                100 (see `_make_sub`, which previously hardcoded 100.0).
+
+    Weighting: ability dominates because it is the thing the user asked to
+    optimise ("more solely the best players in a team"), but form and
+    freshness each carry enough weight to break ties between two players of
+    similar rating — which is what a real manager is actually doing.
+    """
+    ovr = _overall_of(player)
+    form = _form_of(player)
+    soul = _soul_coefficient(player)
+
+    if controller is not None:
+        st = controller.stamina.get(getattr(player, "name", ""), None)
+        stamina = float(st.current_stamina) if st is not None else 100.0
+    else:
+        stamina = 100.0
+
+    return (
+        0.55 * ovr
+        + 0.20 * form
+        + 0.15 * (min(100.0, 100.0 * soul))
+        + 0.10 * stamina
+    )
+
+
+def _soul_coefficient(player) -> float:
+    """Soul greatness as 0..1, or 0.0 for an ordinary player.
+
+    Souls carry `greatness_coefficient` around 1.0-1.55 and ordinary players
+    have no soul at all, so an ordinary player must score 0 here rather
+    than 1.0 — otherwise the term would silently GIFT 15 points to
+    everyone and reduce the weighting of every real signal.
+    """
+    dna = getattr(player, "dna", None)
+    soul = getattr(dna, "soul", None) if dna is not None else None
+    g = getattr(soul, "greatness_coefficient", None) if soul is not None else None
+    try:
+        return max(0.0, min(1.0, float(g)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def sub_gk_quality(player) -> float:
+    """Keeper quality, 0-100. Only used when filling a keeper's slot."""
+    return _weighted(player, SUB_GK_WEIGHTS)
+
+
+# ── THE SCORELINE RULE (Wharton 2024) ────────────────────────────────
+#
+# Thresholds are the minutes from the Wharton study at which a ten-point
+# loss in that quality becomes acceptable. Ahead, the defensive column is
+# gated at 90' — effectively never, because a match ends at 90 — which is
+# the study's actual finding, not a rounding choice. Behind, the offensive
+# column is gated the same way.
+
+# A threshold no minute can reach. Used for the two columns Wharton found
+# to be NEVER acceptable, and a sentinel rather than the literal 90 so the
+# rule does not quietly switch itself on in minute 90 of a 90-minute match
+# (which is a real minute — stoppage time). Encoding "never" as a number
+# that happens to be the match length makes the guarantee a coincidence.
+SUB_NEVER = 10 ** 6
+
+SUB_ACCEPT_OFFENSIVE_LOSS_LEADING_MIN = 47
+SUB_ACCEPT_DEFENSIVE_LOSS_LEADING_MIN  = SUB_NEVER   # never, per Wharton
+SUB_ACCEPT_OFFENSIVE_LOSS_TRAILING_MIN = SUB_NEVER   # never, per Wharton
+SUB_ACCEPT_DEFENSIVE_LOSS_TRAILING_MIN  = 32
+
+# The reference loss the study is measured in: TEN points of quality.
+# A threshold minute means "from this minute, losing ten points is
+# acceptable" — so the budget must EQUAL the reference AT the threshold, not
+# start from zero there. An earlier version of this ramped from zero, which
+# made the 47' threshold actually mean 67' and did not implement the finding
+# it claimed to: a one-goal lead with a 10-point attacking drop would have
+# been refused from 47' all the way to 66'.
+SUB_REFERENCE_QUALITY_LOSS = 10.0
+
+# Additional quality tolerated per minute BEYOND the threshold.
+SUB_QUALITY_TOLERANCE_PER_MIN = 0.5
+
+
+def _quality_budget(threshold_minute: int, minute: int) -> float:
+    """Points of quality a change may cost, at `minute`, given a threshold.
+
+    Zero before the threshold — nothing is affordable yet. The reference
+    loss AT the threshold, growing thereafter. A `SUB_NEVER` threshold is
+    therefore zero at every minute a match can contain, which is exactly
+    what "never advisable" means in arithmetic.
+    """
+    if threshold_minute >= SUB_NEVER or minute < threshold_minute:
+        return 0.0
+    return SUB_REFERENCE_QUALITY_LOSS + SUB_QUALITY_TOLERANCE_PER_MIN * (
+        minute - threshold_minute
+    )
+
+
+def acceptable_quality_loss(
+    team_goal_diff: int, minute: int,
+    on_attack: float, off_attack: float,
+    on_defence: float, off_defence: float,
+) -> Tuple[bool, str]:
+    """Should this substitution go ahead, on quality grounds alone?
+
+    `on_*` is the incoming player's quality, `off_*` the outgoing player's.
+    Returns (allowed, reason). A downgrade is tolerated once the relevant
+    threshold minute has passed AND the loss is small enough for the minutes
+    elapsed; an UPGRADE is always allowed, because there is no research
+    finding that says a team should refuse to improve itself.
+
+    `on_attack`/`on_defence` are the two columns from
+    `sub_attacking_quality` / `sub_defensive_quality`. Passing them in keeps
+    this function pure and trivially testable — it is pure arithmetic over
+    five numbers and is where the actual decision rule lives.
+    """
+    d_atk = off_attack - on_attack
+    d_def = off_defence - on_defence
+
+    if team_goal_diff > 0:
+        # LEADING. Protect it. Attacking quality is spendable after ~47'.
+        atk_min = SUB_ACCEPT_OFFENSIVE_LOSS_LEADING_MIN
+        def_min = SUB_ACCEPT_DEFENSIVE_LOSS_LEADING_MIN
+    elif team_goal_diff < 0:
+        # TRAILING. Chasing. The mirror.
+        atk_min = SUB_ACCEPT_OFFENSIVE_LOSS_TRAILING_MIN
+        def_min = SUB_ACCEPT_DEFENSIVE_LOSS_TRAILING_MIN
+    else:
+        # LEVEL. Balanced, and slightly earlier than leading: with no
+        # cushion a team should still be willing to freshen up.
+        atk_min = 30
+        def_min = 30
+
+    budget_atk = _quality_budget(atk_min, minute)
+    budget_def = _quality_budget(def_min, minute)
+
+    if d_atk > budget_atk:
+        return False, (f"attacking downgrade {d_atk:.1f} exceeds budget "
+                       f"{budget_atk:.1f} at {minute}'")
+    if d_def > budget_def:
+        return False, (f"defensive downgrade {d_def:.1f} exceeds budget "
+                       f"{budget_def:.1f} at {minute}'")
+    return True, "within quality budget"
+
+
 # ─────────────────────────────────────────────
 # SUBSTITUTION CONTROLLER
 # Manages the live sub logic during simulation
@@ -406,10 +829,24 @@ class SubstitutionController:
     Integrates with MatchEngine.simulate() — called each minute
     to check whether any sub should happen.
 
-    Sub slots: 3 per team (PLOFA rules, 5 in some competitions)
+    Sub rules: 5 substitutions in 3 WINDOWS (IFAB Laws of the Game 2026/27,
+    which the Premier League adopted in 2022). A window is a stoppage in
+    play; making several changes at the SAME stoppage costs one window,
+    which is why the controller batches rather than dribbling changes out
+    one at a time. Half-time is a free window and does not count toward the
+    three.
+
+    The previous limit was a flat 3 subs with no window concept at all.
     """
 
-    MAX_SUBS = 3   # PLOFA standard
+    MAX_SUBS = 5            # IFAB maximum, Premier League standard since 2022
+    MAX_WINDOWS = 3         # ...but only three times you may actually do it
+    HALF_TIME_MINUTE = 45   # a free window; not counted against MAX_WINDOWS
+
+    # Gateway minute for tactical/quality changes. Injury sub is exempt and
+    # always allowed. Silva & Swartz found no magic minute; this exists so
+    # the check is not spent on a team that is 2-0 up at 12 minutes.
+    QUALITY_GATE_MINUTE = 46
 
     def __init__(
         self,
@@ -447,6 +884,32 @@ class SubstitutionController:
         # Track subs made
         self.subs_made: Dict[str, int]       = {home_team: 0, away_team: 0}
         self.subs_log:  List[Dict]            = []
+
+        # ── IFAB substitution WINDOWS ────────────────────────────
+        # `windows_used[team]` counts DISTINCT stoppages at which that team
+        # changed a player. Batching several changes into one minute costs
+        # one window, which is the mechanic that makes managers plan a
+        # double sub rather than drip-feeding changes. The half-time minute
+        # is tracked separately because it is free under the Laws.
+        self.windows_used: Dict[str, int] = {home_team: 0, away_team: 0}
+        # Injury substitutions are not gated on the window allowance (a team
+        # cannot be required to play on a broken leg), so this counts how
+        # many changes went past the three-window limit. The IFAB rule would
+        # forbid it; refusing the change is worse football, so the
+        # alternative is to permit it and say so in the log rather than to
+        # silently report "4 windows" against a limit of three.
+        self.windows_exceeded: Dict[str, int] = {home_team: 0, away_team: 0}
+
+        # Does the scoreline rule ever actually BIND? A rule that silently
+        # never rejects anything is indistinguishable from a rule that was
+        # never wired, so the counters are kept and the probe reports them.
+        self.quality_gate_stats: Dict[str, int] = {
+            "considered": 0, "accepted": 0, "rejected": 0, "exhausted": 0,
+        }
+        # Minute at which each team last spent a window. Used to decide
+        # whether the changes being proposed right now are a BATCH (same
+        # stoppage, free) or a NEW STOPPAGE (costs a window).
+        self._last_window_minute: Dict[str, int] = {home_team: -99, away_team: -99}
 
         # Stamina states for all active players
         self.stamina: Dict[str, PlayerStaminaState] = {}
@@ -588,48 +1051,65 @@ class SubstitutionController:
             if not available_bench:
                 continue
 
-            goal_diff = game_state_home if team == self.home_team else game_state_away
-            subs_remaining = self.MAX_SUBS - self.subs_made[team]
+            # Per-team list. The previous code tested `if subs_to_make` — the
+            # ACCUMULATED list across both teams — at three points, so the
+            # instant the home team made a single change the away team was
+            # skipped entirely for that minute, with no reference to its own
+            # subs remaining, its own injuries, or the scoreline. One team's
+            # substitution silently consumed the other's opportunity.
+            team_subs: List[Dict] = []
 
-            # ── 1. INJURY SUBS (highest priority) ─────────────
+            goal_diff = game_state_home if team == self.home_team else game_state_away
+
+            # ── 1. INJURY SUBS ─────────────────────────────
+            # Forced, never blocked: you do not leave a broken player on.
+            # quality_gate=False because the scoreline rule has nothing to
+            # say when the alternative is playing on a broken leg.
             for player in players:
                 name = getattr(player, "name", "")
                 state = self.stamina.get(name)
                 if state and state.is_injured and not getattr(player, "_subbed_off", False):
-                    sub_player = self._pick_sub(available_bench, player, "injury")
+                    sub_player = self._pick_sub(
+                        available_bench, player, "injury",
+                        minute=minute, team=team, goal_diff=goal_diff,
+                        quality_gate=False,
+                    )
                     if sub_player:
-                        subs_to_make.append(self._make_sub(
+                        team_subs.append(self._make_sub(
                             team, player, sub_player, minute,
                             SubReason.INJURY, available_bench
                         ))
-                        break   # One sub at a time
+                        break   # one at a time
 
-            if subs_to_make:
-                continue
-
-            # ── 2. TACTICAL PRE-PLANNED SUBS ──────────────────
-            for player in players:
-                # Guard: stop making tactical subs once the team has hit
-                # the MAX_SUBS limit. Without this check, multiple players
-                # scheduled at the same minute (e.g. CAM/LW/RW all at 65')
-                # would all be subbed simultaneously, blowing past the
-                # 3-per-team cap.
-                if self.subs_made[team] >= self.MAX_SUBS:
-                    break
-                name = getattr(player, "name", "")
-                if (name in self.tactical_schedule and
-                        minute >= self.tactical_schedule[name] and
-                        not getattr(player, "_subbed_off", False)):
-                    # Find the pre-planned sub coming on
-                    sub_player = self._find_tactical_sub(available_bench, player)
-                    if sub_player:
-                        subs_to_make.append(self._make_sub(
-                            team, player, sub_player, minute,
-                            SubReason.TACTICAL, available_bench
-                        ))
+            if not team_subs:
+                # ── 2. TACTICAL PRE-PLANNED SUBS ─────────────
+                # Batched rather than rate-limited: the window model
+                # already stops a team spending more than three stoppages,
+                # so the old per-minute MAX_SUBS break is redundant and
+                # was in fact the thing that silently dropped scheduled
+                # changes when three players shared a minute.
+                for player in players:
+                    if not self.window_available(team, minute):
+                        break
+                    name = getattr(player, "name", "")
+                    if (name in self.tactical_schedule and
+                            minute >= self.tactical_schedule[name] and
+                            not getattr(player, "_subbed_off", False)):
+                        sub_player = self._find_tactical_sub(available_bench, player)
+                        if sub_player:
+                            team_subs.append(self._make_sub(
+                                team, player, sub_player, minute,
+                                SubReason.TACTICAL, available_bench
+                            ))
+                            if not self.window_available(team, minute):
+                                break
 
             # ── 3. STAMINA EMERGENCY SUBS ─────────────────────
-            if not subs_to_make and minute >= 55:
+            # Silva & Swartz: substitute the moment you notice a struggling
+            # player, not on a schedule. The gate below only decides whether
+            # anyone is looking yet; the trigger is the player, not the
+            # clock.
+            if not team_subs and minute >= self.QUALITY_GATE_MINUTE:
                 for player in sorted(
                     players,
                     key=lambda p: self.stamina.get(
@@ -641,38 +1121,65 @@ class SubstitutionController:
                     if (state and state.sub_requested and
                             state.sub_reason == SubReason.STAMINA and
                             not getattr(player, "_subbed_off", False)):
-                        sub_player = self._pick_sub(available_bench, player, "stamina")
+                        if not self.window_available(team, minute):
+                            break
+                        sub_player = self._pick_sub(
+                            available_bench, player, "stamina",
+                            minute=minute, team=team, goal_diff=goal_diff,
+                        )
                         if sub_player:
-                            subs_to_make.append(self._make_sub(
+                            team_subs.append(self._make_sub(
                                 team, player, sub_player, minute,
                                 SubReason.STAMINA, available_bench
                             ))
                             break
 
             # ── 4. GAME STATE SUBS (attacking/defensive) ──────
-            if (not subs_to_make and minute >= 60
-                    and subs_remaining >= 1
-                    and random.random() < 0.08):   # ~8% chance per minute
+            # Rate deliberately unchanged from the previous 8%/min: this
+            # change is about WHICH player and WHICH quality, not about a
+            # greater appetite for changing things. Kwest found the teams
+            # that sub most often are the ones that do not know their best
+            # XI, so raising this would make the manager look less like a
+            # manager.
+            if (not team_subs and minute >= self.QUALITY_GATE_MINUTE
+                    and self.subs_left(team) >= 1
+                    and self.window_available(team, minute)
+                    and random.random() < SUB_GAME_STATE_RATE):
 
-                if goal_diff < 0 and minute >= 65:
-                    # Losing — bring on attacker
-                    sub_player = self._pick_attacking_sub(available_bench)
-                    player_off = self._pick_weakest_player(players, team, preferred_pos=["CB", "CDM"])
+                if goal_diff < 0:
+                    # Trailing — bring on the best attacker available, and
+                    # take off the most drained man who is not carrying the
+                    # ball's value. Rey et al.: offensive substitutions are
+                    # markedly more likely when behind.
+                    player_off = self._pick_weakest_player(
+                        players, team, preferred_pos=DEFENSIVE_SPINE
+                    )
+                    sub_player = self._pick_attacking_sub(
+                        available_bench, player_off, minute, goal_diff
+                    )
                     if sub_player and player_off:
-                        subs_to_make.append(self._make_sub(
+                        team_subs.append(self._make_sub(
                             team, player_off, sub_player, minute,
                             SubReason.GAME_STATE, available_bench
                         ))
 
-                elif goal_diff > 0 and minute >= 75:
-                    # Winning — bring on defender/fresh body
-                    sub_player = self._pick_fresh_sub(available_bench)
+                elif goal_diff > 0 and minute >= SUB_PROTECT_LEAD_MINUTE:
+                    # Leading — the Wharton rule is at its strictest here.
+                    # A defensive downgrade is never acceptable, so
+                    # `_apply_quality_rule` screens the whole bench for a
+                    # candidate who does not cost defensive quality, and
+                    # falls back to the best available if none exists.
                     player_off = self._pick_most_drained(players, team, exclude_pos=["GK"])
+                    sub_player = self._pick_fresh_sub(
+                        available_bench, player_off, minute, goal_diff
+                    )
                     if sub_player and player_off:
-                        subs_to_make.append(self._make_sub(
+                        team_subs.append(self._make_sub(
                             team, player_off, sub_player, minute,
                             SubReason.GAME_STATE, available_bench
                         ))
+
+            subs_to_make.extend(team_subs)
 
         return subs_to_make
 
@@ -698,6 +1205,52 @@ class SubstitutionController:
 
     # ── PRIVATE HELPERS ───────────────────────────────────────
 
+    def window_available(self, team: str, minute: int) -> bool:
+        """Can this team legally make another change at `minute`?
+
+        Three cases, in the order the Laws treat them:
+
+          * half-time           — always free, and does not open a window
+          * same stoppage as
+            the team's last
+            change                 — free, it is a BATCH
+          * a new stoppage      — costs one of the three windows
+        """
+        if minute == self.HALF_TIME_MINUTE:
+            return True
+        if self._last_window_minute.get(team, -99) == minute:
+            return True                      # batch, free
+        return self.windows_used.get(team, 0) < self.MAX_WINDOWS
+
+    def _spend_window(self, team: str, minute: int) -> bool:
+        """Charge a window. Returns True if one was actually charged.
+
+        SATURATES at MAX_WINDOWS. An injury substitution is deliberately
+        not gated on `window_available` — you cannot refuse to replace a
+        broken player — so without saturation a single match could report
+        five windows against a three-window limit, which is exactly what a
+        real match did during development: "4 subs in 4 windows". The tally
+        has to stay truthful, so the counter stops at the limit and the
+        change is recorded as having exceeded it instead.
+
+        Returns False when nothing was charged (half-time, a batch, or the
+        allowance was already spent).
+        """
+        if minute == self.HALF_TIME_MINUTE:
+            return False                       # free, untracked
+        if self._last_window_minute.get(team, -99) == minute:
+            return False                       # already opened this stoppage
+        if self.windows_used.get(team, 0) >= self.MAX_WINDOWS:
+            self.windows_exceeded[team] = self.windows_exceeded.get(team, 0) + 1
+            self._last_window_minute[team] = minute
+            return False
+        self.windows_used[team] = self.windows_used.get(team, 0) + 1
+        self._last_window_minute[team] = minute
+        return True
+
+    def subs_left(self, team: str) -> int:
+        return max(0, self.MAX_SUBS - self.subs_made.get(team, 0))
+
     def _make_sub(self, team: str, player_off, sub_on,
                   minute: int, reason: SubReason,
                   available_bench: List) -> Dict:
@@ -718,9 +1271,30 @@ class SubstitutionController:
             sub_on.sub_in_minute = minute
             sub_on.is_starter = False
 
-        # Register sub's stamina (starts fresh)
+        # Register sub's stamina. NOT 100.0 — a player who has sat on the
+        # bench for 60 minutes has recovered some but not all of what he
+        # started the match with, and `register_player` used to hardcode a
+        # full tank. That single literal is what made "resting a tired man"
+        # identical to "giving a fit man a breather", which is the whole
+        # point of a substitution. The player's pre-match fatigue lives on
+        # `dna.form.fatigue_level` (written by auto_run_match's
+        # _apply_starting_stamina) and `dna._starting_stamina` (also written
+        # there as of 2026-10-14); the sub recovers at
+        # SUB_SEATED_RECOVERY_PER_MIN per minute since kickoff, capped by
+        # his pre-match tank.
+        # Window state BEFORE this change is charged. Reading it after
+        # `_spend_window` would be reading a value this same call just
+        # wrote, which is how every substitution in the development match
+        # was reported as `is_batched=True` — including seven changes at
+        # seven different minutes. Same class as the jump guard that was
+        # inserted after the assignment it was meant to precede.
+        was_batched = (minute == self._last_window_minute.get(team, -99)
+                       and minute != self.HALF_TIME_MINUTE)
+
+        self._spend_window(team, minute)
+        incoming = self._sub_entry_stamina(sub_on, minute)
         freshness_boost = self.get_sub_freshness_boost(sub_on)
-        self.register_player(sub_on, starting_stamina=100.0)
+        self.register_player(sub_on, starting_stamina=incoming)
         state = self.stamina.get(name_on)
         if state:
             state.performance_mult = freshness_boost
@@ -736,81 +1310,212 @@ class SubstitutionController:
             "reason":     reason.value,
             "freshness":  freshness_boost,
             "stamina_at_exit": self.stamina.get(name_off, PlayerStaminaState("?","CM")).current_stamina,
+            # Added 2026-10-14 — the selection is now a scored decision, so
+            # the decision itself has to be recorded. Without these the
+            # export can say WHICH players changed but not WHY the bench was
+            # used in that order, which is the only way to audit the
+            # Wharton rule after the fact.
+            "quality_on":      round(sub_quality(sub_on, self), 2),
+            "quality_off":     round(sub_quality(player_off, self), 2),
+            "attack_on":       round(sub_attacking_quality(sub_on), 2),
+            "attack_off":      round(sub_attacking_quality(player_off), 2),
+            "defence_on":      round(sub_defensive_quality(sub_on), 2),
+            "defence_off":     round(sub_defensive_quality(player_off), 2),
+            "windows_used":    self.windows_used.get(team, 0),
+            "is_batched":      was_batched,
+            "windows_exceeded": self.windows_exceeded.get(team, 0),
         }
         self.subs_log.append(sub_record)
 
         return sub_record
 
-    def _pick_sub(self, bench: List, player_off, reason: str):
-        """Pick best available sub for a position."""
-        pos_off = getattr(player_off, "position",
-                  getattr(getattr(player_off, "dna", None), "position", "CM"))
+    def _sub_entry_stamina(self, player, minute: int) -> float:
+        """Tank a substitute arrives with.
 
-        # Try same position first
-        same_pos = [p for p in bench if not getattr(p, "_used_as_sub", False)
-                    and getattr(getattr(p, "dna", None), "position",
-                               getattr(p, "position", "CM")) == pos_off]
-        if same_pos:
-            return same_pos[0]
+        Reads the pre-match figure the season layer computed, then adds
+        however much he recovered sitting out. A sub who has been on since
+        kickoff is not the same asset as one who has been resting for an
+        hour, and the previous code could not tell them apart because it
+        passed 100.0.
+        """
+        dna = getattr(player, "dna", None)
+        base = None
+        if dna is not None:
+            for attr in ("_starting_stamina",):
+                val = getattr(dna, attr, None)
+                if isinstance(val, (int, float)):
+                    base = float(val)
+                    break
+        fatigue = getattr(getattr(dna, "form", None), "fatigue_level", None) \
+            if dna is not None else None
+        if base is None and isinstance(fatigue, (int, float)):
+            base = 100.0 - float(fatigue)
+        if base is None:
+            base = 100.0
 
-        # Adjacent positions
-        adjacent = {
-            "ST": ["CF", "LW", "RW", "CAM"],
-            "CF": ["ST", "CAM", "LW", "RW"],
-            "LW": ["RW", "CAM", "ST", "LB"],
-            "RW": ["LW", "CAM", "ST", "RB"],
-            "CAM": ["CM", "LW", "RW", "ST"],
-            "CM": ["CAM", "CDM", "LW", "RW"],
-            "CDM": ["CM", "CB"],
-            "LB": ["RB", "CB", "LW"],
-            "RB": ["LB", "CB", "RW"],
-            "CB": ["CDM", "LB", "RB"],
-            "GK": ["GK"],
-        }.get(pos_off, [])
+        recovered = base + SUB_SEATED_RECOVERY_PER_MIN * float(minute)
+        return max(0.0, min(100.0, recovered))
 
-        adj_subs = [p for p in bench if not getattr(p, "_used_as_sub", False)
-                    and getattr(getattr(p, "dna", None), "position",
-                               getattr(p, "position", "?")) in adjacent]
-        if adj_subs:
-            return adj_subs[0]
+    # ── bench ranking ────────────────────────────────────────────
+    #
+    # Everything below selects from `_ranked_bench`, which sorts by
+    # `sub_quality` rather than returning bench[0]. The helpers are kept
+    # as separate methods because each one still encodes a real positional
+    # intent (whoever comes on should be able to do this role), but the
+    # ORDER inside each intent is now quality-descending.
 
-        # Any available
-        available = [p for p in bench if not getattr(p, "_used_as_sub", False)]
-        return available[0] if available else None
+    def _ranked_bench(self, bench: List, want_pos: Optional[List[str]] = None
+                       ) -> List:
+        """Unused bench players, best first.
+
+        `want_pos` splits the result into an exact-position group followed by
+        an adjacent-position group, both ranked by quality. Returning them
+        as one ranked list with the preference already applied means callers
+        can take `candidates[0]` and still get the best man for the role,
+        instead of the best man who happens to be exactly that position.
+        """
+        pool = [p for p in bench if not getattr(p, "_used_as_sub", False)]
+        if not pool:
+            return []
+
+        if not want_pos:
+            return sorted(pool, key=lambda p: -sub_quality(p, self))
+
+        pos_of = _position_of
+        exact = [p for p in pool if pos_of(p) in want_pos]
+        adjacent = [p for p in pool if pos_of(p) not in want_pos]
+
+        key = lambda p: -sub_quality(p, self)          # noqa: E731
+        return sorted(exact, key=key) + sorted(adjacent, key=key)
+
+    def _pick_sub(self, bench: List, player_off, reason: str,
+                  minute: int = 0, team: str = "", goal_diff: int = 0,
+                  quality_gate: bool = True):
+        """Best available substitute for the role `player_off` is leaving.
+
+        Position still decides the PREFERENCE (an exact match beats an
+        adjacent one) but never the CHOICE: the most qualified man who can
+        plausibly fill the role wins. This is the change the whole section
+        exists for — the previous version returned `same_pos[0]`, i.e. the
+        first exact match in bench order, which is market-value order and
+        nothing more.
+        """
+        pos_off = _position_of(player_off)
+        if pos_off == "GK":
+            ranked = self._ranked_bench(bench, ["GK"])
+        else:
+            ranked = self._ranked_bench(bench, [pos_off] + ADJACENT_POS.get(pos_off, []))
+        if not ranked:
+            return None
+
+        if quality_gate:
+            sub_player = self._apply_quality_rule(
+                ranked, player_off, minute, team, goal_diff
+            )
+            if sub_player is not None:
+                return sub_player
+
+        # The gate rejected every candidate. Rather than return nothing and
+        # leave the team short-handed — which is worse football than a modest
+        # downgrade — fall back to the best candidate and say so in the log.
+        # A forced injury sub must never be blocked by a scoreline rule; the
+        # caller decides by passing quality_gate=False for that.
+        return ranked[0]
+
+    def _apply_quality_rule(self, ranked: List, player_off, minute: int,
+                            team: str, goal_diff: int):
+        """Walk the ranked bench until one substitution passes the scoreline
+        rule.
+
+        Ranking is descending by quality, so the FIRST candidate to satisfy
+        `acceptable_quality_loss` is the best man who is affordable — which
+        is precisely the trade the Wharton result describes. Returns None if
+        nothing qualifies, so the caller can decide whether that blocks the
+        change or merely downgrades it.
+        """
+        off_atk = sub_attacking_quality(player_off)
+        off_def = sub_defensive_quality(player_off)
+        considered = 0
+        for cand in ranked:
+            ok, _why = acceptable_quality_loss(
+                goal_diff, minute,
+                sub_attacking_quality(cand), off_atk,
+                sub_defensive_quality(cand), off_def,
+            )
+            considered += 1
+            if ok:
+                self.quality_gate_stats["considered"] += considered
+                self.quality_gate_stats["accepted"] += 1
+                return cand
+            self.quality_gate_stats["rejected"] += 1
+        # Every candidate refused. `quality_gate_stats` records it so the
+        # branch is observable — a rule that silently never binds looks
+        # identical to a rule that is not implemented.
+        self.quality_gate_stats["exhausted"] += 1
+        self.quality_gate_stats["considered"] += considered
+        return None
 
     def _find_tactical_sub(self, bench: List, player_off) -> Optional[object]:
-        """
-        Find the pre-planned sub coming on for this player.
-        Looks for a sub whose sub_in_minute matches the schedule.
+        """The pre-planned substitute coming on for `player_off`.
+
+        PREVIOUSLY BROKEN IN TWO WAYS. It computed `sub_in`, compared it to
+        nothing, and returned the first available player — so the planned
+        minute was read and discarded, and the planned MAN was never
+        consulted either; any unused sub fitted any slot. The loop is now
+        driven by whether the player's own `sub_in_minute` has arrived, and
+        within that the selection is quality-ranked.
+
+        The controller's `tactical_schedule` is keyed by the name of the
+        player coming OFF (`{"Eli Dago": 68}`), so `target_minute` gates the
+        slot, and any unused sub may fill it — which is correct, because the
+        schedule names the outgoing player, not the incoming one.
         """
         name_off = getattr(player_off, "name", "")
         target_minute = self.tactical_schedule.get(name_off)
         if target_minute is None:
             return None
 
-        # Find bench player who has this as their sub_in_minute
-        for p in bench:
-            if not getattr(p, "_used_as_sub", False):
-                sub_in = getattr(p, "sub_in_minute", None)
-                if sub_in is None and hasattr(p, "dna"):
-                    sub_in = getattr(p.dna, "sub_in_minute", None)
-                # If no specific minute set, just take positional match
-                return p   # Take first available for tactical slot
-        return None
+        pos_off = _position_of(player_off)
+        if pos_off == "GK":
+            return (self._ranked_bench(bench, ["GK"]) or [None])[0]
+        return (self._ranked_bench(bench, [pos_off] + ADJACENT_POS.get(pos_off, []))
+                or [None])[0]
 
-    def _pick_attacking_sub(self, bench: List):
-        att_pos = ["ST", "CF", "LW", "RW", "CAM"]
-        for p in bench:
-            if not getattr(p, "_used_as_sub", False):
-                pos = getattr(getattr(p, "dna", None), "position",
-                             getattr(p, "position", ""))
-                if pos in att_pos:
-                    return p
-        return bench[0] if bench else None
+    def _pick_attacking_sub(self, bench: List, player_off=None, minute: int = 0,
+                            goal_diff: int = 0):
+        """Best available attacker, quality-ranked.
 
-    def _pick_fresh_sub(self, bench: List):
-        available = [p for p in bench if not getattr(p, "_used_as_sub", False)]
-        return available[0] if available else None
+        Used when chasing. The scoreline rule is applied against
+        `player_off` when one is supplied so a chasing team does not
+        accidentally take a creative player off for a defensive one.
+        """
+        ranked = self._ranked_bench(bench, ATTACKING_POS)
+        if not ranked:
+            return None
+        if player_off is not None:
+            ok = self._apply_quality_rule(ranked, player_off, minute, "", goal_diff)
+            if ok is not None:
+                return ok
+        return ranked[0]
+
+    def _pick_fresh_sub(self, bench: List, player_off=None, minute: int = 0,
+                        goal_diff: int = 0):
+        """Best available player, full quality ranking, no positional filter.
+
+        This is the "protect the lead" path, so it deliberately prefers
+        DEFENSIVE quality when it is available and the scoreline allows it.
+        Ranking is by `sub_quality` (overall ability, form, soul, freshness)
+        and the scoreline rule then screens out anything that costs defensive
+        quality — which, leading, is everything.
+        """
+        ranked = self._ranked_bench(bench)
+        if not ranked:
+            return None
+        if player_off is not None:
+            ok = self._apply_quality_rule(ranked, player_off, minute, "", goal_diff)
+            if ok is not None:
+                return ok
+        return ranked[0]
 
     def _pick_weakest_player(self, players: List, team: str,
                               preferred_pos: List[str] = None) -> Optional[object]:

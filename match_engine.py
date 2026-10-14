@@ -38,6 +38,13 @@ from set_piece_routines import SetPieceRoutine
 from ball_vision import movement_ball
 from run_tracking import IntendedRunRecorder, RunTracker
 
+# Phase 2 — Manager trigger events (duplicated here to avoid circular import)
+MANAGER_TRIGGER_EVENTS = frozenset({
+    "GOAL", "OWN_GOAL", "PENALTY_SCORED", "PENALTY_MISSED",
+    "RED_CARD", "INJURY", "SUBSTITUTION",
+    "HALF_TIME", "HOUR_MARK",
+})
+
 # The match narrative prints emoji/unicode; on legacy consoles (cp1252 etc.)
 # that raises UnicodeEncodeError mid-simulation. Reconfigure the streams to
 # fall back to '?' rather than crash.
@@ -1885,6 +1892,9 @@ class MatchEngine:
         # state: byte-identical to a fresh process, and byte-identical across
         # in-process repeats.
         _COSMETIC_RNG.seed(0x5EEDC05)
+
+        # Phase 2 — manager trigger events
+        self.manager_last_trigger: str = ""
 
         self.state = MatchState(
             possession_team=config.home_team  # Home team kicks off
@@ -3978,6 +3988,14 @@ class MatchEngine:
                 # break so the second half starts from clean shapes.
                 self._reset_positions_to_halves()
 
+            # Phase 2 — synthetic HALF_TIME trigger at minute 46
+            if minute == 46:
+                self.manager_last_trigger = "HALF_TIME"
+
+            # Phase 2 — synthetic HOUR_MARK trigger at minute 60
+            if minute == 60:
+                self.manager_last_trigger = "HOUR_MARK"
+
         # Added time (decided after full 90)
         added = self._decide_added_time()
         for minute in range(91, 91 + added):
@@ -5779,24 +5797,33 @@ class MatchEngine:
             press_tax = float(
                 (getattr(event, "metadata", None) or {}).get("press_tax", 1.0)
             )
+            # ── DRAIN STAMINA (single site, fixed 2026-10-14) ────
+            # The primary actor was being charged TWICE for the same event:
+            # once here with press_tax, and again at the old :5854 block with
+            # the full STAMINA_COSTS entry and no press_tax. Every player
+            # burned 2x the designed per-event drain, and because roll_injury
+            # and check_stamina_sub both live inside process_action, every
+            # physical event also rolled TWO injury draws and TWO stamina-sub
+            # draws — so the effective in-match injury rate was double the
+            # table in squad_manager.roll_injury.
+            #
+            # One site now, and press_tax applies to the primary actor (it is
+            # the whole point of the variable — the Checkpoint 15 press tax
+            # is what stops a press from exhausting itself).
             if self.sub_controller is not None:
-                # Primary actor
-                if event.player:
-                    action_key = get_stamina_action(event.event_type.name)
-                    if action_key:
+                action_key = get_stamina_action(event.event_type.name)
+                if action_key is None and event.event_type.name:
+                    print(f"  ⚠️ No stamina mapping for: {event.event_type.name}")
+
+                if action_key:
+                    if event.player:
                         self.sub_controller.process_action(
                             event.player, action_key, event.team, minute,
                             drain_mult=press_tax,
                         )
-                    else:
-                        # Log missing mapping for debugging
-                        print(f"  ⚠️ No stamina mapping for: {event.event_type.name}")
-                
-                # Secondary actor (duels, tackles, passes)
-                if event.secondary_player:
-                    action_key = get_stamina_action(event.event_type.name)
-                    if action_key:
-                        # Secondary actors get reduced drain (they're not the primary actor)
+                    # Secondary actors get reduced drain — they are involved
+                    # (a duel, a challenge) but not the actor who chose it.
+                    if event.secondary_player:
                         self.sub_controller.process_action(
                             event.secondary_player, action_key, event.team, minute,
                             drain_mult=press_tax, is_secondary=True,
@@ -5833,20 +5860,16 @@ class MatchEngine:
                         event.secondary_player, sx, sy, minute
                     )
 
-            # Drain stamina for primary actor
-            if self.sub_controller is not None and event.player:
-                action_key = get_stamina_action(event.event_type.name)
-                if action_key:
-                    self.sub_controller.process_action(
-                        event.player, action_key, event.team, minute
-                    )
-                # Drain secondary player too (e.g. aerial duel both sides)
-                if event.secondary_player and event.event_type.name in (
-                    "AERIAL_DUEL", "GROUND_DUEL", "TACKLE_WON", "TACKLE_LOST"
-                ):
-                    self.sub_controller.process_action(
-                        event.secondary_player, action_key, event.team, minute
-                    )
+            # DELETED 2026-10-14 — the second drain site for the same event.
+            # It charged event.player the full STAMINA_COSTS entry with no
+            # press_tax, immediately after the block above had already
+            # charged him once WITH press_tax, and re-charged the secondary
+            # actor of a duel/tackle at full cost where the block above had
+            # correctly charged him at is_secondary rate. Both blocks call
+            # process_action, and process_action runs roll_injury and the
+            # stamina-sub check internally, so every event produced two
+            # injury rolls and two sub-checks. The unified block above is
+            # now the only drain site in _absorb_chain.
 
             # Checkpoint 7 — persistent ball-state: keep state.last_ball_x/y
             # truthful to whatever actually just happened, in event order,
@@ -5930,6 +5953,11 @@ class MatchEngine:
                 ):
                     if _mgr is not None and isinstance(_mgr, _BrainManager):
                         _mgr.on_event(_etype_name, self, _team)
+
+            # Phase 2 — Manager trigger event stamping
+            _etype_name = getattr(event.event_type, "name", "")
+            if _etype_name in MANAGER_TRIGGER_EVENTS:
+                self.manager_last_trigger = _etype_name
 
 
         # Checkpoint 6 — corner causality: a chain reporting corner_won is

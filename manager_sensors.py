@@ -84,8 +84,17 @@ def extract_manager_sensors(engine: Any, team: str) -> np.ndarray:
     minute_norm = min(1.0, engine.state.minute / 90.0)
 
     subs_made = engine.state.home_subs_made if is_home \
-        else engine.state.away_subs_made
-    subs_remaining = max(0, 3 - subs_made) / 3.0
+    else engine.state.away_subs_made
+    # Read the live limit from the controller rather than repeating it as a
+    # literal. The literal 3 was correct while MAX_SUBS was 3; when the
+    # limit moved to 5 under the IFAB rules it became a silently wrong
+    # number that made the manager believe it had no substitutions left
+    # after three, and it kept believing that for the rest of the match.
+    # A duplicated constant is only correct until one of the two moves.
+    _limit = getattr(getattr(engine, "sub_controller", None), "MAX_SUBS", None)
+    if not isinstance(_limit, int) or _limit < 1:
+        _limit = 3
+    subs_remaining = max(0, _limit - subs_made) / float(_limit)
 
     game_importance = perceive_game_importance(engine)
 
