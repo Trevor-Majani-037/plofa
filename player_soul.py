@@ -211,22 +211,13 @@ class SoulProfile:
     # These multiply the base probability of specific events occurring
     # 1.0 = no change, 1.5 = 50% more likely, 0.7 = 30% less likely
     shot_quality_mult:        float = 1.0   # xG per shot
-    shot_frequency_mult:      float = 1.0   # Shots per chance received
-    dribble_attempt_mult:     float = 1.0   # Dribble attempt rate
-    dribble_success_mult:     float = 1.0   # Dribble completion rate
-    shot_assist_mult:         float = 1.0   # Shot assist frequency
-    through_ball_mult:        float = 1.0   # Through ball attempt rate
-    press_intensity_mult:     float = 1.0   # Press frequency
+    shot_frequency_mult:      float = 1.0   # Shots per chance received   # Dribble attempt rate
+    dribble_success_mult:     float = 1.0   # Dribble completion rate   # Shot assist frequency   # Through ball attempt rate   # Press frequency
     press_success_mult:       float = 1.0   # Press success rate
     tackle_success_mult:      float = 1.0   # Tackle success rate
-    interception_mult:        float = 1.0   # Interception frequency
-    aerial_success_mult:      float = 1.0   # Aerial duel win rate
-    clearance_quality_mult:   float = 1.0   # Clearance effectiveness
-    carry_frequency_mult:     float = 1.0   # Ball carrying tendency
-    cross_quality_mult:       float = 1.0   # Cross delivery quality
-    pass_accuracy_mult:       float = 1.0   # Pass completion rate
-    positioning_mult:         float = 1.0   # Positional intelligence
-    composure_mult:           float = 1.0   # Big moment composure
+    interception_mult:        float = 1.0   # Interception frequency   # Aerial duel win rate   # Clearance effectiveness
+    carry_frequency_mult:     float = 1.0   # Ball carrying tendency   # Cross delivery quality
+    pass_accuracy_mult:       float = 1.0   # Pass completion rate   # Positional intelligence   # Big moment composure
     big_chance_conversion:    float = 1.0   # Big chance conversion rate
     save_quality_mult:        float = 1.0   # GK: shot-stopping quality
 
@@ -268,16 +259,27 @@ class SoulProfile:
     can_destroy_one_v_one: bool = False  # Beats their man every time
     can_read_game_early:  bool = False  # Acts a second before others see it
 
-    # ── STAT CAPS LIFTED ──────────────────────────────────────
-    # Soul players exceed what DNA alone can produce
-    # These are bonus additions ON TOP of the DNA-generated stat ranges
-    bonus_shot_assists_per_match:  Tuple[int,int] = (0, 0)
-    bonus_dribbles_per_match:      Tuple[int,int] = (0, 0)
-    bonus_tackles_per_match:       Tuple[int,int] = (0, 0)
-    bonus_interceptions_per_match: Tuple[int,int] = (0, 0)
-    bonus_progressive_passes:      Tuple[int,int] = (0, 0)
-    bonus_pressures_per_match:     Tuple[int,int] = (0, 0)
-    bonus_carries_per_match:       Tuple[int,int] = (0, 0)
+    # ── REMOVED 2026-10-14: bonus_*_per_match (7 fields) ──────────────
+    # These were "add N to the player's stat total after the match". They were
+    # never wired (SoulApplicator.apply_bonus_stats had no caller) and they
+    # have been DELETED rather than wired, on purpose.
+    #
+    # They are the exact shape the project's fabrication audit exists to stop.
+    # A chance is CAUSED in this engine: ChanceCreationLedger increments
+    # chances_created because a real pass led to a real shot
+    # (chance_creation.py:270, 568 — no random draw anywhere in the ledger).
+    # Adding 2-5 "bonus shot assists" to a soul would invent chances that no
+    # pass produced, and _finalize_shot_assists derives shot_assists FROM
+    # chances_created, so it would silently corrupt the assists column, the
+    # xa figures, and the documented relationship
+    # `chances_created == shot_assists + goal_assists`.
+    #
+    # The soul's creative advantage is expressed the honest way instead: via
+    # ATTRIBUTE CEILINGS (above), which raise vision/through_balls/finishing so
+    # the engine's own causal machinery produces more real chances.
+    #
+    # See tests/test_soul_fabrication.py, which pins that no soul field can
+    # add to a player's stat totals.
 
     # ── ATTRIBUTE CEILINGS (added 2026-10-14) ───────────────────
     # A soul is not a better ordinary player, it is a different character
@@ -330,17 +332,10 @@ class SoulLibrary:
             # They make every shot better, attempt more, complete almost everything
             shot_quality_mult=1.45,
             shot_frequency_mult=1.35,
-            dribble_attempt_mult=1.50,
             dribble_success_mult=1.55,
-            shot_assist_mult=1.40,
-            through_ball_mult=1.50,
             carry_frequency_mult=1.45,
             pass_accuracy_mult=1.18,
-            positioning_mult=1.50,
-            composure_mult=1.55,
             big_chance_conversion=1.50,
-            cross_quality_mult=1.30,
-            press_intensity_mult=1.20,
             press_success_mult=1.25,
 
             # Psychology
@@ -363,10 +358,6 @@ class SoulLibrary:
             can_read_game_early=True,
 
             # Bonus stats beyond DNA ceiling
-            bonus_shot_assists_per_match=(2, 5),
-            bonus_dribbles_per_match=(3, 8),
-            bonus_progressive_passes=(2, 4),
-            bonus_carries_per_match=(4, 10),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -384,10 +375,6 @@ class SoulLibrary:
 
             tackle_success_mult=1.55,
             interception_mult=1.60,
-            aerial_success_mult=1.50,
-            clearance_quality_mult=1.45,
-            positioning_mult=1.60,
-            composure_mult=1.40,
             pressure_resistance=1.45,
             pass_accuracy_mult=1.15,
 
@@ -404,8 +391,6 @@ class SoulLibrary:
             can_hold_defensive_line=True,
             can_read_game_early=True,
 
-            bonus_tackles_per_match=(2, 4),
-            bonus_interceptions_per_match=(2, 5),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -422,13 +407,8 @@ class SoulLibrary:
             ),
             positions=["CM", "CDM", "CAM"],
 
-            shot_assist_mult=1.45,
-            through_ball_mult=1.55,
             pass_accuracy_mult=1.40,
             carry_frequency_mult=1.25,
-            positioning_mult=1.55,
-            composure_mult=1.50,
-            press_intensity_mult=1.15,
             press_success_mult=1.20,
             dribble_success_mult=1.20,
 
@@ -447,9 +427,6 @@ class SoulLibrary:
             can_dictate_tempo=True,
             can_read_game_early=True,
 
-            bonus_shot_assists_per_match=(2, 4),
-            bonus_progressive_passes=(3, 6),
-            bonus_carries_per_match=(2, 5),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -467,12 +444,7 @@ class SoulLibrary:
             ),
             positions=["CAM", "CM", "RW", "LW"],
 
-            shot_assist_mult=1.40,
-            through_ball_mult=1.45,
-            cross_quality_mult=1.40,
             pass_accuracy_mult=1.25,
-            composure_mult=1.30,
-            positioning_mult=1.35,
             shot_quality_mult=1.20,
             dribble_success_mult=1.25,
 
@@ -488,8 +460,6 @@ class SoulLibrary:
 
             can_unlock_defence=True,
 
-            bonus_shot_assists_per_match=(2, 5),
-            bonus_progressive_passes=(1, 3),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -508,8 +478,6 @@ class SoulLibrary:
             shot_quality_mult=1.55,
             shot_frequency_mult=1.30,
             big_chance_conversion=1.60,
-            composure_mult=1.55,
-            positioning_mult=1.50,
             can_finish_any_angle=True,
 
             losing_state_boost=1.15,
@@ -519,7 +487,6 @@ class SoulLibrary:
 
             teammate_conf_boost=1.08,
 
-            bonus_shot_assists_per_match=(0, 1),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -536,10 +503,8 @@ class SoulLibrary:
             ),
             positions=["ST", "LW", "RW", "CM", "CAM"],
 
-            press_intensity_mult=1.70,
             press_success_mult=1.65,
             carry_frequency_mult=1.20,
-            composure_mult=1.15,
             losing_state_boost=1.30,
             late_game_boost=1.20,
             pressure_resistance=1.30,
@@ -549,7 +514,6 @@ class SoulLibrary:
 
             can_hunt_in_packs=True,
 
-            bonus_pressures_per_match=(5, 12),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -565,13 +529,9 @@ class SoulLibrary:
             ),
             positions=["LW", "RW", "LB", "RB"],
 
-            dribble_attempt_mult=1.55,
             dribble_success_mult=1.50,
             carry_frequency_mult=1.50,
             shot_quality_mult=1.30,
-            cross_quality_mult=1.35,
-            positioning_mult=1.30,
-            composure_mult=1.25,
             can_destroy_one_v_one=True,
 
             losing_state_boost=1.25,
@@ -581,8 +541,6 @@ class SoulLibrary:
 
             teammate_conf_boost=1.08,
 
-            bonus_dribbles_per_match=(2, 6),
-            bonus_carries_per_match=(3, 7),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -599,10 +557,7 @@ class SoulLibrary:
             positions=["CDM", "CM", "CB"],
 
             interception_mult=1.55,
-            positioning_mult=1.65,
             pass_accuracy_mult=1.35,
-            through_ball_mult=1.30,
-            composure_mult=1.50,
             pressure_resistance=1.50,
             tackle_success_mult=1.25,
             can_read_game_early=True,
@@ -616,8 +571,6 @@ class SoulLibrary:
             teammate_pass_boost=1.18,
             teammate_conf_boost=1.15,
 
-            bonus_interceptions_per_match=(2, 4),
-            bonus_progressive_passes=(2, 4),
         ),
 
         # ─────────────────────────────────────────────────────
@@ -634,10 +587,6 @@ class SoulLibrary:
             positions=["CB", "LB", "RB"],
 
             tackle_success_mult=1.50,
-            aerial_success_mult=1.60,
-            clearance_quality_mult=1.55,
-            positioning_mult=1.55,
-            composure_mult=1.40,
             interception_mult=1.35,
             pressure_resistance=1.40,
             can_hold_defensive_line=True,
@@ -649,8 +598,6 @@ class SoulLibrary:
             teammate_conf_boost=1.22,   # Highest defensive aura in the game
             teammate_pass_boost=1.05,
 
-            bonus_tackles_per_match=(1, 3),
-            bonus_interceptions_per_match=(1, 3),
         ),
     }
 
@@ -797,6 +744,12 @@ class PlayerSoul:
     consecutive_poor_games: int = 0
     is_in_flow_state: bool = False      # Peak psychological state
 
+    # Ceiling on the CONTEXT portion of get_event_multiplier, with the five
+    # state modifiers summed rather than multiplied. See the docstring there:
+    # they stacked to 3.90x on a pressing soul, which is a probability above
+    # 1.0 and is why the press call site was commented out instead of wired.
+    CONTEXT_MAX: float = field(default=1.45, init=False, repr=False)
+
     @property
     def profile(self) -> SoulProfile:
         return SoulLibrary.get(self.archetype)
@@ -823,6 +776,23 @@ class PlayerSoul:
             'is_added_time': bool,
             'under_pressure': bool,
         }
+
+        WHY THE CONTEXT IS ADDITIVE AND BOUNDED (changed 2026-10-14):
+        the five state modifiers used to be multiplied together, and because
+        each is itself >1.0 they STACKED. Measured on a PRESSING_EVANGELIST at
+        G=1.418, 70', losing, under pressure:
+
+            scaled 1.92 x losing 1.35 x late 1.30 x pressure 1.50 = 3.90
+
+        so a base press_success of 0.30 became 1.17 — arithmetically
+        impossible, and it is why the press call site at event_chain.py:8405
+        was COMMENTED OUT rather than wired: the author read a +290% and
+        sensibly refused it, then left the mechanism half-dead.
+
+        Each state modifier is now a bounded ADDITIVE increment over 1.0, and
+        the sum is clamped to CONTEXT_MAX. A soul that is losing AND late AND
+        under pressure is in a genuinely extreme situation, but the engine
+        must still be able to express a probability in [0, 1].
         """
         profile = self.profile
         g = self.greatness_coefficient
@@ -834,55 +804,28 @@ class PlayerSoul:
         # G=1.0 → full multiplier, G=0.5 → half the boost
         scaled = 1.0 + (base - 1.0) * g
 
-        # Game context modifiers
-        context_mult = 1.0
-        if game_context.get("is_losing") and profile.losing_state_boost > 1.0:
-            context_mult *= profile.losing_state_boost
-        if game_context.get("is_winning") and profile.winning_state_mult != 1.0:
-            context_mult *= profile.winning_state_mult
-        if game_context.get("is_late_game") and profile.late_game_boost > 1.0:
-            context_mult *= profile.late_game_boost
-        if game_context.get("is_added_time") and profile.added_time_boost > 1.0:
-            context_mult *= profile.added_time_boost
-        if game_context.get("under_pressure") and profile.pressure_resistance > 1.0:
-            context_mult *= profile.pressure_resistance
+        # Game context modifiers — additive, then bounded.
+        bonus = 0.0
+        if game_context.get("is_losing"):
+            bonus += profile.losing_state_boost - 1.0
+        if game_context.get("is_winning"):
+            bonus += profile.winning_state_mult - 1.0
+        if game_context.get("is_late_game"):
+            bonus += profile.late_game_boost - 1.0
+        if game_context.get("is_added_time"):
+            bonus += profile.added_time_boost - 1.0
+        if game_context.get("under_pressure"):
+            bonus += profile.pressure_resistance - 1.0
+        context_mult = min(self.CONTEXT_MAX, 1.0 + bonus * g)
 
         # Flow state: peak psychological condition
         if self.is_in_flow_state:
-            context_mult *= 1.12
+            context_mult = min(self.CONTEXT_MAX, context_mult * 1.12)
 
         # Current form factor
         final = scaled * context_mult * self.current_form_factor
 
         return round(final, 4)
-
-    def get_bonus_stats(self) -> Dict[str, int]:
-        """
-        Return the bonus stat additions for this match.
-        These are on top of DNA-generated values.
-        """
-        profile = self.profile
-        g = self.greatness_coefficient
-
-        def roll_bonus(rng: Tuple[int, int]) -> int:
-            if rng == (0, 0):
-                return 0
-            lo, hi = rng
-            # Greatness coefficient scales how much of the range is used
-            scaled_hi = int(lo + (hi - lo) * g)
-            return random.randint(lo, max(lo, scaled_hi))
-
-        bonuses = {
-            "shot_assists":       roll_bonus(profile.bonus_shot_assists_per_match),
-            "dribbles_comp":      roll_bonus(profile.bonus_dribbles_per_match),
-            "tackles_won":        roll_bonus(profile.bonus_tackles_per_match),
-            "interceptions":      roll_bonus(profile.bonus_interceptions_per_match),
-            "progressive_passes": roll_bonus(profile.bonus_progressive_passes),
-            "pressures":          roll_bonus(profile.bonus_pressures_per_match),
-            "carries":            roll_bonus(profile.bonus_carries_per_match),
-        }
-
-        return {k: v for k, v in bonuses.items() if v > 0}
 
     def get_teammate_aura(self) -> Dict[str, float]:
         """
@@ -1246,15 +1189,6 @@ class SoulApplicator:
         return getattr(dna, "soul", None)
 
     @staticmethod
-    def modify_dribble_success(player, base_prob: float, state=None, player_team: str = None) -> float:
-        soul = SoulApplicator.get_soul(player)
-        if soul is None:
-            return base_prob
-        ctx = SoulApplicator._get_context(state, player_team) if state else {}
-        mult = soul.get_event_multiplier("dribble_success_mult", ctx)
-        return min(0.95, base_prob * mult)
-
-    @staticmethod
     def modify_shot_quality(player, base_xg: float, state=None, player_team: str = None) -> float:
         soul = SoulApplicator.get_soul(player)
         if soul is None:
@@ -1267,6 +1201,96 @@ class SoulApplicator:
         # Callers that feed it a probability clamp the result themselves.
         return base_xg * mult
 
+    # ── PROBABILITY-SAFE APPLICATION (added 2026-10-14) ──────────
+    # A probability multiplier must not be able to push a probability above
+    # its own ceiling. MULTIPLYING is the wrong operator: a WALL with
+    # tackle_success_mult 1.50 at G=1.37 scales a 0.65 tackle rate to 1.59,
+    # which is not a probability. The multiplier is instead applied as a move
+    # TOWARD the ceiling, so a soul lifts a player toward the best they can
+    # already do and never past it:
+    #
+    #     lifted = base + (ceiling - base) * (mult - 1)
+    #
+    # Both guards are needed. The first stops the common case from being
+    # distorted; the second guarantees the [0, ceiling] contract no matter how
+    # hot the multiplier gets, which is what makes it safe to wire the press
+    # site that was previously commented out.
+    CEILINGS = {
+        "press_success_mult": 0.80, "tackle_success_mult": 0.92,
+        "interception_mult": 0.88, "shot_assist_mult": 0.90,
+        "pass_accuracy_mult": 0.95, "dribble_success_mult": 0.88,
+    }
+
+    @staticmethod
+    def _apply_to_probability(base_prob: float, mult: float, ceiling: float) -> float:
+        """Lift a probability toward its ceiling by the soul's multiplier."""
+        if mult <= 1.0:
+            return base_prob
+        lifted = base_prob + (ceiling - base_prob) * (mult - 1.0)
+        return max(0.0, min(ceiling, lifted))
+
+    # ── THRESHOLD / DECISION modifiers (not probabilities) ───────
+    # Some soul multipliers describe how OFTEN a player acts, not how well.
+    # Those cannot use _apply_to_probability: there is no ceiling to move
+    # toward, because the quantity is a decision threshold. They are expressed
+    # as a bounded reduction in the threshold instead, which is the honest
+    # form — it changes the engine's own decision rather than adding an event
+    # to a total after the fact.
+
+    #: A soul may lower a shot threshold by at most this fraction.
+    SHOT_FREQUENCY_MAX_REDUCTION = 0.25
+    #: A soul may lower a carry/dribble threshold by at most this fraction.
+    ACTION_FREQUENCY_MAX_REDUCTION = 0.25
+
+    @staticmethod
+    def _threshold_reduction(soul, key: str, max_reduction: float) -> float:
+        """A bounded factor <= 1.0 applied to a decision threshold."""
+        if soul is None:
+            return 1.0
+        try:
+            mult = soul.get_event_multiplier(key, {})
+        except Exception:
+            return 1.0
+        if mult <= 1.0:
+            return 1.0
+        return max(1.0 - max_reduction, 1.0 / mult)
+
+    @staticmethod
+    def shot_frequency_threshold(soul) -> float:
+        """Factor <= 1.0 on a shot threshold: lower means shoot more often.
+
+        Used by attacking_matrix.shot_threshold. Takes a PlayerSoul directly
+        (not a player) because the threshold function has a PlayerDNA, and
+        avoiding the import cycle is worth the slightly odd signature.
+        """
+        return SoulApplicator._threshold_reduction(
+            soul, "shot_frequency_mult", SoulApplicator.SHOT_FREQUENCY_MAX_REDUCTION)
+
+    @staticmethod
+    def carry_frequency_threshold(soul) -> float:
+        return SoulApplicator._threshold_reduction(
+            soul, "carry_frequency_mult", SoulApplicator.ACTION_FREQUENCY_MAX_REDUCTION)
+
+    # NOTE: dribble_attempt_threshold / through_ball_threshold /
+    # press_intensity_threshold / cross_quality were written here and then
+    # DELETED with the multipliers they read. Those multipliers were redundant:
+    # dribbling, through_balls, crossing, work_rate and positioning are all
+    # raised by the ATTRIBUTE CEILINGS, so a soul was being paid twice for one
+    # thing — once as a rating, once as a multiplier on the outcome derived
+    # from it. Only shot_frequency_mult and carry_frequency_mult survived,
+    # because shot-taking and carrying are FREQUENCIES with no attribute to
+    # lift.
+
+    @staticmethod
+    def teammate_aura_multiplier(soul, stat: str) -> float:
+        """1.0 with no soul; otherwise the G-scaled aura for a named stat."""
+        if soul is None:
+            return 1.0
+        try:
+            return float(soul.get_teammate_aura().get(stat, 1.0))
+        except Exception:
+            return 1.0
+
     @staticmethod
     def modify_shot_assist_prob(player, base_prob: float, state=None, player_team: str = None) -> float:
         soul = SoulApplicator.get_soul(player)
@@ -1274,7 +1298,8 @@ class SoulApplicator:
             return base_prob
         ctx = SoulApplicator._get_context(state, player_team) if state else {}
         mult = soul.get_event_multiplier("shot_assist_mult", ctx)
-        return min(0.90, base_prob * mult)
+        return SoulApplicator._apply_to_probability(
+            base_prob, mult, SoulApplicator.CEILINGS["shot_assist_mult"])
 
     @staticmethod
     def modify_press_success(player, base_prob: float, state=None, player_team: str = None) -> float:
@@ -1283,7 +1308,8 @@ class SoulApplicator:
             return base_prob
         ctx = SoulApplicator._get_context(state, player_team) if state else {}
         mult = soul.get_event_multiplier("press_success_mult", ctx)
-        return min(0.80, base_prob * mult)
+        return SoulApplicator._apply_to_probability(
+            base_prob, mult, SoulApplicator.CEILINGS["press_success_mult"])
 
     @staticmethod
     def modify_tackle_success(player, base_prob: float, state=None, player_team: str = None) -> float:
@@ -1292,7 +1318,8 @@ class SoulApplicator:
             return base_prob
         ctx = SoulApplicator._get_context(state, player_team) if state else {}
         mult = soul.get_event_multiplier("tackle_success_mult", ctx)
-        return min(0.92, base_prob * mult)
+        return SoulApplicator._apply_to_probability(
+            base_prob, mult, SoulApplicator.CEILINGS["tackle_success_mult"])
 
     @staticmethod
     def modify_interception_rate(player, base_prob: float, state=None, player_team: str = None) -> float:
@@ -1301,7 +1328,8 @@ class SoulApplicator:
             return base_prob
         ctx = SoulApplicator._get_context(state, player_team) if state else {}
         mult = soul.get_event_multiplier("interception_mult", ctx)
-        return min(0.88, base_prob * mult)
+        return SoulApplicator._apply_to_probability(
+            base_prob, mult, SoulApplicator.CEILINGS["interception_mult"])
 
     @staticmethod
     def modify_pass_accuracy(player, base_prob: float, state=None, player_team: str = None) -> float:
@@ -1310,7 +1338,23 @@ class SoulApplicator:
             return base_prob
         ctx = SoulApplicator._get_context(state, player_team) if state else {}
         mult = soul.get_event_multiplier("pass_accuracy_mult", ctx)
-        return min(0.95, base_prob * mult)
+        return SoulApplicator._apply_to_probability(
+            base_prob, mult, SoulApplicator.CEILINGS["pass_accuracy_mult"])
+
+    @staticmethod
+    def modify_dribble_success(player, base_prob: float, state=None, player_team: str = None) -> float:
+        """Same probability-safe treatment as the other five.
+
+        Was a raw multiply, so a CREATIVE_ORACLE's 1.25 dribble_success_mult
+        at G~1.4 turned a 0.80 dribble rate into 1.12.
+        """
+        soul = SoulApplicator.get_soul(player)
+        if soul is None:
+            return base_prob
+        ctx = SoulApplicator._get_context(state, player_team) if state else {}
+        mult = soul.get_event_multiplier("dribble_success_mult", ctx)
+        return SoulApplicator._apply_to_probability(
+            base_prob, mult, SoulApplicator.CEILINGS["dribble_success_mult"])
 
     @staticmethod
     def modify_big_chance_conversion(player, base_xg: float, state=None, player_team: str = None) -> float:
@@ -1322,22 +1366,6 @@ class SoulApplicator:
         return min(0.98, base_xg * mult)
 
     @staticmethod
-    def apply_bonus_stats(player, accumulated_stats: Dict, state=None) -> Dict:
-        """
-        After all events processed, add soul bonus stats to the accumulation.
-        Called by StatAccumulator._finalise() for soul players.
-        """
-        soul = SoulApplicator.get_soul(player)
-        if soul is None:
-            return accumulated_stats
-
-        bonuses = soul.get_bonus_stats()
-        for stat, bonus in bonuses.items():
-            if stat in accumulated_stats:
-                accumulated_stats[stat] = accumulated_stats[stat] + bonus
-
-        return accumulated_stats
-
     @staticmethod
     def apply_teammate_aura(soul_player, teammate, stat: str, base_val: float) -> float:
         """
@@ -1387,14 +1415,8 @@ WIRING player_soul.py INTO THE ENGINE
    ─────────────────────────────────────────────
    success_rate = SoulApplicator.modify_dribble_success(last_player, success_rate, state)
 
-5. exporter.py — In StatAccumulator._finalise(), after rating:
+5. exporter.py — soul COLUMNS only (the bonus-stat step is GONE, see below):
    ─────────────────────────────────────────────
-   from player_soul import SoulApplicator
-   for name, s in self.stats.items():
-       player_obj = self._find_player(name)
-       if player_obj:
-           s = SoulApplicator.apply_bonus_stats(player_obj, s)
-   
    # Add soul columns to Excel output:
    row['Soul Archetype'] = player_obj.dna.soul.profile.label if player_obj.dna.soul else ''
    row['Greatness Coefficient'] = player_obj.dna.soul.greatness_coefficient if player_obj.dna.soul else ''
@@ -1482,10 +1504,11 @@ if __name__ == "__main__":
         print(f"  {name:<22} base xG: {base_xg:.2f} → effective xG: {adj_xg:.3f} "
               f"(×{adj_xg/base_xg:.2f}) — {soul.tier}")
 
-    # ── BONUS STATS PERCY GETS ON TOP OF DNA ──────────────────
-    print("\n── PERCY BONUS STATS (on top of DNA this match) ──")
-    for stat, val in percy_soul.get_bonus_stats().items():
-        print(f"  +{val} {stat}")
+    # ── ATTRIBUTE CEILINGS (how a soul actually becomes better) ──
+    print("\n── PERCY ATTRIBUTE CEILINGS ──")
+    for key, ceil_val in sorted(percy_soul.profile.attribute_ceilings.items()):
+        base = getattr(getattr(percy_soul, "_probe_dna", None), key.split(".")[0], None)
+        print(f"  {key:<34} ceiling {ceil_val}")
 
     print("\n✅ Player Soul module operational.")
     print("   Percy: TRANSCENDENT (Ω=1.547, G=0.9382)")

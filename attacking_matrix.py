@@ -365,7 +365,22 @@ def shot_threshold(dna, scenario: str) -> float:
     plays_safe = getattr(tendencies, "plays_safe", 0.5) if tendencies is not None else 0.5
     plays_safe = max(0.0, min(1.0, plays_safe))
 
-    return base - 0.16 * _shooter_quality(dna) - 0.06 * decisions + 0.10 * plays_safe - 0.05 * conf + 0.02
+    threshold = base - 0.16 * _shooter_quality(dna) - 0.06 * decisions + 0.10 * plays_safe - 0.05 * conf + 0.02
+
+    # Soul shot FREQUENCY. A lower threshold means the carrier SHOOTS more
+    # often, which is the honest way to express "this player takes more shots"
+    # — it changes the engine's own decision rather than adding shots to a
+    # total afterwards. Bounded to a 25% reduction so a soul cannot shoot on
+    # every touch regardless of quality, which is what the threshold comment
+    # above says this function exists to prevent.
+    try:
+        from player_soul import SoulApplicator
+        mult = SoulApplicator.shot_frequency_threshold(getattr(dna, "soul", None))
+        threshold *= mult
+    except Exception:
+        pass
+
+    return max(0.05, min(0.95, threshold))
 
 
 # ─────────────────────────────────────────────

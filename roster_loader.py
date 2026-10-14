@@ -39,6 +39,11 @@ import openpyxl
 
 EXCEL_FILE = os.path.join(os.path.dirname(__file__), "PLOFA-2026-2027.xlsx")
 
+# How many players per squad get the superstar boost. Was implicitly 2
+# (a [:2] slice); named now because _pick_superstars fills around souls and
+# the cap is load-bearing.
+SUPERSTAR_SLOTS = 2
+
 # Position normalization — maps Excel positions to engine positions
 POS_MAP = {
     "GK":  "GK",
@@ -1015,12 +1020,50 @@ class RosterLoader:
         return bench
 
     def _pick_superstars(self, players: List[PlayerRecord]) -> List[str]:
-        """Flag top-2 players by market value as superstars."""
+        """Flag superstars: SOUL PLAYERS FIRST, then market value.
+
+        Was top-2 by market value, which double-counted against the soul
+        system: a soul already receives an ATTRIBUTE CEILING LIFT driven by its
+        greatness coefficient, and Percy Luka is also the most valuable player
+        at 120M, so he was getting both. Market value is a transfer-fee
+        opinion, not a statement about ability, and it was the only thing
+        deciding who got the 1.10-1.20x `_apply_superstar_boost` on top of
+        their archetype band.
+
+        Now a soul player is ALWAYS a superstar — the soul is the engine's own
+        statement that this player is exceptional, and it is authored
+        deliberately per player, whereas a market value is inherited from the
+        workbook and applies to every squad equally. Everyone else keeps the
+        market-value rule, so a club with no souls behaves exactly as before.
+        """
         eligible = [p for p in players if p.market_value > 0]
         if not eligible:
             return []
         sorted_p = sorted(eligible, key=lambda p: p.market_value, reverse=True)
-        return [p.name for p in sorted_p[:2]]
+
+        soul_names = set()
+        try:
+            from auto_run_match import SOUL_PLAYERS
+            soul_names = set(SOUL_PLAYERS)
+        except Exception:
+            # The scratch runner keeps its own registry; fall back to it so a
+            # soul is never missed just because the production module could
+            # not be imported.
+            try:
+                from run_match import SOUL_PLAYERS as _SCRATCH_SOULS
+                soul_names = set(_SCRATCH_SOULS)
+            except Exception:
+                soul_names = set()
+
+        picked = [p.name for p in sorted_p if p.name in soul_names]
+        # Fill the remaining slots by value, so the total is still capped and
+        # a squad full of souls does not flag the whole team.
+        for p in sorted_p:
+            if len(picked) >= SUPERSTAR_SLOTS:
+                break
+            if p.name not in picked:
+                picked.append(p.name)
+        return picked[:SUPERSTAR_SLOTS]
 
     def _pick_sp_takers(
         self, starters: List[PlayerRecord], superstars: List[str]

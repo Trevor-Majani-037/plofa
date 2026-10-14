@@ -744,6 +744,14 @@ class BaseChain:
         passer_skill = passer_long / 100.0
         intercept_prob = 0.15 + (int_skill - passer_skill) * 0.35
         intercept_prob = max(0.08, min(0.50, intercept_prob))
+
+        # Soul readers (Sweeper Sage, Defensive Purist, Wall) anticipate the
+        # drop point better. Applied to the 0.08-0.50 band this gate already
+        # owns, and the applicator lifts it toward its ceiling rather than
+        # scaling past it, so this cannot break the band's calibration.
+        intercept_prob = _get_soul_applicator().modify_interception_rate(
+            winner_player, intercept_prob)
+
         if random.random() < intercept_prob:
             return "intercepted"
         return "received"
@@ -1443,6 +1451,8 @@ class PossessionChain(BaseChain):
                 end_cx = cls.clamp_x(x + (advance if attacks_right else -advance), attacks_right)
                 if last_player.position in ("LW", "RW"):
                     end_cx = min(end_cx, 97.0) if attacks_right else max(end_cx, 8.0)
+                elif last_player.position == "CB":
+                    end_cx = min(end_cx, 60.0) if attacks_right else max(end_cx, 45.0)
                 # Checkpoint 18 wiring — a winger's micro-carry is steered
                 # back onto its flank channel (small noise + touchline bias)
                 # instead of being a pure random lateral walk (the old source
@@ -2006,6 +2016,8 @@ class PossessionChain(BaseChain):
                 # fullback has forced the corner.
                 if last_player.position in ("LW", "RW"):
                     new_x = min(new_x, 97.0) if attacks_right else max(new_x, 8.0)
+                elif last_player.position == "CB":
+                    new_x = min(new_x, 60.0) if attacks_right else max(new_x, 45.0)
                 if winger_drive_mode == "byline":
                     # Drive the touchline→byline corridor: hug the line while
                     # advancing (the modern winger's runway).
@@ -2596,6 +2608,8 @@ class PossessionChain(BaseChain):
                             last_player, long_intent, under_pressure,
                             receiver=receiver, marking=marking,
                             confidence=last_player.dna.form.confidence,
+                            teammates=att_players,
+                            position_engine=position_engine,
                         )
                         episode.record_ball_move(
                             x, y, end_px, end_py, 15.0, "pass",
@@ -4234,15 +4248,24 @@ class PossessionChain(BaseChain):
                 else:
                     return 0.05  # Rare, but possible (e.g. extreme high line)
 
-            # FIX: Taper Center-Back weight when passing INTO/INSIDE the box (x >= 83)
-            # CBs can build up in mid third, but shouldn't be primary receivers inside the box!
+            # FIX: Taper Center-Back weight based on RECEIVER position (direction-normalized).
+            # CBs are primary build-up outlets in own third & mid-third, but should NOT
+            # be forward receivers in the final third or inside the opponent's box.
             if p.position == "CB":
-                if x >= 83:
-                    base = 0.05  # Extremely rare for CB to receive inside opponent box in open play
-                elif x >= 70:
-                    base = 0.4   # Low weight in the final third
+                rx, _ = (position_engine.get_position(p.name)
+                         if position_engine is not None else (x, y))
+                r_nx = rx if attacks_right else (105.0 - rx)
+                p_nx = x if attacks_right else (105.0 - x)
+                if r_nx >= 80.0:
+                    base = 0.01  # Extremely rare for CB to receive inside opponent box in open play
+                elif r_nx >= 65.0:
+                    base = 0.10
+                elif r_nx >= 55.0:
+                    base = 0.40  # Tapered as receiver crosses halfway mark
+                elif p_nx >= 70.0:
+                    base = 0.70  # Passer in final third; CB is a deep reset/drop option
                 else:
-                    base = 1.8   # Normal/high weight in own half & mid third
+                    base = 1.80  # Normal/high weight in own half & mid-third build-up
             else:
                 # Checkpoint 22 — winger channel-discipline gate. Real
                 # wingers get a "forward label" bonus (fwd_weight) for
@@ -4723,7 +4746,9 @@ class PossessionChain(BaseChain):
                        confidence: Optional[float] = None,
                        lane_mult: float = 1.0,
                        is_airborne: bool = False,
-                       weather: Optional[WeatherCondition] = None) -> bool:
+                       weather: Optional[WeatherCondition] = None,
+                       teammates: Optional[List[PlayerProfile]] = None,
+                       position_engine=None) -> bool:
         prob = DNAFactory.get_pass_accuracy(player.dna, is_long=is_long, under_pressure=under_pressure)
         # Chemistry modifier: if both players have chemistry data, multiply
         # pass accuracy by the chemistry multiplier (0.90x to 1.14x).
@@ -4756,7 +4781,69 @@ class PossessionChain(BaseChain):
         if WeatherPhysics.enabled or weather is not None:
             prob *= WeatherPhysics.pass_accuracy_mult(weather, is_long=is_long, is_airborne=is_airborne)
         prob = _get_soul_applicator().modify_pass_accuracy(player, prob)
+
+        # Teammate aura — a soul lifts the players around him. This is the
+        # ONLY consumer of teammate_pass_boost, and it is applied HERE rather
+        # than to the passer's own DNA, because the aura is by definition about
+        # the people near the soul, not the soul himself. Bounded to 12% so it
+        # cannot carry a team on its own, and skipped entirely when no
+        # teammate carries a soul.
+        aura = cls._teammate_aura_for(player, "pass_accuracy_mult", position_engine)
+        if aura != 1.0:
+            prob = min(0.97, prob * aura)
+
         return random.random() < prob
+
+    #: Teammate auras are applied to a bounded fraction, and only within this
+    #: radius (metres) of a soul. A soul's aura is a presence, not a global
+    #: buff — a team of five souls should not each buff the whole pitch.
+    SOUL_AURA_RADIUS_M = 18.0
+    SOUL_AURA_MAX_BONUS = 0.12
+
+    @classmethod
+    def _teammate_aura_for(cls, player: PlayerProfile, stat: str,
+                            position_engine=None) -> float:
+        """Strongest soul aura acting on `player`, or 1.0.
+
+        PositionEngine.states maps player NAME -> PlayerSpatialState, which
+        holds current_x/current_y and the position label — it does NOT hold the
+        PlayerProfile, so the squad has to be passed in. Returns 1.0 when there
+        is no soul, no engine, or nobody within SOUL_AURA_RADIUS_M.
+        """
+        dna = getattr(player, "dna", None)
+        if dna is None or getattr(dna, "soul", None) is not None:
+            return 1.0
+        if position_engine is None or not teammates:
+            return 1.0
+
+        me = position_engine.states.get(player.name)
+        if me is None:
+            return 1.0
+        mx, my = float(me.current_x), float(me.current_y)
+        team = getattr(player, "team_name", None)
+
+        best = 1.0
+        for other in teammates:
+            if other is player or getattr(other, "name", None) == player.name:
+                continue
+            if team is not None and getattr(other, "team_name", None) != team:
+                continue
+            other_soul = getattr(getattr(other, "dna", None), "soul", None)
+            if other_soul is None:
+                continue
+            st = position_engine.states.get(other.name)
+            if st is None:
+                continue
+            dx = float(st.current_x) - mx
+            dy = float(st.current_y) - my
+            if dx * dx + dy * dy > cls.SOUL_AURA_RADIUS_M ** 2:
+                continue
+            mult = _get_soul_applicator().teammate_aura_multiplier(other_soul, stat)
+            if mult > best:
+                best = mult
+        if best <= 1.0:
+            return 1.0
+        return min(1.0 + cls.SOUL_AURA_MAX_BONUS, best)
 
     @classmethod
     def _lane_interceptor(cls, x: float, y: float, ex: float, ey: float,
@@ -8385,12 +8472,21 @@ class TransitionChain(BaseChain):
             * (1.0 - pressed.dna.press_resistance / 100.0 * 0.4)
             * cp_boost,
         )
-        # Checkpoint 7: soul pressers (Pressing Evangelist, Sweeper Sage)
-        # win the ball back more often — their defining trait. Also flows
-        # into the counter that follows, so a pressing soul doesn't just
-        # press more, they actually TRANSFORM more presses into chances.
-        #press_success_rate = SoulApplicator.modify_press_success(
-            #presser, press_success_rate, state, pressing_team)
+        # Soul pressers (Pressing Evangelist, Sweeper Sage) win the ball back
+        # more often — their defining trait. This also flows into the counter
+        # that follows, so a pressing soul doesn't just press more, they
+        # TRANSFORM more presses into chances.
+        #
+        # This line was COMMENTED OUT and has now been wired for real. It was
+        # not commented out because the idea was wrong: SoulApplicator's
+        # probability modifiers multiplied their way to a press_success of
+        # 1.17, which is not a probability, and the author read that +290% and
+        # sensibly refused it. The defect was the OPERATOR. The modifiers now
+        # lift a probability toward its ceiling instead of scaling past it
+        # (SoulApplicator._apply_to_probability), so the same 2.79x multiplier
+        # yields 0.80 — the ceiling — instead of an impossible 1.17.
+        press_success_rate = _get_soul_applicator().modify_press_success(
+            presser, press_success_rate, state, pressing_team)
 
         if random.random() < press_success_rate:
             # Emit the ACTUAL physical action that won the ball
@@ -8738,6 +8834,14 @@ class DefensiveChain(BaseChain):
             #    path (_dribble_confirmation_gate).
             if attacker is not None:
                 tackle_rate -= cls._tackle_attacker_resistance(attacker, defender)
+
+            # 1b) Soul defenders (WALL, Defensive Purist) read the tackle
+            #     better. Applied here, before the danger/aggression voices
+            #     below, so a soul still gets punished for a reckless dive —
+            #     the multiplier lifts the baseline, it does not override the
+            #     situation. Clamped to [0, 0.92] inside the applicator.
+            tackle_rate = _get_soul_applicator().modify_tackle_success(
+                defender, tackle_rate, state, defending_team)
 
             # 2) Danger panic — a last-ditch challenge is rushed and
             #    mistimed (lower success, higher foul chance below).

@@ -480,17 +480,20 @@ def run():
             s = acc.stats.get(name)
             if s:
                 soul = SOUL_PLAYERS[name]
-                bonuses = soul.get_bonus_stats()
-                print(f"  {name} ({soul.profile.label})")
+                # bonus_stats was DELETED 2026-10-14 — see the REMOVED note in
+                # player_soul.SoulProfile. These figures below are whatever the
+                # engine actually produced, with nothing added to them.
+                print(f"  {name} ({soul.profile.label}, {soul.tier}, "
+                      f"G={soul.greatness_coefficient:.4f})")
                 print(f"    Goals: {s['goals']}  Assists: {s['assists']}  "
                       f"Rating: {s['rating']}")
                 print(f"    xG: {s['xg']:.3f}  xA: {s['xa']:.3f}")
                 print(f"    Dribbles: {s['dribbles_comp']}/{s['dribbles_att']}  "
                       f"Shot Assists: {s['shot_assists']}  "
                       f"Carries: {s['carries']}")
-                if bonuses:
-                    print(f"    Soul bonuses applied: "
-                          f"{', '.join(f'+{v} {k}' for k,v in bonuses.items())}")
+                # No "soul bonuses applied" line: those were DELETED 2026-10-14
+                # because they added stats the engine never produced. Every
+                # figure above is what the match actually generated.
 
     # ── Persist season state ──────────────────────────────────
     # Deliberately NOT done here: run_match.py is the TESTING/DEMO runner.

@@ -334,25 +334,36 @@ p(f"  talent={t} hardwork={h} luck=0.76                      -> "
   f"omega={PS.GreatnessPillars(h, t, 0.76).omega}")
 
 rule()
-p("J. ARE THE SOUL BONUS STATS APPLIED IN PRODUCTION?")
+p("J. SOUL BONUS STATS — RESOLVED 2026-10-14, DELETED NOT WIRED")
 rule()
-p("  get_bonus_stats() returns HARD ADDITIONS on top of simulated stats,")
-p("  e.g. ATTACKING_PROPHET: "
-  f"shot_assists +{ap.bonus_shot_assists_per_match[0]}-{ap.bonus_shot_assists_per_match[1]}, "
-  f"carries +{ap.bonus_carries_per_match[0]}-{ap.bonus_carries_per_match[1]}")
+p("  This section used to report that the scratch runner padded a soul")
+p("  player's totals while production did not (same player, different")
+p("  numbers, per runner). Both halves of that are now gone:")
 p("")
-for fn in ("auto_run_match.py", "run_match.py", "exporter.py", "world/ingest.py"):
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), fn)
+p("    SoulProfile.bonus_*_per_match  (7 fields)   DELETED")
+p("    PlayerSoul.get_bonus_stats()               DELETED")
+p("    SoulApplicator.apply_bonus_stats()         DELETED")
+p("")
+p("  Reason: chance creation in this engine is CAUSED, not drawn —")
+p("  chance_creation.py increments chances_created because a real pass led")
+p("  to a real shot, and _finalize_shot_assists DERIVES shot_assists from")
+p("  chances_created. Adding 2-5 'bonus shot assists' would have invented")
+p("  chances no pass produced and silently corrupted assists, xa and the")
+p("  documented chances_created == shot_assists + goal_assists relation.")
+p("")
+p("  The soul's creative edge is now expressed honestly, by raising the")
+p("  ATTRIBUTE CEILINGS that the engine's own causal machinery then acts on.")
+p("")
+for fn in ("auto_run_match.py", "run_match.py", "exporter.py", "world/ingest.py",
+           "player_soul.py"):
+    path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), fn)
     if not os.path.exists(path):
         continue
     txt = open(path, encoding="utf-8").read()
-    n = txt.count("get_bonus_stats")
-    p(f"   {fn:<20} get_bonus_stats call sites: {n}"
-      + ("   <-- PADDS STATS" if n else ""))
-p("")
-p("  exporter.py:1682 — 'Checkpoint 7: soul bonus stats disabled ...")
-p("  no artificial padding.' The production path honours that; the scratch")
-p("  runner does not. Same player, different numbers, per runner.")
+    n = txt.count("get_bonus_stats") + txt.count("apply_bonus_stats")
+    p(f"   {fn:<20} references: {n}"
+      + ("   <-- STILL PRESENT" if n else "   clean"))
 
 # ── sample league ─────────────────────────────────────────────────────────
 rule()

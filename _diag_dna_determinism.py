@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parent          # probe lives in the repo root
 SRC = ROOT / "player_dna.py"
 BACKUP = ROOT / "_diag_dna_determinism_backup.py"
 TESTS = [ROOT / "tests" / "test_dna_determinism.py",
-         ROOT / "tests" / "test_soul_dna.py"]
+         ROOT / "tests" / "test_soul_dna.py",
+         ROOT / "tests" / "test_soul_wiring.py"]
 
 MUTATIONS = [
     ("M1  _attr ignores the crc32 (back to the global stream)",
@@ -94,10 +95,68 @@ MUTATIONS = [
      "        team_name=AWAY_TEAM,\n        starters=AWAY_STARTERS,",
      "    )\n\n    away_squad = SquadBuilder.build(\n"
      "        team_name=AWAY_TEAM,\n        starters=AWAY_STARTERS,"),
+
+    # ── The soul-wiring pass. Each of these was a real defect at some point
+    #    during it, or is the exact thing a future edit could silently undo. ──
+    ("M13 state modifiers stack multiplicatively again (press 1.17)",
+     "        context_mult = min(self.CONTEXT_MAX, 1.0 + bonus * g)\n"
+     "\n"
+     "        # Flow state: peak psychological condition\n"
+     "        if self.is_in_flow_state:\n"
+     "            context_mult = min(self.CONTEXT_MAX, context_mult * 1.12)",
+     "        context_mult = 1.0\n"
+     "        for _f in (profile.losing_state_boost if game_context.get(\"is_losing\") else 1.0,\n"
+     "                   profile.late_game_boost if game_context.get(\"is_late_game\") else 1.0,\n"
+     "                   profile.pressure_resistance if game_context.get(\"under_pressure\") else 1.0):\n"
+     "            context_mult *= _f\n"
+     "        if self.is_in_flow_state:\n"
+     "            context_mult *= 1.12"),
+
+    ("M14 probability modifiers scale past their ceiling",
+     "        lifted = base_prob + (ceiling - base_prob) * (mult - 1.0)\n"
+     "        return max(0.0, min(ceiling, lifted))",
+     "        return base_prob * mult"),
+
+    ("M15 press modifier is commented out again",
+     "        press_success_rate = _get_soul_applicator().modify_press_success(\n"
+     "            presser, press_success_rate, state, pressing_team)",
+     "        # press_success_rate = _get_soul_applicator().modify_press_success(\n"
+     "        #     presser, press_success_rate, state, pressing_team)"),
+
+    ("M16 bonus stat fabrication returns",
+     "    # ── PROBABILITY-SAFE APPLICATION (added 2026-10-14) ──",
+     "    @staticmethod\n"
+     "    def apply_bonus_stats(player, stats, state=None):\n"
+     "        stats['shot_assists'] = stats.get('shot_assists', 0) + 3\n"
+     "        return stats\n\n"
+     "    # ── PROBABILITY-SAFE APPLICATION (added 2026-10-14) ──"),
+
+    ("M17 superstar selection goes back to market value only",
+     "        picked = [p.name for p in sorted_p if p.name in soul_names]",
+     "        picked = []"),
+
+    ("M18 a redundant multiplier is reintroduced as decoration",
+     "    attribute_ceilings: Dict[str, float] = field(default_factory=dict)",
+     "    composure_mult: float = 1.55\n"
+     "    attribute_ceilings: Dict[str, float] = field(default_factory=dict)"),
 ]
 
 
-MUTATION_FILES = {"M12": ROOT / "run_match.py"}
+MUTATION_FILES = {
+    "M12": ROOT / "run_match.py",
+    "M15": ROOT / "event_chain.py",
+    "M17": ROOT / "roster_loader.py",
+    # The soul-wiring mutations all live in player_soul.py. Leaving them on the
+    # default (player_dna.py) is why GATE 1 rejected M13/M14/M16/M18 four
+    # times in a row while their anchors were provably present in the file I
+    # thought I was editing. A wrong default target fails exactly like a stale
+    # anchor, so GATE 1 cannot tell them apart — which is why the fix is to
+    # name the file, not to loosen the gate.
+    "M13": ROOT / "player_soul.py",
+    "M14": ROOT / "player_soul.py",
+    "M16": ROOT / "player_soul.py",
+    "M18": ROOT / "player_soul.py",
+}
 def run_tests():
     r = subprocess.run(
         [str(ROOT / ".venv" / "Scripts" / "python.exe"), "-m", "pytest",
@@ -190,16 +249,28 @@ def main():
         # M12 lives in run_match.py, not player_dna.py
         target = MUTATION_FILES.get(label.split()[0], SRC)
         key = label.split()[0]
-        src = target.read_text(encoding="utf-8")
+        # Read with newline="" so the file's own line endings survive, then
+        # normalise to \n for MATCHING only. Without this, a source file saved
+        # with CRLF never matches a hand-written \n anchor and GATE 1 rejects
+        # every multi-line mutation — which is exactly what happened to M13,
+        # M14, M16 and M18 on their first run.
+        raw = target.read_bytes().decode("utf-8")
+        src = raw.replace("\r\n", "\n")
         was_src = target == SRC
 
         if old not in src:
             print(f"  {label}\n      GATE 1 FAIL: anchor not found -> mutation would be a NO-OP")
+            hint = old.splitlines()[0][:70] if old else ""
+            print(f"                wanted to find: {hint!r}")
             failures.append(label)
             continue
 
         mutated = src.replace(old, new, 1)
-        target.write_text(mutated, encoding="utf-8")
+        # Write back in the file's ORIGINAL line-ending style, so a mutation
+        # never silently converts a CRLF file to LF (which is what made an
+        # earlier run report a false "not restored" for run_match.py).
+        eol = "\r\n" if "\r\n" in raw else "\n"
+        target.write_bytes(mutated.replace("\n", eol).encode("utf-8"))
 
         # GATE 2 - must compile
         c = subprocess.run([str(ROOT / ".venv" / "Scripts" / "python.exe"), "-m",
@@ -219,10 +290,11 @@ def main():
             continue
 
         # GATE 3b - must not be a BEHAVIOURAL no-op, measured where the
-        # mutation lives. M12 is a runner wiring change, so the DNA-layer
-        # fingerprint is blind to it by construction; it is validated by the
-        # AST guard instead and said so.
-        if was_src:
+        # mutation lives. M12/M15/M17 are runner/wiring/selection changes that
+        # the DNA-layer fingerprint is blind to by construction; they are
+        # validated by the AST and structural guards instead, and said so.
+        if was_src and key in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8",
+                               "M9", "M10", "M11"):
             mut_sig = dna_probe_sig()
             if mut_sig == base_sig:
                 print(f"  {label}\n      GATE 3b FAIL: source changed but behaviour is identical")
@@ -244,7 +316,7 @@ def main():
             if tail_lines:
                 print("      " + tail_lines[-1])
 
-        target.write_text(src, encoding="utf-8")
+        target.write_bytes(raw.encode("utf-8"))
 
     # GATE 4 - byte-exact restore
     SRC.write_bytes(original)
