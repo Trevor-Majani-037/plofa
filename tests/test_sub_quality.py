@@ -42,6 +42,7 @@ mechanisms and asserts the corresponding test goes red.
 """
 
 import ast
+import dataclasses
 import inspect
 import pathlib
 import random
@@ -54,6 +55,8 @@ import match_engine
 import squad_manager
 from player_dna import SquadBuilder
 from squad_manager import (
+    AvailabilityStatus,
+    PlayerAvailability,
     SubstitutionController,
     acceptable_quality_loss,
     sub_attacking_quality,
@@ -126,6 +129,36 @@ def _controller(bench=(), **kw):
         home_subs_bench=list(bench), away_subs_bench=[],
         **kw,
     )
+
+
+def _gimp_bench(bench, rating=40.0):
+    """Give every substitute an explicitly poor attribute profile.
+
+    The game-state trigger's `upgrade` term is GLOBAL (best bench man vs
+    the weakest man on the pitch), and `_make` seats each substitute in a
+    freshly built squad whose DNA comes off the archetype RNG -- so a
+    substitute's OVR varies run to run and can land ABOVE the weakest
+    starter. Tests about the OTHER two signals (strain, pressure) must not
+    have a bench that constitutes an upgrade, or they are asserting on the
+    squad generator rather than on the trigger. Stating the premise ("the
+    bench is worse") here is honest; hoping for it is not.
+
+    `PlayerDNA.overall_rating` is a READ-ONLY derived property (a
+    position-weighted mean over the attribute groups), so it cannot be set
+    directly -- the groups are overwritten instead.
+    """
+    for p in bench:
+        dna = getattr(p, "dna", None)
+        if dna is None:
+            continue
+        for gname in ("physical", "technical", "mental",
+                      "defending", "passing", "gk_attrs"):
+            grp = getattr(dna, gname, None)
+            if grp is None:
+                continue
+            for f in dataclasses.fields(grp):
+                setattr(grp, f.name, rating)
+    return bench
 
 
 # ═════════════════════════════════════════════
@@ -665,7 +698,187 @@ class TestRuleReachesSelection:
 # 5. THE IFAB WINDOW MODEL
 # ═════════════════════════════════════════════
 
-class TestWindows:
+class TestConsideredTrigger:
+    """The 8%-per-minute coin flip is gone.
+
+    Measured before removal over 20,000 simulated gate chains: a trailing
+    team failed to change anyone in only 3.5% of matches and a leading one
+    in 9.9%. So it was never a BLOCKER — it was a timer for when and how
+    many. What it was not was a decision.
+    """
+
+    def test_no_random_draw_remains_in_the_game_state_trigger(self):
+        """AST guard, because a behavioural test cannot see a coin flip.
+
+        The old condition ended `and random.random() < SUB_GAME_STATE_RATE)`.
+        A test that ran a match would see "some matches had no game-state
+        sub" and could not tell a considered decision from a die.
+        """
+        src = (REPO / "squad_manager.py").read_text(encoding="utf-8")
+        node = _function_node(src, "process_minute", cls="SubstitutionController")
+        # The decision itself lives in the helper, and process_minute only
+        # calls it - so an AST guard over process_minute ALONE passes while
+        # the coin flip sits one frame down. Both nodes are dumped.
+        worth = _function_node(src, "_worth_a_game_state_change",
+                               cls="SubstitutionController")
+        body = ast.dump(node) + ast.dump(worth)
+        assert "random" not in body.lower(), (
+            "the game-state trigger still draws from the global RNG. The "
+            "substitution sequence must be a function of match state, not "
+            "of how many random numbers happened to be taken before it."
+        )
+
+    def test_the_trigger_is_deterministic_for_identical_state(self):
+        """The whole reason the coin flip went.
+
+        The squad is built ONCE and evaluated twice. An earlier version
+        built a fresh squad inside each call, which advanced the archetype
+        RNG — so the two runs used different players and the test was
+        measuring `SquadBuilder`, not the trigger.
+        """
+        built, bench = _squad(subs=[("A", "ST"), ("B", "ST"), ("C", "ST")])
+        ctrl = _controller(bench)
+        for name in built:
+            ctrl.register_player(built[name], 100.0)
+
+        first = ctrl._worth_a_game_state_change(
+            list(built.values()), bench, 0, 70)
+        second = ctrl._worth_a_game_state_change(
+            list(built.values()), bench, 0, 70)
+        third = ctrl._worth_a_game_state_change(
+            list(built.values()), bench, 0, 70)
+        assert first == second == third
+
+        # And across controllers, holding the players fixed.
+        ctrl2 = _controller(bench)
+        for name in built:
+            ctrl2.register_player(built[name], 100.0)
+        assert ctrl2._worth_a_game_state_change(
+            list(built.values()), bench, 0, 70) == first
+
+    def test_pressure_orders_trailing_above_level_above_leading(self):
+        """The scoreline must pull hardest on the team that is behind."""
+        for minute in (55, 65, 75, 89):
+            t = squad_manager.game_state_pressure(-1, minute)
+            lvl = squad_manager.game_state_pressure(0, minute)
+            lead = squad_manager.game_state_pressure(1, minute)
+            assert t > lvl > lead, (
+                f"at {minute}': trailing {t} / level {lvl} / leading {lead}"
+            )
+
+    def test_no_pressure_before_the_ramp_start(self):
+        for gd in (-1, 0, 1):
+            for minute in range(0, squad_manager.GAME_STATE_PRESSURE_START):
+                assert squad_manager.game_state_pressure(gd, minute) == 0.0
+
+    def test_a_badly_struggling_man_forces_a_change_with_no_upgrade(self):
+        """Strain alone is reason enough. A man at 20% should not be left
+        on because the bench happens to be worse than he is."""
+        built, bench = _squad(subs=[("A", "ST"), ("B", "ST"), ("C", "ST")])
+        _gimp_bench(bench)
+        ctrl = _controller(bench)
+        for name in built:
+            ctrl.register_player(built[name], 100.0)
+        for p in built.values():
+            ctrl.stamina[getattr(p, "name", "")].current_stamina = 100.0
+
+        # Level, early — pressure alone would not clear the bar.
+        assert not ctrl._worth_a_game_state_change(
+            list(built.values()), bench, 0, 50)
+
+        # Now drop one man into real trouble.
+        ctrl.stamina[built["M2"].name].current_stamina = 18.0
+        assert ctrl._worth_a_game_state_change(
+            list(built.values()), bench, 0, 50), (
+            "a player at 18% stamina did not justify a change on his own"
+        )
+
+    def test_no_change_when_nothing_is_wrong(self):
+        """The manager must still decline. A trigger that always fires is
+        not a decision."""
+        built, bench = _squad(subs=[("A", "ST"), ("B", "ST"), ("C", "ST")])
+        _gimp_bench(bench)
+        ctrl = _controller(bench)
+        for name in built:
+            ctrl.register_player(built[name], 100.0)
+        for p in built.values():
+            ctrl.stamina[getattr(p, "name", "")].current_stamina = 100.0
+        assert not ctrl._worth_a_game_state_change(
+            list(built.values()), bench, 0, 30)
+
+    def test_the_decision_is_counted_either_way(self):
+        """Taken AND declined. Without the declined count, a trigger that
+        never fires is indistinguishable from one that was never wired."""
+        built, bench = _squad(subs=[("A", "ST")])
+        _gimp_bench(bench)
+        ctrl = _controller(bench)
+        for name in built:
+            ctrl.register_player(built[name], 100.0)
+        ctrl._worth_a_game_state_change(list(built.values()), bench, 0, 30)
+        assert ctrl.game_state_stats["considered"] == 1
+        assert ctrl.game_state_stats["declined"] == 1
+        assert ctrl.game_state_stats["taken"] == 0
+
+
+class TestLevelScoreline:
+    """The branch that did not exist.
+
+    `if goal_diff < 0` / `elif goal_diff > 0` had no `else`, so a team
+    level on the score could never take a game-state substitution — 100% of
+    matches, structurally. Level is the most common state in football.
+    """
+
+    def _level_squad(self, tag="L"):
+        built, bench = _squad(subs=[("S1", "ST"), ("S2", "ST"), ("S3", "ST")],
+                              tag=tag)
+        ctrl = SubstitutionController(
+            home_team="HOME", away_team="AWAY",
+            home_subs_bench=bench, away_subs_bench=[],
+        )
+        for name in built:
+            ctrl.register_player(built[name], 100.0)
+        for p in built.values():
+            ctrl.stamina[getattr(p, "name", "")].current_stamina = 62.0
+        return built, bench, ctrl
+
+    def test_a_level_team_can_still_change_players(self):
+        built, bench, ctrl = self._level_squad()
+        # Make the upgrade argument unambiguous rather than relying on
+        # whatever the archetype RNG produced: a fixture whose expected
+        # output depends on a random draw is a fixture that will flake.
+        bench[0].dna.technical.finishing = 99.0
+        subs = ctrl.process_minute(70, {"HOME": list(built.values())}, 0, 0)
+        game_state = [s for s in subs if s["reason"] == "game_state"]
+        assert game_state, (
+            "a team level on the score at 70' made no game-state change. "
+            "The `if < 0 / elif > 0` chain had no else, so this was "
+            "structurally impossible rather than merely unlikely."
+        )
+
+    def test_the_level_branch_is_reachable_from_the_source(self):
+        """AST guard: an `else` on that if-chain must exist. A behavioural
+        test can only observe a level sub in a fixture that happens to
+        produce one."""
+        src = (REPO / "squad_manager.py").read_text(encoding="utf-8")
+        node = _function_node(src, "process_minute", cls="SubstitutionController")
+
+        def has_else(n):
+            return any(isinstance(o, ast.If) and o.orelse for o in ast.walk(n))
+
+        assert has_else(node), (
+            "no if/else chain in process_minute. The scoreline branches must "
+            "have a level case, or a team level on the score can never act."
+        )
+
+    def test_level_is_covered_by_the_quality_rule_too(self):
+        """The rule had a level case all along; the trigger never reached
+        it. Both halves must exist now."""
+        # Level uses its own 30-minute thresholds, so a modest loss is
+        # acceptable earlier than it would be while leading.
+        args = dict(on_attack=84.0, off_attack=90.0,
+                    on_defence=84.0, off_defence=90.0)
+        assert not acceptable_quality_loss(0, 29, **args)[0]
+        assert acceptable_quality_loss(0, 30, **args)[0]
 
     def test_the_limit_is_five_subs_in_three_windows(self):
         assert SubstitutionController.MAX_SUBS == 5
@@ -1172,6 +1385,251 @@ class TestDeterminism:
             return [s["player_on"] for s in subs]
 
         assert run() == run()
+
+
+class TestRotation:
+    """Season load now reaches the XI selection.
+
+    `SeasonManager.rotation_flag` computed "this man has carried a season and
+    is gassed, rest him" since the season layer was written, and was called
+    from exactly two places - both of which appended a string to a briefing.
+    Neither changed a selection, so the intelligence was produced, printed
+    and discarded.
+
+    It could not do otherwise: the XI is not chosen by `pick_best_xi` (which
+    has ZERO production call sites) but by `roster_loader._pick_from_pool`,
+    which sorted by MARKET VALUE and had no access to any season state.
+    """
+
+    def _avail(self, **kw):
+        d = dict(name="X", status=AvailabilityStatus.FIT, reason="")
+        d.update(kw)
+        return PlayerAvailability(**d)
+
+    def test_a_fresh_player_has_no_rotation_score(self):
+        a = self._avail(season_matches=5, season_minutes=150)   # 30 min/game
+        assert a.rotation_score == 0.0
+
+    def test_a_loaded_player_does(self):
+        a = self._avail(season_matches=5, season_minutes=450)   # 90 min/game
+        assert a.rotation_score > 0.5
+
+    def test_rotation_score_rises_with_load(self):
+        scores = []
+        for mins in (150, 270, 360, 450):
+            scores.append(self._avail(
+                season_matches=5, season_minutes=mins).rotation_score)
+        assert scores == sorted(scores), f"not monotone: {scores}"
+        assert scores[0] < scores[-1]
+
+    def test_a_short_turnaround_adds_to_the_score(self):
+        long_gap = self._avail(season_matches=5, season_minutes=150,
+                               days_since_last_match=10)
+        short_gap = self._avail(season_matches=5, season_minutes=150,
+                                days_since_last_match=1)
+        assert short_gap.rotation_score > long_gap.rotation_score
+
+    def test_a_back_to_back_is_worse_than_a_three_day_gap(self):
+        bb = self._avail(season_matches=5, season_minutes=150,
+                         days_since_last_match=0)
+        three = self._avail(season_matches=5, season_minutes=150,
+                            days_since_last_match=3)
+        assert bb.rotation_score > three.rotation_score
+
+    def test_the_load_gate_is_not_zero(self):
+        """A player who plays every game is not a rotation candidate; a
+        player doing 90 a game while gassed is. The gate is what separates
+        them, so it must not be at zero."""
+        assert squad_manager.ROTATION_LOAD_GATE_MINUTES > 0
+        just_under = self._avail(season_matches=10,
+                                 season_minutes=int(
+                                     squad_manager.ROTATION_LOAD_GATE_MINUTES
+                                     * 10) - 10)
+        assert just_under.rotation_score == 0.0
+
+    def test_days_since_last_match_is_computed_from_the_calendar(self):
+        from datetime import date
+        import auto_run_match
+
+        state = {"season_matches": 5, "season_minutes": 450,
+                 "last_match_date": "2026-10-10"}
+        got = auto_run_match._season_load_fields(state, date(2026, 10, 13))
+        assert got["days_since_last_match"] == 3
+        assert got["season_matches"] == 5
+        assert got["season_minutes"] == 450
+
+    def test_a_missing_last_match_date_is_none_not_zero(self):
+        from datetime import date
+        import auto_run_match
+
+        got = auto_run_match._season_load_fields(
+            {"season_matches": 0, "season_minutes": 0, "last_match_date": None},
+            date(2026, 10, 13))
+        assert got["days_since_last_match"] is None
+        assert got["season_matches"] == 0
+
+    def test_the_selector_receives_the_load_map(self):
+        """AST guard. The penalty lives in `_pick_from_pool`; if the load_map
+        is not threaded through, the penalty is computed and then dropped on
+        the floor - the exact shape of the `rotation_flag` defect."""
+        src = (REPO / "roster_loader.py").read_text(encoding="utf-8")
+        node = _function_node(src, "_pick_from_pool", cls="RosterLoader")
+        params = [a.arg for a in node.args.args]
+        assert "load_map" in params, (
+            f"_pick_from_pool signature is {params}; the season load never "
+            "reaches the selector"
+        )
+
+    def test_the_audit_is_actually_called(self):
+        """AST guard. `rotation_flag` was called twice and both call sites
+        only built a string. If `_rotation_audit` is never invoked, the
+        rotation penalty is invisible from outside."""
+        src = (REPO / "roster_loader.py").read_text(encoding="utf-8")
+        node = _function_node(src, "build_matchday_squad",
+                              cls="RosterLoader")
+        body = ast.dump(node)
+        assert "_rotation_audit" in body, (
+            "build_matchday_squad never calls _rotation_audit, so a rotation "
+            "penalty that never fired is indistinguishable from one that was "
+            "never wired"
+        )
+
+    def test_the_audit_names_the_man_it_promoted(self):
+        """The negative control matters as much as the positive: a side
+        picked purely on market value must produce NO rotation note."""
+        from roster_loader import _rotation_audit
+
+        class Rec:
+            def __init__(self, name, pos, mv):
+                self.name, self.engine_pos = name, pos
+                self.engine_other_pos = None
+                self.market_value = mv
+
+        # Case 1: rotation flipped it. A 90M man was picked over a 100M man
+        # because the 100M man is carrying a season.
+        starters = [Rec("CheapButFresh", "CB", 90.0)]
+        eligible = starters + [Rec("ExpensiveButGassed", "CB", 100.0)]
+        load = {"CheapButFresh": self._avail(season_matches=0,
+                                             season_minutes=0),
+                "ExpensiveButGassed": self._avail(season_matches=5,
+                                                  season_minutes=450)}
+        notes = []
+        _rotation_audit(starters, eligible, load, notes)
+        assert len(notes) == 1, f"expected one rotation note, got {notes}"
+        assert "CheapButFresh" in notes[0]
+        assert "ExpensiveButGassed" in notes[0]
+
+        # Case 2: no load data at all -> nothing to say.
+        notes2 = []
+        _rotation_audit(starters, eligible, {}, notes2)
+        assert notes2 == []
+
+        # Case 3: the expensive man is NOT loaded -> market value wins and
+        # there is nothing to report.
+        load3 = {"CheapButFresh": self._avail(),
+                 "ExpensiveButGassed": self._avail()}
+        notes3 = []
+        _rotation_audit(starters, eligible, load3, notes3)
+        assert notes3 == [], (
+            "a rotation note was produced for a side with no load data - the "
+            "audit cannot tell 'rotation decided nothing' from 'not wired'"
+        )
+
+    def test_the_penalty_does_not_bench_a_man_with_no_rival(self):
+        """Rotation must flip CLOSE calls. A player who is clearly the best
+        available, with nobody behind him, must still start - otherwise the
+        penalty is just a tax on good players."""
+        from roster_loader import _rotation_audit
+
+        class Rec:
+            def __init__(self, name, pos, mv):
+                self.name, self.engine_pos = name, pos
+                self.engine_other_pos = None
+                self.market_value = mv
+
+        starters = [Rec("OnlyOption", "CB", 40.0)]
+        eligible = list(starters)
+        load = {"OnlyOption": self._avail(season_matches=5,
+                                          season_minutes=450)}
+        notes = []
+        _rotation_audit(starters, eligible, load, notes)
+        assert notes == []
+
+    def test_rotation_actually_demotes_the_most_expensive_man(self):
+        """BEHAVIOURAL: the `standing()` penalty must change a real pick.
+
+        Every other rotation test is either a pure score calculation or an
+        AST guard, so a penalty sitting at `ROTATION_MAX_PENALTY = 0.0`
+        would pass all of them. This one runs the selector itself on two
+        natural centre-backs and requires the cheaper, fresher man to win
+        the slot only when the dearer one is carrying a season.
+
+        `_pick_from_pool` never touches `self`, so the unbound function is
+        called with a `None` instance - no workbook load, no club state.
+        """
+        from roster_loader import RosterLoader
+
+        class Rec:
+            def __init__(self, name, pos, mv):
+                self.name, self.engine_pos = name, pos
+                self.engine_other_pos = None
+                self.market_value = mv
+
+        pool = {"CB": [Rec("CheapButFresh", "CB", 90.0),
+                       Rec("StarButGassed", "CB", 100.0)]}
+
+        # No load data: market value decides, the star starts.
+        assert RosterLoader._pick_from_pool(
+            None, pool, "CB", set()).name == "StarButGassed"
+
+        # Star doing 90 a game: the 16.5M discount must flip it.
+        load = {"StarButGassed": self._avail(season_matches=5,
+                                             season_minutes=450)}
+        picked = RosterLoader._pick_from_pool(
+            None, pool, "CB", set(), load_map=load)
+        assert picked is not None
+        assert picked.name == "CheapButFresh", (
+            f"a 450-minute star still started at a {picked.market_value}M "
+            "tag - the rotation penalty is not reaching the sort"
+        )
+
+        # And with load data present but empty, nothing is demoted.
+        picked2 = RosterLoader._pick_from_pool(
+            None, pool, "CB", set(),
+            load_map={"StarButGassed": self._avail()})
+        assert picked2.name == "StarButGassed"
+
+    def test_the_season_load_reaches_every_availability_site(self):
+        """AST guard against the defaulted-argument omission class.
+
+        `_build_availability` constructs `PlayerAvailability` three times
+        (injured/suspended, fatigue warning, fit). If ONE site drops the
+        `**load` splat, that branch's players carry no season load while
+        the others do - nothing crashes, nothing reports, and the rotation
+        penalty silently exempts whoever happens to be injured. That is the
+        `attacks_right` / `shooter_name` omission shape, one file over.
+        """
+        src = (REPO / "auto_run_match.py").read_text(encoding="utf-8")
+        node = _function_node(src, "_build_availability")
+        calls = [
+            n for n in ast.walk(node)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "PlayerAvailability"
+        ]
+        assert len(calls) >= 3, (
+            f"expected the three known construction sites, found "
+            f"{len(calls)} - this guard's premise has changed"
+        )
+        for c in calls:
+            splats = [k.arg for k in c.keywords if k.arg is None]
+            assert any(
+                isinstance(k.value, ast.Name) and k.value.id == "load"
+                for k in c.keywords if k.arg is None
+            ), (
+                f"PlayerAvailability at line {c.lineno} does not splat "
+                "**load, so that branch's players have no season state"
+            )
 
 
 def built_any():

@@ -207,6 +207,58 @@ def _conversion_ok(p: "PlayerRecord", slot: str) -> bool:
 # ROSTER LOADER
 # ─────────────────────────────────────────────
 
+def _rotation_audit(starters, eligible, load_map, notes: List[str]) -> None:
+    """Report where rotation actually changed the side.
+
+    Added 2026-10-15. `SeasonManager.rotation_flag` existed for months and
+    was called from exactly two places, both of which appended a string to
+    a briefing. It never selected anyone, so there was no way to tell the
+    difference between "rotation decided nothing here" and "rotation is
+    not wired".
+
+    For each starter, find the higher-earning eligible man who did NOT get
+    the slot. If there is one, rotation flipped that decision, and the note
+    says so by name and by how much. A side picked purely on market value
+    produces no such notes at all - which is the negative control.
+
+    The score belongs to the REJECTED rival, not to the man who was picked:
+    rotation means "I took the cheaper man because the dearer one is gassed",
+    so the load that explains the decision lives on the man who missed out.
+    An earlier version tested the SELECTED man's score and therefore could
+    never fire - the man who got the slot is by construction the one the
+    selector preferred, and a fresh preferred man scores zero.
+    """
+    if not load_map:
+        return
+
+    for p in starters:
+        rivals = [
+            q for q in eligible
+            if (q.engine_pos == p.engine_pos
+                or q.engine_other_pos == p.engine_pos)
+            and q.name != p.name
+        ]
+        if not rivals:
+            continue
+
+        # The expensive man the selector passed over.
+        top = max(rivals, key=lambda q: float(q.market_value or 0.0))
+        if float(top.market_value or 0.0) <= float(p.market_value or 0.0):
+            continue
+
+        rot = float(getattr(load_map.get(top.name),
+                            "rotation_score", 0.0) or 0.0)
+        if rot <= 0.0:
+            continue
+
+        gap = float(top.market_value or 0.0) - float(p.market_value or 0.0)
+        notes.append(
+            f"ROTATION: {p.name} ({p.engine_pos}) starts ahead of "
+            f"{top.name} despite a {gap:.0f}M cheaper tag - heavy season "
+            f"load and short turnaround (rotation score {rot:.2f})"
+        )
+
+
 class RosterLoader:
     """
     Reads PLOFA-2026-2027.xlsx and provides squad-building utilities.
@@ -297,6 +349,12 @@ class RosterLoader:
                 if st is not None:
                     stamina_map[pname] = float(st)
 
+        # {name: PlayerAvailability} — season load, for rotation
+        load_map: Dict[str, Any] = {}
+        if availability:
+            for pname, avail in availability.items():
+                load_map[pname] = avail
+
         # Detect formation
         if formation is None:
             formation = self._detect_formation(eligible)
@@ -313,6 +371,7 @@ class RosterLoader:
         starters, used = self._fill_starting_xi(
             slots, first_team, second_team, third_team, eligible, notes,
             stamina=stamina_map, min_start_stamina=min_start_stamina,
+            load_map=load_map,
         )
 
         # Build bench
@@ -325,6 +384,20 @@ class RosterLoader:
 
         # Set-piece takers (captain + high-value feet or both-footed)
         sp_takers = self._pick_sp_takers(starters, superstars)
+
+        # ── ROTATION AUDIT (added 2026-10-15) ────────────────────
+        # SeasonManager.rotation_flag has computed "this man has carried a
+        # season and is gassed, rest him" since the season layer was
+        # written. It was called from two places and both appended a
+        # string to a briefing, so the intelligence was produced, printed
+        # and discarded - and there was no way to tell from the outside
+        # whether any selection had ever been influenced by it.
+        #
+        # The selection is now genuinely rotation-aware (`standing()`
+        # above), so it has to be observable too. Without this block, a
+        # rotation penalty that never fired would be indistinguishable
+        # from one that was never wired.
+        _rotation_audit(starters, eligible, load_map, notes)
 
         return {
             "starters":    [self._to_tuple(p) for p in starters],
@@ -547,6 +620,7 @@ class RosterLoader:
         notes: List[str],
         stamina: Optional[Dict[str, float]] = None,
         min_start_stamina: float = MIN_START_STAMINA,
+        load_map: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[PlayerRecord], List[PlayerRecord]]:
         """
         Fill the 11 starting positions using formation slots.
@@ -622,7 +696,7 @@ class RosterLoader:
             pools: List[Dict[str, List[PlayerRecord]]],
         ) -> Optional[PlayerRecord]:
             for pool in pools:
-                chosen = self._pick_from_pool(pool, slot, used_names)
+                chosen = self._pick_from_pool(pool, slot, used_names, load_map)
                 if chosen:
                     return chosen
             return None
@@ -928,6 +1002,7 @@ class RosterLoader:
         pool: Dict[str, List[PlayerRecord]],
         slot: str,
         used_names: set,
+        load_map: Optional[Dict[str, Any]] = None,
     ) -> Optional[PlayerRecord]:
         """Pick the best available player for a slot from a pool.
 
@@ -965,6 +1040,26 @@ class RosterLoader:
         if len(pool_candidates) == 1:
             return pool_candidates[0]
 
+
+        def standing(p) -> float:
+            """Effective standing = market value, less a rotation
+            penalty for accumulated load and short turnarounds.
+            """
+            value = float(p.market_value or 0.0)
+            avail = (load_map or {}).get(p.name)
+            if avail is None:
+                return value
+            rot = float(getattr(avail, 'rotation_score', 0.0) or 0.0)
+            if rot <= 0.0:
+                return value
+            # Lazy local import: the constant is owned by squad_manager
+            # (which pulls in pandas), and this module is the Excel-only
+            # path. An earlier version referenced the name directly and
+            # raised NameError the first time a real rotation score
+            # reached it - the penalty was computed and then dropped.
+            from squad_manager import ROTATION_MAX_PENALTY
+            return value * (1.0 - ROTATION_MAX_PENALTY * rot)
+
         if slot in ("LW", "RW", "LB", "RB"):
             preferred_foot = "left" if slot in ("LW", "LB") else "right"
 
@@ -975,11 +1070,12 @@ class RosterLoader:
 
             pool_candidates = sorted(
                 pool_candidates,
-                key=lambda p: (foot_rank(p), -p.market_value),
+                key=lambda p: (foot_rank(p), -standing(p)),
             )
         else:
             pool_candidates = sorted(
-                pool_candidates, key=lambda p: p.market_value, reverse=True
+                pool_candidates,
+                key=standing, reverse=True,
             )
         return pool_candidates[0]
 

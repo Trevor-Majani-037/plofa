@@ -251,6 +251,78 @@ MUTATIONS = [
             return False""",
         ["tests/test_sub_quality.py::TestWindows::test_the_window_tally_saturates_and_flags_the_excess"],
     ),
+    (
+        # A rotated-in player's penalty silently disappears. Anchored on the
+        # READ of ROTATION_MAX_PENALTY, not on a fragment that also appears
+        # in the audit.
+        "M23", "roster_loader.py",
+        "ROTATION_MAX_PENALTY * rot",
+        "0.0 * rot",
+        ["tests/test_sub_quality.py::TestRotation::test_rotation_actually_demotes_the_most_expensive_man"],
+    ),
+    (
+        # The load never leaves the season state. The anchor must carry its
+        # indentation, because `**load,` also appears inside the
+        # `standing()` closure - and a match count of 2 against a mutation
+        # that changes both would silently only change one.
+        "M25", ARM,
+        """                **load,
+            )
+            continue""",
+        """            )
+            continue""",
+        ["tests/test_sub_quality.py::TestRotation::test_the_season_load_reaches_every_availability_site"],
+    ),
+    (
+        # The audit is wired to nothing.
+        "M26", "roster_loader.py",
+        """    if not load_map:
+        return""",
+        """    if True:
+        return""",
+        ["tests/test_sub_quality.py::TestRotation::test_the_audit_names_the_man_it_promoted"],
+    ),
+    (
+        # Turnaround awareness gone. The previous version of this mutation
+        # was a NO-OP (old == new), which is worse than a weak mutation: it
+        # reports a clean PASS for doing nothing.
+        "M27", ARM,
+        """            out["days_since_last_match"] = (
+                match_date - date.fromisoformat(str(last))
+            ).days""",
+        """            out["days_since_last_match"] = 0""",
+        ["tests/test_sub_quality.py::TestRotation::test_days_since_last_match_is_computed_from_the_calendar"],
+    ),
+    (
+        # The LEVEL branch removed again.
+        "M28", SM,
+        """                else:
+                    # LEVEL ON THE SCORE - the branch that did not exist.""",
+        """                elif False:
+                    # LEVEL ON THE SCORE - the branch that did not exist.""",
+        ["tests/test_sub_quality.py::TestLevelScoreline::test_a_level_team_can_still_change_players"],
+    ),
+    (
+        # The considered trigger becomes a coin flip again.
+        "M29", SM,
+        """        self.game_state_stats["considered"] += 1
+        worth = score >= GAME_STATE_THRESHOLD""",
+        """        worth = random.random() < 0.08""",
+        ["tests/test_sub_quality.py::TestConsideredTrigger::test_no_random_draw_remains_in_the_game_state_trigger"],
+    ),
+    (
+        # Pressure ordering flattened - a leading team is as desperate as a
+        # chasing one.
+        "M30", SM,
+        """    if goal_diff < 0:
+        # Behind. Full pull, and faster than level.
+        return min(1.0, 0.65 + 0.35 * ramp)""",
+        """    if goal_diff < 0:
+        # Behind. Full pull, and faster than level.
+        return 0.30 + 0.25 * ramp""",
+        ["tests/test_sub_quality.py::TestConsideredTrigger::test_pressure_orders_trailing_above_level_above_leading"],
+    ),
+
 ]
 
 
@@ -295,8 +367,10 @@ def main() -> int:
                 continue
 
             proc = subprocess.run(
-                [py, "-m", "pytest", *nodes, "-q", "--no-header", "-x"],
-                cwd=REPO, capture_output=True, text=True, timeout=900,
+                [py, "-X", "utf8", "-m", "pytest", *nodes,
+                 "-q", "--no-header", "-x"],
+                cwd=REPO, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=900,
             )
             if proc.returncode != 0:
                 results.append((mid, "CAUGHT", "tests went red as required"))

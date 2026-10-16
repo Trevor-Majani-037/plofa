@@ -822,6 +822,75 @@ def acceptable_quality_loss(
 # Manages the live sub logic during simulation
 # ─────────────────────────────────────────────
 
+# ── WHEN DOES A MANAGER ACTUALLY DECIDE TO CHANGE SOMETHING? ────────
+#
+# This replaced an 8%-per-minute coin flip. Measured before removal, over
+# 20,000 simulated gate chains (_diag_sub_trigger.py): a trailing team
+# failed to make a single game-state change in only 3.5% of matches and a
+# leading one in 9.9%. So the roll was never really a BLOCKER — it was a
+# timer for WHEN and HOW MANY. I had described it as deciding "whether",
+# which was wrong.
+#
+# What it actually was is worse than a weak gate: it was a decision the
+# manager did not make. He rolled, and then took whatever the roll gave him.
+# A real manager changes something when there is a REASON — a tired man, a
+# better man on the bench, a scoreline that demands a different shape. So
+# the trigger is now computed from those things.
+#
+#   upgrade   how much better is the best available sub than the worst man
+#             he could replace? This is the "your XI was wrong" signal.
+#   strain    how close is anyone to asking to come off?
+#   pressure  trailing and late is the strongest pull in football; leading
+#             and late wants consolidation, not adventure.
+#
+# All three are state, so the trigger is DETERMINISTIC. That matters here:
+# a coin flip per minute made the decision sequence unreproducible for
+# reasons that had nothing to do with football.
+
+# How much better the best available sub must be before the bench even
+# counts as an argument for changing. Below this a manager is just fidgeting:
+# Kwest found the managers who substitute most are the ones who do not know
+# their best XI, so a marginal upgrade must NOT clear the bar by itself.
+GAME_STATE_UPGRADE_MIN = 6.0
+
+# Points of additional improvement that take the upgrade signal to its
+# maximum. So a 16-point better man on the bench is a decisive argument; a
+# 7-point one is a rounding error.
+GAME_STATE_UPGRADE_SPAN = 10.0
+
+# Stamina at which a player counts as genuinely struggling.
+GAME_STATE_STRAIN_STAMINA = 45.0
+
+# Pressure ramps from zero at this minute to full at 90.
+GAME_STATE_PRESSURE_START = 55
+
+# Total the signals must reach before the manager acts.
+GAME_STATE_THRESHOLD = 0.55
+
+
+def game_state_pressure(goal_diff: int, minute: int) -> float:
+    """How much this scoreline wants a change, 0.0 - 1.0.
+
+    Trailing is the strongest pull in football and Rey et al. found coaches
+    substitute markedly EARLIER when level or behind than when ahead, so
+    the ramp starts sooner for those. Leading wants the opposite: the later
+    the game, the more a manager consolidates.
+    """
+    if minute < GAME_STATE_PRESSURE_START:
+        return 0.0
+    span = max(1.0, 90.0 - GAME_STATE_PRESSURE_START)
+    ramp = min(1.0, (minute - GAME_STATE_PRESSURE_START) / span)
+
+    if goal_diff < 0:
+        # Behind. Full pull, and faster than level.
+        return min(1.0, 0.65 + 0.35 * ramp)
+    if goal_diff == 0:
+        # Level. Wants change, but less urgently than chasing.
+        return 0.45 + 0.35 * ramp
+    # Ahead. Consolidate. Wants change only to shore up tired legs.
+    return 0.20 + 0.25 * ramp
+
+
 class SubstitutionController:
     """
     Manages all substitutions during a match.
@@ -905,6 +974,14 @@ class SubstitutionController:
         # never wired, so the counters are kept and the probe reports them.
         self.quality_gate_stats: Dict[str, int] = {
             "considered": 0, "accepted": 0, "rejected": 0, "exhausted": 0,
+        }
+
+        # Same reasoning for the game-state trigger, which replaced an
+        # 8%-per-minute coin flip. "How often did the manager consider a
+        # change and decline" is the only way to tell a decision from a
+        # slot machine.
+        self.game_state_stats: Dict[str, int] = {
+            "considered": 0, "taken": 0, "declined": 0,
         }
         # Minute at which each team last spent a window. Used to decide
         # whether the changes being proposed right now are a BATCH (same
@@ -1134,17 +1211,16 @@ class SubstitutionController:
                             ))
                             break
 
-            # ── 4. GAME STATE SUBS (attacking/defensive) ──────
-            # Rate deliberately unchanged from the previous 8%/min: this
-            # change is about WHICH player and WHICH quality, not about a
-            # greater appetite for changing things. Kwest found the teams
-            # that sub most often are the ones that do not know their best
-            # XI, so raising this would make the manager look less like a
-            # manager.
+            # A CONSIDERED CHANGE, not a coin flip. See the comment on
+            # `game_state_pressure` above: the previous 8%/min roll was
+            # measured to fire in 96.5% of matches where the team was
+            # chasing, so it was a timer rather than a blocker - but the
+            # decision it stood in for still was not being made by anyone.
             if (not team_subs and minute >= self.QUALITY_GATE_MINUTE
                     and self.subs_left(team) >= 1
                     and self.window_available(team, minute)
-                    and random.random() < SUB_GAME_STATE_RATE):
+                    and self._worth_a_game_state_change(
+                        players, available_bench, goal_diff, minute)):
 
                 if goal_diff < 0:
                     # Trailing — bring on the best attacker available, and
@@ -1179,6 +1255,36 @@ class SubstitutionController:
                             SubReason.GAME_STATE, available_bench
                         ))
 
+
+                else:
+                    # LEVEL ON THE SCORE - the branch that did not exist.
+                    #
+                    # `if goal_diff < 0` / `elif goal_diff > 0` had no
+                    # `else`, so a team 0-0 or 1-1 could NEVER take a
+                    # game-state substitution: 100% of matches, zero
+                    # changes, structurally. Level is the most common
+                    # state in football, and it is where a real manager
+                    # most often fiddles - changing the shape, adding an
+                    # attacker for a tiring midfielder, taking a leg off a
+                    # ninety.
+                    #
+                    # The irony worth recording: the QUALITY rule already
+                    # handled level perfectly, with its own 30-minute
+                    # thresholds and the comment "balanced, and slightly
+                    # earlier than leading". I wrote that branch and
+                    # never wrote the trigger that reaches it. That is the
+                    # project's standing pathology - a mechanism wired to
+                    # nothing, wearing a comment that says it works.
+                    player_off = self._pick_most_drained(
+                        players, team, exclude_pos=["GK"])
+                    sub_player = self._pick_fresh_sub(
+                        available_bench, player_off, minute, goal_diff
+                    )
+                    if sub_player and player_off:
+                        team_subs.append(self._make_sub(
+                            team, player_off, sub_player, minute,
+                            SubReason.GAME_STATE, available_bench
+                        ))
             subs_to_make.extend(team_subs)
 
         return subs_to_make
@@ -1250,6 +1356,80 @@ class SubstitutionController:
 
     def subs_left(self, team: str) -> int:
         return max(0, self.MAX_SUBS - self.subs_made.get(team, 0))
+
+    def _worth_a_game_state_change(self, players, available_bench: List,
+                                   goal_diff: int, minute: int) -> bool:
+        """Would a manager actually make a change right now?
+
+        Replaces an 8%-per-minute coin flip with a decision derived from the
+        state of the match. Three signals, each answering a different
+        question a real manager asks:
+
+          upgrade  is there a clearly better man sitting there? This is the
+                   "you picked the wrong eleven" signal, and it is the one
+                   the previous implementation could never express at all.
+          strain   is anyone struggling badly enough to come off?
+          pressure does the scoreline want a change at this minute?
+
+        The signals ADD rather than multiply, so a team can act on any one
+        of them — a brilliant substitute is reason enough on his own, and so
+        is a man at 30% who does not want to come off.
+
+        DETERMINISTIC. A per-minute coin flip made the substitution
+        sequence depend on the global RNG draw count, which is exactly the
+        class of thing that makes a match unreproducible for reasons that
+        have nothing to do with football.
+
+        Why there is a threshold at all, rather than "change whenever
+        anything is true": Kwest's analysis of the first five-sub Premier
+        League season found the managers substituting most frequently are
+        read as the ones who do not know their best XI. A manager who
+        changes every time a tired man twitches looks like an idiot, so a
+        marginal signal does not clear the bar on its own.
+        """
+        pool = [p for p in available_bench
+                if not getattr(p, "_used_as_sub", False)]
+        if not pool:
+            return False
+
+        upgrade = 0.0
+        best_bench = max(sub_quality(p, self) for p in pool)
+
+        on_pitch = [p for p in players
+                    if not getattr(p, "_subbed_off", False)
+                    and _position_of(p) != "GK"]
+        if on_pitch:
+            worst = min(sub_quality(p, self) for p in on_pitch)
+            upgrade = best_bench - worst
+
+        strain = 0.0
+        for p in on_pitch:
+            st = self.stamina.get(getattr(p, "name", ""))
+            if st is None:
+                continue
+            if st.current_stamina < GAME_STATE_STRAIN_STAMINA:
+                # A man at 20% matters more than a man at 44%.
+                depth = (GAME_STATE_STRAIN_STAMINA - st.current_stamina) \
+                    / GAME_STATE_STRAIN_STAMINA
+                strain = max(strain, min(1.0, depth))
+
+        pressure = game_state_pressure(goal_diff, minute)
+
+        score = 0.0
+        if upgrade >= GAME_STATE_UPGRADE_MIN:
+            score += min(1.0, (upgrade - GAME_STATE_UPGRADE_MIN)
+                         / GAME_STATE_UPGRADE_SPAN)
+        if strain > 0.0:
+            score += strain
+        score += 0.60 * pressure
+
+        self.game_state_stats["considered"] += 1
+        worth = score >= GAME_STATE_THRESHOLD
+        if worth:
+            self.game_state_stats["taken"] += 1
+        else:
+            self.game_state_stats["declined"] += 1
+        return worth
 
     def _make_sub(self, team: str, player_off, sub_on,
                   minute: int, reason: SubReason,
@@ -1607,6 +1787,87 @@ class PlayerAvailability:
     fatigue_level: float    = 0.0     # 0–100 from last match drain
     starting_stamina: float = 100.0   # What they start with this match
     yellow_cards_last_6: int = 0
+
+    # ── SEASON LOAD (added 2026-10-15) ────────────────────────────
+    # Rotation intelligence, carried on the same object the XI selection
+    # already receives.
+    #
+    # `season_manager.rotation_flag` has existed since the season layer was
+    # written and computes exactly the right thing — average minutes per
+    # game over 75 AND projected fatigue over 55 means "rest him". It was
+    # called from TWO places, both of which append a string to a briefing.
+    # Neither changed a single selection, so the whole computation was made,
+    # printed, and discarded.
+    #
+    # It could not do otherwise: the XI is not chosen by `pick_best_xi`
+    # (which has ZERO production call sites — it appears in its own
+    # definition and one docstring example) but by
+    # `roster_loader._pick_from_pool`, which sorts candidates by
+    # MARKET VALUE and had no access to any season state at all. So the load
+    # had to be carried here, on the object that reaches the real selector.
+    season_matches: int = 0
+    season_minutes: int = 0
+    days_since_last_match: Optional[int] = None
+
+    @property
+    def avg_minutes_per_game(self) -> float:
+        """Average minutes played per appearance this season, 0.0 unknown."""
+        if self.season_matches <= 0:
+            return 0.0
+        return self.season_minutes / float(self.season_matches)
+
+    @property
+    def rotation_score(self) -> float:
+        """How strongly this player wants a rest, 0.0 (fresh) - 1.0 (spent).
+
+        Two inputs, both measured rather than invented:
+
+          load        average minutes per game. A squad that wins matches
+                      plays its best players ~90 a time; real rotation data
+                      (the core of 14-16 sharing most minutes) says that
+                      cannot be sustained. The penalty starts at 78 minutes,
+                      not at 0, because a player who plays every game and
+                      loves it is not a rotation candidate — a player doing
+                      90 minutes a game while gassed is.
+
+          turnaround  days since his last appearance. Saturday to Wednesday
+                      is 3 days. This is the input with no representation at
+                      all in the season layer: `days_since`, `rest_days` and
+                      `congest` return zero occurrences across the whole
+                      codebase, so the fixture list currently has no effect
+                      on who is picked.
+        """
+        load = 0.0
+        avg = self.avg_minutes_per_game
+        if avg >= ROTATION_LOAD_GATE_MINUTES:
+            span = max(1.0, 90.0 - ROTATION_LOAD_GATE_MINUTES)
+            load = min(1.0, (avg - ROTATION_LOAD_GATE_MINUTES) / span)
+
+        rest = 0.0
+        gap = self.days_since_last_match
+        if gap is not None and gap <= ROTATION_SHORT_REST_DAYS:
+            # 0 days back-to-back is worst, 3 days is the threshold.
+            rest = min(1.0, max(0, (ROTATION_SHORT_REST_DAYS - gap))
+                       / float(ROTATION_SHORT_REST_DAYS))
+
+        # Load dominates: a tired player on a long turnaround is still tired.
+        return min(1.0, 0.75 * load + 0.45 * rest)
+
+
+# Average minutes per game above which accumulated load starts costing a
+# player his place. Not zero: the question is not "has he played" but "is he
+# carrying a season", which is what rotation actually manages.
+ROTATION_LOAD_GATE_MINUTES = 78.0
+
+# Days between appearances at or below which the turnaround counts as short.
+# Saturday -> Wednesday is 3; Sunday -> Thursday is 4.
+ROTATION_SHORT_REST_DAYS = 3
+
+# Maximum proportional penalty applied to a player's effective standing.
+# 0.22 is roughly "the difference between the best and second-best paid man
+# at his position" — enough to flip a close call, not enough to bench a
+# player who is clearly the best available with nobody behind him.
+ROTATION_MAX_PENALTY = 0.22
 
 
 class AvailabilityChecker:

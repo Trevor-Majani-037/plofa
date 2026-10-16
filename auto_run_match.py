@@ -456,6 +456,45 @@ def _resolve_color(club: str, is_home: bool) -> str:
     return catalog["home_color"] if is_home else catalog["away_color"]
 
 
+def _season_load_fields(state: dict, match_date: date | None) -> dict:
+    """Season-load fields for a PlayerAvailability, straight from SeasonState.
+
+    Added 2026-10-15 as part of making rotation real.
+
+    `season_manager.rotation_flag` has computed "this player has carried a
+    season and is gassed, rest him" since the season layer was written, and
+    was called from exactly two places - both of which append a string to a
+    briefing. Neither changed a selection, so the intelligence was produced,
+    printed, and discarded.
+
+    It could not do otherwise. The XI is not chosen by
+    `season_manager.SquadSelector.pick_best_xi`, which looks like the right
+    function - it scores on overall, form and freshness - but has ZERO
+    production call sites: the name appears in its own definition and once in
+    a docstring example. The real selector is
+    `roster_loader.RosterLoader._pick_from_pool`, which sorts candidates by
+    MARKET VALUE and was never given any season state at all.
+
+    So the load rides out on the availability object, which is the only thing
+    that already reaches the real selector.
+    """
+    out: dict = {
+        "season_matches": int(state.get("season_matches", 0) or 0),
+        "season_minutes": int(state.get("season_minutes", 0) or 0),
+    }
+    last = state.get("last_match_date")
+    if match_date is not None and last:
+        try:
+            out["days_since_last_match"] = (
+                match_date - date.fromisoformat(str(last))
+            ).days
+        except (TypeError, ValueError):
+            out["days_since_last_match"] = None
+    else:
+        out["days_since_last_match"] = None
+    return out
+
+
 def _build_availability(
     team: str,
     matchday: int,
@@ -488,6 +527,9 @@ def _build_availability(
         ok, reason = season_state.is_available(name, match_date)
         # Date-based recovery projected onto this fixture's date
         st, fat = season_state.project_stamina(state, match_date)
+
+        # Season load, carried out to the XI selection.
+        load = _season_load_fields(state, match_date)
         if not ok:
             status_map = {
                 "suspended (red card)":  AvailabilityStatus.SUSPENDED_RED,
@@ -499,6 +541,7 @@ def _build_availability(
                 status=status,
                 reason=reason,
                 starting_stamina=st,
+                **load,
             )
             continue
 
@@ -518,6 +561,7 @@ def _build_availability(
                 ),
                 fatigue_level=fat,
                 starting_stamina=st,
+                **load,
             )
         else:
             # SeasonState is authoritative for stamina once it has data
@@ -527,6 +571,7 @@ def _build_availability(
                 reason="Fit to play",
                 fatigue_level=fat,
                 starting_stamina=st,
+                **load,
             )
 
     return merged
