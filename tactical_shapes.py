@@ -189,20 +189,122 @@ FATIGUED_ROLE_DELTAS: Dict[str, Tuple[float, float]] = {
 }
 
 
+# ─────────────────────────────────────────────────────────────
+# DEFENSIVE STYLE TEMPERAMENT (2026-10-16)
+#
+# `formation_stance_for` takes a `profile` and its docstring claimed
+# "only .style is read". The body reads `state.goal_difference` and
+# `state.minute` and NEVER `.style`. Consequence: the ATTACKING half of the
+# shape was style-driven all along (`pattern_for` picks from
+# `_STYLE_PATTERN_POOLS`) and the DEFENSING half was not, so a park-the-bus
+# side and a gegenpressing side held an identical back line until the
+# scoreline happened to change. Measured: two frames (BALANCED/MIXED vs
+# FLUID_COUNTER/COUNTER) produced per-role lines within 0.3 m of each other.
+#
+# This is the missing half. It is a persistent TEMPERAMENT added on top of
+# whatever stance the game state selects, NOT a replacement for it — so a
+# manager who goes 2-0 down and chases still throws men forward; a
+# park-the-bus side simply starts every situation from deeper.
+#
+# MAGNITUDE, chosen against the tables above: the game-state stance deltas run
+# -20 m (SEE_IT_OUT, LW) to +17 m (ALL_OUT_CHASE, LB). This table spans
+# -10 to +5, deliberately UNDER it. A style bias able to outvote SEE_IT_OUT
+# would make a side abandon its identity to protect a lead, which is the
+# opposite of what protecting a lead is for.
+#
+# SHAPE, borrowed from SEE_IT_OUT rather than a flat drop: the back line and
+# midfield sink while the STRIKER holds. A block whose front pair drop with
+# the defenders has no outlet, which is exactly why the existing SEE_IT_OUT
+# moves ST only -8 while moving LW -20.
+#
+# dy sign convention follows the tables above: for wide roles resting LOW,
+# positive dy moves INWARD (a narrowing block), negative dy moves OUTWARD
+# (a pressing side staying wide). PUSHING is the worked example -- LW
+# (7.0, -0.5) -- and SEE_IT_OUT the other -- LW (-20.0, 2.5).
+_STYLE_DEFENSE_ARCHETYPE: Dict[str, str] = {
+    "park_the_bus": "sunk", "ultra_defensive": "sunk",
+    "defensive": "low", "fluid_counter": "low", "route_one": "low",
+    "balanced": "neutral", "wing_play": "neutral",
+    "tiki_taka": "high", "structured_possession": "high",
+    "vertical_tiki_taka": "high", "gegenpressing": "high",
+    "attacking": "high", "ultra_attacking": "high",
+}
+
+_STYLE_DEFENSE_ROLE_DELTAS: Dict[str, Dict[str, Tuple[float, float]]] = {
+    # A side that will not leave its own third. Deepest here, and the widest
+    # lateral move, because dropping without narrowing leaves the half-spaces
+    # open -- which is the exact failure `defensive_block_target`'s own
+    # docstring records ("49.6 m wide on a 68 m pitch ... both half-spaces
+    # open").
+    "sunk": {
+        "GK": (0.0, 0.0), "CB": (-6.0, 0.0),
+        "LB": (-8.0, 3.0), "RB": (-8.0, -3.0),
+        "CDM": (-6.0, 0.0), "CM": (-8.0, 0.0), "CAM": (-6.0, 0.0),
+        "LW": (-10.0, 4.0), "RW": (-10.0, -4.0),
+        "ST": (-3.0, 0.0), "CF": (-4.0, 0.0),
+    },
+    # A normal defensive side: sits a few metres off its attacking post.
+    "low": {
+        "GK": (0.0, 0.0), "CB": (-3.0, 0.0),
+        "LB": (-4.0, 1.5), "RB": (-4.0, -1.5),
+        "CDM": (-3.0, 0.0), "CM": (-4.0, 0.0), "CAM": (-3.0, 0.0),
+        "LW": (-5.0, 2.0), "RW": (-5.0, -2.0),
+        "ST": (-2.0, 0.0), "CF": (-2.0, 0.0),
+    },
+    "neutral": {},
+    # Possession and pressing sides hold a higher line. The midfielder push is
+    # the largest term: the front of the press IS the midfield line, so a
+    # gegenpressing side that defends deep has not pressed at all.
+    "high": {
+        "GK": (0.0, 0.0), "CB": (3.0, 0.0),
+        "LB": (4.0, -1.0), "RB": (4.0, 1.0),
+        "CDM": (4.0, 0.0), "CM": (5.0, 0.0), "CAM": (3.0, 0.0),
+        "LW": (5.0, -2.0), "RW": (5.0, 2.0),
+        "ST": (2.0, 0.0), "CF": (2.0, 0.0),
+    },
+}
+
+
+def style_defense_deltas(style: Optional[str]) -> Dict[str, Tuple[float, float]]:
+    """The defensive-shape temperament for a TeamStyle value.
+
+    Pure lookup, no defaults invented: an unrecognised or absent style gets
+    zero deltas, i.e. exactly the pre-2026-10-16 behaviour. That matters
+    because a probe that reaches this with a None style and gets a made-up
+    "average" would be measuring its own assumption.
+    """
+    if not style:
+        return {}
+    arch = _STYLE_DEFENSE_ARCHETYPE.get(style, "neutral")
+    return _STYLE_DEFENSE_ROLE_DELTAS.get(arch, {})
+
+
 def stance_delta_roles(
     stance: FormationStance,
     own_red_cards: int = 0,
     avg_stamina: float = 100.0,
+    style: Optional[str] = None,
 ) -> Dict[str, Tuple[float, float]]:
-    """Composite per-role home deltas for a stance (+ man-down / fatigue).
+    """Composite per-role home deltas for a stance (+ man-down / fatigue / style).
 
     Returns a dict keyed by role label; empty values are omitted so callers
     can iterate directly. Stays a pure function of its inputs so the match
-    engine gets a stable, idempotent shape per (stance, cards, stamina)."""
+    engine gets a stable, idempotent shape per (stance, cards, stamina, style).
+
+    Stack order is deliberate: style is the floor (who this team IS), then
+    the game-state stance (what the situation demands), then man-down and
+    fatigue (what the match has taken out of them). All additive, so a
+    park-the-bus side two goals up sits deeper than a balanced side two
+    goals up -- while both still execute SEE_IT_OUT.
+    """
     out: Dict[str, Tuple[float, float]] = {}
     base = STANCE_ROLE_DELTAS.get(stance, STANCE_ROLE_DELTAS[FormationStance.BASELINE])
+    style_base = style_defense_deltas(style)
     for role in ALL_ROLES:
         dx, dy = base.get(role, (0.0, 0.0))
+        sdx, sdy = style_base.get(role, (0.0, 0.0))
+        dx += sdx
+        dy += sdy
         if own_red_cards > 0:
             mdx, mdy = MAN_DOWN_ROLE_DELTAS.get(role, (0.0, 0.0))
             dx += mdx
@@ -231,8 +333,16 @@ def formation_stance_for(
     agree — a manager who chases harder also throws men forward, a manager
     who protects also locks the block.
 
-    `profile` duck-types TeamProfile (only .style is read); `state`
-    duck-types MatchState (.goal_difference, .minute).
+    `profile` is accepted for interface symmetry with its siblings and is
+    passed by the caller, but this function does NOT read it. It used to have
+    a docstring asserting that it read the team's style, which was false and
+    cost a real capability: the stance is chosen from the SCORELINE and the
+    CLOCK alone, so every team defended identically until minute 60. The
+    style's influence on the defensive shape now lives in
+    `style_defense_deltas`, which the caller passes to `stance_delta_roles`
+    alongside the stance -- stacked under it, not competing with it. That
+    split is deliberate: a manager chasing late must be able to throw men
+    forward regardless of which club he manages.
     """
     gd = state.goal_difference if team_name == home_team else -state.goal_difference
     minute = state.minute if minute is None else minute

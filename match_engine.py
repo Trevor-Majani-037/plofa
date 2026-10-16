@@ -2754,7 +2754,55 @@ class MatchEngine:
             return
         if pname in self._on_ball_this_minute:
             return
-        ax, ay = self._minute_start_snapshot.get(pname, (st.current_x, st.current_y))
+        # ── SHAPE ANCHOR: WHAT DOES `ax` MEAN? ─────────────────────────
+        # This is the root cause of "the left back plays like a winger", and
+        # it is one line.
+        #
+        # It used to read:
+        #     ax, ay = self._minute_start_snapshot.get(pname, (cx, cy))
+        # and `_minute_start_snapshot` is rebuilt every minute from
+        # `snapshot_positions(team)` (line ~3806) -- the player's TRACKED
+        # position. So the shape target was 86% "wherever you already were":
+        #
+        #     tx = ax + (ball_x - ax) * 0.14
+        #
+        # A persistence term with no restoring force. Its fixed point is the
+        # BALL's x, from any starting position
+        # (`tools/diag/_diag_shape_fixed_point.py`), and the decomposition in
+        # `_diag_chain_attrib.py` shows that anchor arriving at the chain
+        # already 30-38 m past the player's formation post for CB/LB/RB.
+        # Nothing downstream can undo that, because everything downstream is a
+        # correction of a few metres: compaction -1.3, danger/cross -4.6, run
+        # blend +5.6, CK36/37/38 0.0. The chain starts 37 m wrong and spends
+        # its whole budget arguing about 5.
+        #
+        # `st.home_x/home_y` is the right anchor and is already live: it is
+        # `base + stance_delta + pattern_delta + coach_delta`, recomputed by
+        # `_recompute_homes`, so a formation change still moves the post. The
+        # compaction then reads as what it was always meant to be -- the team
+        # shifting its shape toward the ball -- rather than a per-tick
+        # ball-tracking recursion. The integrator pace-caps the travel, so the
+        # jog to a new post takes the ~30 s a real one does.
+        #
+        # `_minute_start_snapshot` is NOT removed: line ~2981 still uses it for
+        # the involvement gate, where "where was this player when the minute
+        # began" is a legitimate question about persistence. Only the SHAPE
+        # anchor changed.
+        #
+        # WHY NOT JUST RAISE `DEPTH_ANCHOR_FAR_W`: that is a servo fighting a
+        # 37 m error with a 0.40 gain. It moved the fullbacks 67.4 -> 51.6
+        # and it will oscillate rather than settle, and AGENTS.md records that
+        # exact move being made and reverted on `STRETCH_TARGET_BOOST`
+        # (0.30 -> 0.55 -> 0.75, reverted) because raising a gain raises the
+        # MEAN without fixing the mechanism.
+        #
+        # The depth anchor rule STAYS: it is now a light backstop rather than
+        # the thing doing all the work, which is the role CK35 has always had
+        # on the y axis.
+        if self.position_engine.SHAPE_ANCHOR_FORMATION:
+            ax, ay = st.home_x, st.home_y
+        else:
+            ax, ay = self._minute_start_snapshot.get(pname, (st.current_x, st.current_y))
         pos = getattr(st, "position", "")
         # OFF-BALL MOVEMENT HONESTY (2026-09-20): this player's INDIVIDUAL
         # physic-y read — the chase trigger + involvement gate — acts on
@@ -2866,6 +2914,35 @@ class MatchEngine:
         # the spine to deny the middle, and this rule exists to stop it
         # narrowing. Both rules cannot hold at once, and for this shape the
         # block wins.
+        # ── DEPTH HOME ANCHOR (x-axis mirror of CK35) ─────────────────
+        # CK35 below re-asserts the FORMATION's width. Its x-axis twin was
+        # missing, and that is not a neutral omission: the shape target's
+        # anchor is `_minute_start_snapshot` (line 2757), refreshed every
+        # minute from the player's TRACKED position, so `tx` was 86% "where
+        # you already were" with no restoring force toward `state.home_x`.
+        # The fixed point of that recursion is the ball's own x from any
+        # starting position, which is how the fullbacks ended up overlapping
+        # to nx 84 and never coming back, and how the CBs ended up parked ON
+        # `CB_MAX_ADVANCE_NX` with the clamp permanently saturated.
+        #
+        # Placed immediately before CK35 so the two absolute-home rules read
+        # as the pair they are (x then y), and immediately after the run
+        # target so it corrects a run rather than being corrected by one.
+        # It is a PREFERENCE: rest defence, downstream at line ~2963, still
+        # outranks it, and a pending set-piece slot overrides both for free.
+        #
+        # YIELDS TO A LIVE RUN TARGET. When a run is active for this player the
+        # run blend above has already told him where to go, and a run IS a
+        # decision to be somewhere other than your post -- an overlap is a fullback
+        # getting to the byline to cross, not drift. Blending the backstop on top
+        # of a live run made the run unwinnable: measured at 0.40/0.28 gain the
+        # equilibrium sat ~4 m below the home post, so the fullback never
+        # arrived. The backstop's remaining job is drift with no decision behind
+        # it, which is the case the ratchet actually produced.
+        depth_w = 0.0 if pname_run is None else \
+            self.position_engine.depth_home_anchor_blend(pname)
+        if depth_w > 0.0:
+            tx += (getattr(st, "home_x", tx) - tx) * depth_w
         stretch_w = 0.0 if _in_block else self.position_engine.wide_stretch_blend(
             pname, ball_y)
         if stretch_w > 0.0:
@@ -3753,6 +3830,16 @@ class MatchEngine:
                     _team, _stance,
                     own_red_cards=_reds,
                     avg_stamina=self._avg_stamina(_team),
+                    # The defensive TEMPERAMENT. `formation_stance_for` picks
+                    # the stance from the scoreline and the clock and does not
+                    # read the style itself -- its docstring used to claim it
+                    # did, which is how a park-the-bus side and a
+                    # gegenpressing side came to hold an identical back line
+                    # until the scoreline moved. The style is passed here
+                    # instead, where it belongs: as an input to the DELTAS,
+                    # stacked under the game-state stance rather than
+                    # competing with it.
+                    style=getattr(getattr(_prof, "style", None), "value", None),
                 ):
                     self._shape_apply_clock[_team] = self.state.match_clock_s
                 self.state.team_stances[_team] = _stance

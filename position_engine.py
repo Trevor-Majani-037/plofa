@@ -762,18 +762,27 @@ class PositionEngine:
         stance: FormationStance,
         own_red_cards: int = 0,
         avg_stamina: float = 100.0,
+        style: Optional[str] = None,
     ) -> bool:
         """Apply a formation stance's role deltas to a team's home anchors.
 
         Idempotent: returns True only when the composite shape actually
         changed (so the caller can start a reshape animation). Man-down and
         fatigue are stacked modifiers exactly as the dials are (which is why
-        they are accepted here alongside the stance)."""
-        key = (stance, own_red_cards > 0, avg_stamina < 75.0)
+        they are accepted here alongside the stance).
+
+        `style` is the TeamStyle VALUE string and carries the defensive
+        TEMPERAMENT (tactical_shapes.style_defense_deltas) -- who this team
+        is when nothing in the scoreline is asking anything of it. It is
+        part of the idempotency key because a style change is a shape change;
+        omitting it from the key would make the second call a no-op and leave
+        the team stuck in the previous style's line."""
+        key = (stance, own_red_cards > 0, avg_stamina < 75.0, style)
         if self._applied_stance_key.get(team_name) == key:
             return False
         self._stance_deltas[team_name] = stance_delta_roles(
-            stance, own_red_cards=own_red_cards, avg_stamina=avg_stamina
+            stance, own_red_cards=own_red_cards, avg_stamina=avg_stamina,
+            style=style,
         )
         self._applied_stance_key[team_name] = key
         self._recompute_homes(team_name)
@@ -2125,7 +2134,31 @@ class PositionEngine:
 
         depth = base_depth + self.BLOCK_FRONT_DROP * (
             off_spine / (self.PITCH_Y_MAX * 0.5))
-        tx = (self.PITCH_X_MAX - depth if attacks_right else depth)
+        # `depth` is measured FROM THIS PLAYER'S OWN GOAL -- that is what the
+        # preset table and `_low_block_depth`'s docstring both say, and what
+        # LB_BACK_DEPTH = 19.0 means. So a defender 19 m from his own goal
+        # stands at x = 19 when his team attacks right (own goal at x=0), and
+        # at x = 105-19 = 86 when his team attacks left (own goal at x=105).
+        #
+        # This used to be written the other way round in BOTH branches:
+        #     tx = (PITCH_X_MAX - depth if attacks_right else depth)
+        # which put a low block's back four at x=86 attacking right -- inside
+        # the opponent's penalty area -- and at x=19 attacking left, i.e. in
+        # their own box. `tools/diag/_diag_block_frame.py` checks both
+        # directions against the constant's own documented meaning.
+        #
+        # It is worth recording HOW this survived. The comment directly above
+        # this function already contained the symptom:
+        #     "The first attempt steered the finished target by 0.85 at the end
+        #      of the chain. That is a blend against a competing value, and it
+        #      lost: the shape reached 47.5 m from its own goal when the block
+        #      slot was 19 m."
+        # 47.5 m from goal against a 19 m slot is not a blend losing to a
+        # competitor; it is this line. The blend weight was raised and the
+        # mirror was left in place. A tune applied on top of an arithmetic
+        # error looks like progress for exactly as long as the error is small
+        # relative to the gain.
+        tx = (depth if attacks_right else self.PITCH_X_MAX - depth)
 
         return (self.BLOCK_ALPHA, tx, ty)
 
@@ -2150,6 +2183,114 @@ class PositionEngine:
         if state is None or state.position not in ("LB", "RB", "LW", "RW"):
             return 0.0
         return STRETCH_TARGET_BOOST * pitch_spine_weight(ball_y)
+
+    # ── SHAPE ANCHOR SEMANTICS ─────────────────────────────────────
+    #
+    # What the live shape chain compacts FROM. `True` means the formation post
+    # (`state.home_x/home_y`), `False` the pre-2026-10-15 behaviour, where the
+    # anchor was `_minute_start_snapshot` -- the player's TRACKED position at
+    # the top of the minute.
+    #
+    # The distinction is not cosmetic. With a persistence anchor,
+    # `tx = ax + (ball_x - ax) * 0.14` is 86% "where you already were", and
+    # because that same value becomes next minute's anchor the recursion's
+    # only fixed point is the ball's own x. Measured on seed 777, that anchor
+    # reached the shape chain at nx 56-64 for CB/LB/RB whose formation posts
+    # are 22-26. Exists as a switch so the A/B can measure the old behaviour
+    # rather than reconstruct it from memory.
+    SHAPE_ANCHOR_FORMATION: bool = True
+
+    # ── DEPTH HOME ANCHOR (the x-axis mirror of CK35) ─────────────────
+    #
+    # WHY THIS EXISTS, because the comment above CK35 explains only the y
+    # half of a defect that is really about BOTH axes.
+    #
+    # `match_engine._offball_move_player` builds its shape target from
+    #     ax, ay = self._minute_start_snapshot.get(pname, ...)   # line 2757
+    #     tx    = ax + (ball_x - ax) * 0.14                     # line 2809
+    # and `_minute_start_snapshot` is refreshed every minute from
+    # `snapshot_positions(team)` (match_engine.py:3806) -- the player's
+    # TRACKED position, not `state.home_x`. So the depth axis is 86% "where
+    # you already were" and 14% "toward the ball", with NOTHING pulling back
+    # toward the formation post. Its fixed point is the ball's own x, from
+    # any starting position (`tools/diag/_diag_shape_fixed_point.py`).
+    #
+    # The y axis does not have this hole, and that is why WIDTH was only 8 m
+    # short while DEPTH was fully collapsed: CK35 is the one live rule that
+    # reads an ABSOLUTE formation reference (`st.home_y`). The equivalent x
+    # term existed once -- `drift_minute`'s forward x-anchor at line 1638 --
+    # and MatchEngine never calls drift_minute.
+    #
+    # Measured consequence, seed 777, one match, per-role p50 nx (metres up
+    # the pitch from own goal; real PL in brackets):
+    #     LB 64.5 [22-30]   RB 66.8 [22-30]   CB 56.2 [20-26]
+    #     LW 62.2 [62-78]   RW 63.3 [62-78]   CAM 58.5 [62-72]   ST 55.8 [70-80]
+    # and the CBs sat ON their ceiling (p25/p50/p75 = 55.5/56.8/57.9 against
+    # CB_MAX_ADVANCE_NX = 58.0) because the ratchet kept feeding the clamp.
+    # A fullback overlapping to nx 84 and then never returning is the same
+    # mechanism, one layer further out.
+    #
+    # WHY A BLEND RATHER THAN A HARD CLAMP. This is a PREFERENCE, placed with
+    # the other preferences so rest defence still outranks it and a pending
+    # set-piece slot overrides it for free (that branch is downstream in
+    # match_engine). A hard cap at, say, nx 55 would be the alternative, and it
+    # would be wrong: it cannot express "come back toward your post", only
+    # "you may not be past here", so it would clamp equally hard a fullback
+    # making a legitimate 45 m overlap and one stranded at the byline.
+    #
+    # STATUS: this was written when it carried the whole repair, because the
+    # chain's anchor was `_minute_start_snapshot` (a persistence term) and
+    # nothing else read an absolute formation reference on x. That root cause
+    # is now fixed at source -- `SHAPE_ANCHOR_FORMATION` makes the chain
+    # compact from `state.home_x/home_y` -- so this is a BACKSTOP, doing about
+    # a third of the work it was doing at 0.40 gain (measured -7.4 m, down from
+    # -12.2 m once the anchor was fixed). Its weights were NOT retuned after
+    # the anchor fix, because retuning them to restore the old magnitude would
+    # be reintroducing the servo through the back door. If it is still pulling
+    # at a meaningful size once the anchor fix has settled, the correct
+    # response is to measure WHY per role, not to raise the gain.
+    DEPTH_ANCHOR_ENABLED: bool = True
+    DEPTH_ANCHOR_POSITIONS: tuple = ("CB", "LB", "RB")
+    # Drift banding, straight off the flank hold that drift_minute applies to
+    # y (position_engine.py:1612-1617) -- far off his post snaps back hardest,
+    # roughly on his post he is left alone. Deliberately in metres of DEPTH
+    # rather than a single constant: the whole failure was an unbounded term,
+    # so a constant pull would be wrong at both ends of the band.
+    DEPTH_ANCHOR_FAR_M: float = 25.0
+    DEPTH_ANCHOR_NEAR_M: float = 12.0
+    DEPTH_ANCHOR_FAR_W: float = 0.40
+    DEPTH_ANCHOR_NEAR_W: float = 0.28
+    DEPTH_ANCHOR_SETTLED_W: float = 0.10
+
+    def depth_home_anchor_blend(self, player_name: str) -> float:
+        """The x-axis mirror of `wide_stretch_blend`: how hard this player's
+        off-ball shape target is steered back toward his formation post.
+
+        Returns W (0..1) that `match_engine._offball_move_player` applies to
+        the target x:
+            `tx = tx + (home_x - tx) * W`,
+        banded by how far the CURRENT position has strayed from the post, so
+        a fullback coming back from a 30 m overlap is pulled harder than one
+        who has drifted 5 m. Roles outside DEPTH_ANCHOR_POSITIONS return 0 --
+        an attacking player has no business being anchored to his post, which
+        is the control that keeps this from flattening the front line.
+
+        Depth only. Width is CK35's business and re-stamping y here would
+        double-count it.
+        """
+        if not self.DEPTH_ANCHOR_ENABLED:
+            return 0.0
+        state = self.states.get(player_name)
+        if state is None or state.position not in self.DEPTH_ANCHOR_POSITIONS:
+            return 0.0
+        if state.home_x is None or state.current_x is None:
+            return 0.0
+        drift = abs(state.current_x - state.home_x)
+        if drift > self.DEPTH_ANCHOR_FAR_M:
+            return self.DEPTH_ANCHOR_FAR_W
+        if drift > self.DEPTH_ANCHOR_NEAR_M:
+            return self.DEPTH_ANCHOR_NEAR_W
+        return self.DEPTH_ANCHOR_SETTLED_W
 
     def midfielder_triangle_support(
         self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
@@ -2490,6 +2631,28 @@ class PositionEngine:
             return tx, ty
         clamped = rest_nx if attacks_right else PITCH_X - rest_nx
         return max(0.0, min(PITCH_X, clamped)), ty
+
+    # ── CENTRE-BACK ATTACKING ADVANCE CEILING (positional play) ────────
+    # In open play, CBs step into the middle third to circulate the ball and lock
+    # the halfway line for rest defence, but NEVER venture into the final third
+    # (nx >= 70m) or opponent box. Attacking set-pieces override this via
+    # setpiece_target.
+    CB_MAX_ADVANCE_NX: float = 58.0   # metres from own goal line — open-play advance ceiling for CBs
+
+    def cb_advance_clamp(
+        self, tx: float, attacks_right: bool,
+    ) -> float:
+        """Prevent an outfield CB from drifting beyond his attacking ceiling in open play.
+
+        In positional play, CBs step up into the middle third to support circulation
+        and secure rest defence, but NEVER venture into the opponent's final third
+        (nx >= 70m) or penalty area in open play. Clamps depth (x) only; y is left alone.
+        """
+        nx = tx if attacks_right else PITCH_X - tx
+        if nx <= self.CB_MAX_ADVANCE_NX:
+            return tx
+        clamped = self.CB_MAX_ADVANCE_NX if attacks_right else PITCH_X - self.CB_MAX_ADVANCE_NX
+        return max(0.0, min(PITCH_X, clamped))
 
     # ── STRIKER RUNS, WIRED LIVE ──────────────────────────────────────
     #
