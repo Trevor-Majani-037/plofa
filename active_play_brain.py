@@ -123,7 +123,7 @@ class ActivePlayBrain:
             carry_score += 0.08
 
         soul_name = cls._soul_name(player)
-        if soul_name in {"ATTACKING_PROPHET", "WIDE_DESTROYER"}:
+        if soul_name in {"ATTACKING_PROPHET", "WIDE_DESTROYER", "FLAIR_DRIBBLER"}:
             carry_score += 0.10
         elif soul_name in {"MIDFIELD_PHILOSOPHER", "SWEEPER_SAGE"}:
             pass_score += 0.10

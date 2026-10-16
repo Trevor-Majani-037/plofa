@@ -173,7 +173,7 @@ SOUL_PLAYERS: dict[str, PlayerSoul] = {
      ),
     "Zachery Worth": PlayerSoul(
          "Zachery Worth",
-         archetype=SoulArchetype.WIDE_DESTROYER,
+         archetype=SoulArchetype.FLAIR_DRIBBLER,
          pillars=GreatnessPillars(hardwork=0.83, talent=0.99, luck=0.99)
      ),
     "Danso Potwemi": PlayerSoul(

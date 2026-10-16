@@ -931,6 +931,29 @@ class WingerBehaviorEngine:
             profile.byline_instinct = max(profile.byline_instinct, 0.65)
             profile.box_entry_instinct = max(profile.box_entry_instinct, 0.70)
             profile.flank_commitment = max(profile.flank_commitment, 0.88)
+        elif archetype == "inside_forward":
+            # Drifts centrally as a second striker: cuts inside, arrives late,
+            # stays narrow rather than hugging the touchline
+            profile.byline_instinct = min(profile.byline_instinct, 0.40)
+            profile.box_entry_instinct = max(profile.box_entry_instinct, 0.70)
+            profile.isolation_thirst = max(profile.isolation_thirst, 0.60)
+            profile.cross_instinct = min(profile.cross_instinct, 0.30)
+            profile.flank_commitment = min(profile.flank_commitment, 0.60)
+        elif archetype == "wide_playmaker":
+            # Dictates from the flank, switches play, crosses from deep —
+            # stays wide to keep the passing lanes open
+            profile.byline_instinct = min(profile.byline_instinct, 0.35)
+            profile.cross_instinct = max(profile.cross_instinct, 0.65)
+            profile.flank_commitment = max(profile.flank_commitment, 0.90)
+            profile.isolation_thirst = min(profile.isolation_thirst, 0.45)
+        elif archetype == "flair_dribbler":
+            # Beats men for fun: high 1v1 thirst and flair, not primarily a
+            # crosser — takes on the fullback and draws defenders in
+            profile.isolation_thirst = max(profile.isolation_thirst, 0.85)
+            profile.byline_instinct = min(profile.byline_instinct, 0.50)
+            profile.cross_instinct = min(profile.cross_instinct, 0.35)
+            profile.flank_commitment = max(profile.flank_commitment, 0.80)
+            profile.box_entry_instinct = max(profile.box_entry_instinct, 0.55)
 
         # Specialty overrides
         specialties = getattr(dna, "specialties", []) or []

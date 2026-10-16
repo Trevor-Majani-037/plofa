@@ -891,6 +891,78 @@ class ArchetypeLibrary:
             "tendencies.crosses_from_wide":   0.45,
         },
 
+        "inside_forward": {
+            "description": "Wide goal threat who drifts centrally as a second striker (Vinicius, Sané, Foden)",
+            "positions": ["LW", "RW", "ST", "CF"],
+            "physical.pace":           (80, 92),
+            "physical.acceleration":   (80, 92),
+            "technical.finishing":     (74, 86),
+            "technical.dribbling":     (76, 88),
+            "mental.positioning":      (78, 90),
+            "mental.anticipation":     (76, 88),
+            "mental.composure":        (74, 86),
+            "tendencies.cuts_inside":  0.55,
+            "tendencies.makes_runs_behind": 0.60,
+            "tendencies.late_box_runs":   0.60,
+            "tendencies.attempts_dribble":  0.45,
+            # Modern winger tendencies (Checkpoint 18)
+            "tendencies.hugs_touchline":      0.50,
+            "tendencies.drives_byline":       0.35,
+            "tendencies.attacks_fullback_1v1": 0.65,
+            "tendencies.late_box_runs":       0.60,
+            "tendencies.crosses_from_wide":   0.25,
+            "tendencies.shoots_from_distance": 0.22,
+        },
+
+        "wide_playmaker": {
+            "description": "Dictates play from the flank, switches the ball, crosses from deep (Beckham, Di María)",
+            "positions": ["LW", "RW"],
+            "mental.vision":           (80, 92),
+            "mental.composure":        (78, 90),
+            "mental.decisions":        (78, 90),
+            "passing.through_balls":   (76, 88),
+            "passing.short_passing":   (78, 90),
+            "passing.long_passing":    (76, 88),
+            "passing.switch_play":     (74, 86),
+            "technical.crossing":      (74, 86),
+            "technical.first_touch":   (76, 88),
+            "physical.pace":           (70, 82),
+            "physical.acceleration":   (70, 82),
+            "tendencies.cuts_inside":  0.30,
+            "tendencies.plays_through_ball": 0.20,
+            "tendencies.switches_play":  0.15,
+            # Modern winger tendencies (Checkpoint 18)
+            "tendencies.hugs_touchline":      0.60,
+            "tendencies.drives_byline":       0.25,
+            "tendencies.attacks_fullback_1v1": 0.40,
+            "tendencies.late_box_runs":       0.40,
+            "tendencies.crosses_from_wide":   0.55,
+            "tendencies.shoots_from_distance": 0.18,
+        },
+
+        "flair_dribbler": {
+            "description": "Beats men for fun — stepovers, feints, nutmegs, 1v1 chaos with flair (Neymar, Ronaldinho, Doku)",
+            "positions": ["LW", "RW"],
+            "technical.dribbling":     (82, 94),
+            "physical.acceleration":   (80, 92),
+            "physical.agility":        (82, 94),
+            "technical.ball_control":  (78, 90),
+            "technical.first_touch":   (76, 88),
+            "physical.pace":           (78, 90),
+            "mental.decisions":        (70, 82),
+            "mental.composure":        (72, 84),
+            "tendencies.cuts_inside":  0.40,
+            "tendencies.attempts_dribble": 0.72,
+            "tendencies.dives":        0.12,
+            # Modern winger tendencies (Checkpoint 18)
+            "tendencies.hugs_touchline":      0.65,
+            "tendencies.drives_byline":       0.50,
+            "tendencies.attacks_fullback_1v1": 0.80,
+            "tendencies.late_box_runs":       0.50,
+            "tendencies.crosses_from_wide":   0.30,
+            "tendencies.sprints_frequently":  0.65,
+        },
+
         # ── STRIKERS ─────────────────────────────────────────
 
         "poacher": {
@@ -1017,8 +1089,8 @@ class ArchetypeLibrary:
         "aerial_threat":      "target_man",
         "clinical_finisher":  "complete_striker",
         "cold_blooded":       "poacher",
-        "dribbler":           "inverted_winger",
-        "grand_dribbler":     "inverted_winger",
+        "dribbler":           "flair_dribbler",
+        "grand_dribbler":     "flair_dribbler",
         # GK dist
         "distribution_gk":    "distribution_gk",
     }
@@ -1196,7 +1268,7 @@ class DNAFactory:
     LEGACY_ARCHETYPE_ALIASES = {
         "target_forward":   "target_man",
         "complete_forward": "complete_striker",
-        "inside_forward":   "inverted_winger",
+        # "inside_forward" is now a first-class winger archetype; not aliased to inverted_winger
     }
 
     @classmethod

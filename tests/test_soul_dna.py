@@ -106,12 +106,14 @@ def test_every_declared_ceiling_actually_moves_the_player_up():
         "DEFENSIVE_PURIST": "defending.tackling",
         "WALL": "defending.marking",
         "WIDE_DESTROYER": "technical.dribbling",
+        "FLAIR_DRIBBLER": "technical.dribbling",
         "PRESSING_EVANGELIST": "mental.work_rate",
     }
     pos_for = {"GOALSCORING_SAVANT": "ST", "ATTACKING_PROPHET": "RW",
                "CREATIVE_ORACLE": "RW", "MIDFIELD_PHILOSOPHER": "CM",
                "SWEEPER_SAGE": "CDM", "DEFENSIVE_PURIST": "CB",
                "WALL": "CB", "WIDE_DESTROYER": "RW",
+               "FLAIR_DRIBBLER": "RW",
                "PRESSING_EVANGELIST": "CM"}
     for arch, field in primary.items():
         assert field in SoulLibrary.PROFILES[

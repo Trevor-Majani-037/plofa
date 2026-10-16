@@ -40,6 +40,20 @@ Soul Archetypes (max 2–3 per league):
     WIDE_DESTROYER      — Prime Robben. One direction. Can't stop it.
     SWEEPER_SAGE        — Pirlo. Reads the game one pass ahead.
     WALL               — Prime Terry. Simply does not concede.
+    FLAIR_DRIBBLER      — Neymar. Beats men for fun, flair with a purpose.
+
+Anti-souls (the dark mirror — drags a player AWAY from greatness):
+    THE_GHOST          — Choker. Disappears when it matters most.
+    THE_LIABILITY      — Defensive errors that gift the opposition goals.
+    THE_PASSENGER      — Does not engage; floats through the match.
+    THE_SQUANDERER     — Gives the ball away, poor decisions.
+    THE_MISSER         — Cannot finish; wasteful in front of goal.
+    THE_TRAITOR        — Will not press; lets opponents through.
+    THE_STATIC         — Will not take his man on; goes sideways/back.
+    THE_BLINDSPOT      — Reads nothing a second before anyone else.
+    THE_SIEVE          — Concedes everything; a turnstile in defence.
+    THE_HOTHEAD        — Cards, penalties, no discipline (red mist).
+    THE_FRAGILE        — Cannot stay on the pitch (injury-prone).
 
 Design reference: Percy (RW, Hartwell City) — ATTACKING_PROPHET, Ω = 1.55
 """
@@ -71,6 +85,26 @@ class SoulArchetype(Enum):
     WIDE_DESTROYER       = "wide_destroyer"
     SWEEPER_SAGE         = "sweeper_sage"
     WALL                 = "wall"
+    FLAIR_DRIBBLER       = "flair_dribbler"
+
+    # ════════════════════════════════════════════════════════════════════
+    # ANTI-SOULS — the dark mirror of each positive soul.
+    # Where a soul lifts a player toward greatness, an anti-soul drags them
+    # away from it: worse decisions, worse execution, worse discipline.
+    # Maximum 2–3 per league, same as positive souls — they are the players
+    # the manager wishes he could leave at home.
+    # ═════════════════════════════════════════════════════════════════════
+    ANTI_ATTACKING_PROPHET = "the_ghost"      # disappears in big moments
+    ANTI_DEFENSIVE_PURIST  = "the_liability"  # defensive errors, gifts goals
+    ANTI_MIDFIELD_PHILOSOPHER = "the_passenger"  # does not engage, floats
+    ANTI_CREATIVE_ORACLE   = "the_squanderer"    # gives the ball away
+    ANTI_GOALSCORING_SAVANT = "the_misser"       # cannot finish
+    ANTI_PRESSING_EVANGELIST = "the_traitor"     # will not press
+    ANTI_WIDE_DESTROYER      = "the_static"      # will not take his man on
+    ANTI_SWEEPER_SAGE        = "the_blindspot"   # reads nothing early
+    ANTI_WALL                = "the_sieve"       # concedes everything
+    RED_MIST                 = "the_hothead"     # cards, penalties, no discipline
+    GLASS                    = "the_fragile"     # cannot stay on the pitch
 
 
 # ─────────────────────────────────────────────
@@ -599,6 +633,312 @@ class SoulLibrary:
             teammate_pass_boost=1.05,
 
         ),
+
+        # ═════════════════════════════════════════════════════════════════
+        # FLAIR_DRIBBLER — the Neymar type. Beats men for fun, flair with a
+        # purpose. Not a wide destroyer (that is Salah / Robben); this is the
+        # dribbler who takes on his man for the sheer joy of it and opens the
+        # pitch by drawing two or three defenders.
+        # ══════════════════════════════════════════════════════════════════
+        SoulArchetype.FLAIR_DRIBBLER: SoulProfile(
+            archetype=SoulArchetype.FLAIR_DRIBBLER,
+            label="Flair Dribbler",
+            description=(
+                "Does not play to pass or to shoot — plays to beat his man. "
+                "Stepovers, feints, reverses, nutmegs: dribbling as "
+                "entertainment and as weapon. He draws defenders, sucks in the "
+                "opposition's shape, and creates space for teammates simply by "
+                "holding the ball in a 1v1. Neymar, Ronaldinho, Doku. "
+                "A Neymar type is NOT a wide destroyer — Salah and Robben cut "
+                "inside on a single channel; this man goes anywhere, beats "
+                "anyone, and enjoys it."
+            ),
+            positions=["LW", "RW", "CF"],
+
+            dribble_success_mult=1.60,
+            carry_frequency_mult=1.35,
+            shot_quality_mult=1.15,
+            shot_frequency_mult=1.05,
+
+            losing_state_boost=1.20,
+            late_game_boost=1.20,
+            added_time_boost=1.25,
+            pressure_resistance=1.25,
+
+            teammate_conf_boost=1.10,
+
+            can_destroy_one_v_one=True,
+            can_read_game_early=True,
+
+        ),
+
+        # ══════════════════════════════════════════════════════════════════
+        # ANTI-SOULS — the dark mirror. Each multiplies probabilities DOWN
+        # (< 1.0) instead of up, so the same SoulApplicator machinery drags
+        # the player away from greatness rather than toward it. Attribute
+        # ceilings are declared (required by the non-vacuity test) but never
+        # activate, because anti-souls have G < 1.00 and the soul lift only
+        # fires above G = 1.00.
+        # ══════════════════════════════════════════════════════════════════
+        SoulArchetype.ANTI_ATTACKING_PROPHET: SoulProfile(
+            archetype=SoulArchetype.ANTI_ATTACKING_PROPHET,
+            label="The Ghost",
+            description=(
+                "The choker. In big moments he disappears — the pass goes "
+                "astray, the shot is scuffed, the run is not made. The bigger "
+                "the stage, the smaller he becomes. The Attacking Prophet's "
+                "dark twin."
+            ),
+            positions=["RW", "LW", "ST", "CF", "CAM"],
+
+            shot_quality_mult=0.72,
+            shot_frequency_mult=0.85,
+            dribble_success_mult=0.75,
+            pass_accuracy_mult=0.82,
+            big_chance_conversion=0.65,
+
+            losing_state_boost=0.85,   # worse when losing
+            late_game_boost=0.85,      # fades late
+            added_time_boost=0.80,
+            pressure_resistance=0.70,  # wilts under pressure
+
+            teammate_conf_boost=0.92,
+
+            can_unlock_defence=False,
+        ),
+
+        SoulArchetype.ANTI_DEFENSIVE_PURIST: SoulProfile(
+            archetype=SoulArchetype.ANTI_DEFENSIVE_PURIST,
+            label="The Liability",
+            description=(
+                "Defensive errors are his gift to the opposition. Misplaced "
+                "passes from the back, mistimed tackles, lost concentration — "
+                "he defends like he does not want the ball. The Defensive "
+                "Purist's dark twin."
+            ),
+            positions=["CB", "LB", "RB", "CDM"],
+
+            tackle_success_mult=0.75,
+            interception_mult=0.75,
+            pass_accuracy_mult=0.80,
+            pressure_resistance=0.75,
+
+            losing_state_boost=0.85,
+            late_game_boost=0.85,
+            teammate_conf_boost=0.90,
+
+            can_hold_defensive_line=False,
+        ),
+
+        SoulArchetype.ANTI_MIDFIELD_PHILOSOPHER: SoulProfile(
+            archetype=SoulArchetype.ANTI_MIDFIELD_PHILOSOPHER,
+            label="The Passenger",
+            description=(
+                "Does not engage with the game. Floats between lines, takes "
+                "the safe option, never dictates. Midfield moves around him "
+                "and the team plays with ten men. The Midfield Philosopher's "
+                "dark twin."
+            ),
+            positions=["CM", "CDM", "CAM"],
+
+            pass_accuracy_mult=0.80,
+            carry_frequency_mult=0.80,
+            press_success_mult=0.80,
+            dribble_success_mult=0.85,
+
+            losing_state_boost=0.90,
+            pressure_resistance=0.80,
+
+            teammate_pass_boost=0.90,
+            teammate_conf_boost=0.92,
+
+            can_dictate_tempo=False,
+        ),
+
+        SoulArchetype.ANTI_CREATIVE_ORACLE: SoulProfile(
+            archetype=SoulArchetype.ANTI_CREATIVE_ORACLE,
+            label="The Squanderer",
+            description=(
+                "Sees a pass and plays the wrong one. Through balls hit the "
+                "defender, switches go out of touch, chances are given away. "
+                "One dimension — but that dimension is waste. The Creative "
+                "Oracle's dark twin."
+            ),
+            positions=["CAM", "CM", "RW", "LW"],
+
+            pass_accuracy_mult=0.75,
+            shot_quality_mult=0.80,
+            dribble_success_mult=0.82,
+
+            losing_state_boost=0.90,
+            pressure_resistance=0.80,
+
+            teammate_pass_boost=0.92,
+
+            can_unlock_defence=False,
+        ),
+
+        SoulArchetype.ANTI_GOALSCORING_SAVANT: SoulProfile(
+            archetype=SoulArchetype.ANTI_GOALSCORING_SAVANT,
+            label="The Misser",
+            description=(
+                "In front of goal he enters a different state of consciousness "
+                "— and misses. Shoots from the wrong angle, scuffs the finish, "
+                "blazes over. Volume without quality. The Goalscoring Savant's "
+                "dark twin."
+            ),
+            positions=["ST", "CF", "LW", "RW"],
+
+            shot_quality_mult=0.68,
+            shot_frequency_mult=1.10,   # shoots more, converts less
+            big_chance_conversion=0.60,
+
+            losing_state_boost=0.90,
+            late_game_boost=0.85,
+            pressure_resistance=0.75,
+
+            teammate_conf_boost=0.90,
+
+            can_finish_any_angle=False,
+        ),
+
+        SoulArchetype.ANTI_PRESSING_EVANGELIST: SoulProfile(
+            archetype=SoulArchetype.ANTI_PRESSING_EVANGELIST,
+            label="The Traitor",
+            description=(
+                "Will not press. Lets the opponent receive, turn and advance "
+                "unchallenged. Creates no traps, offers no energy, and lets "
+                "his teammates down by refusing to hunt. The Pressing "
+                "Evangelist's dark twin."
+            ),
+            positions=["ST", "LW", "RW", "CM", "CAM"],
+
+            press_success_mult=0.70,
+            carry_frequency_mult=0.85,
+            dribble_success_mult=0.88,
+
+            losing_state_boost=0.90,
+            pressure_resistance=0.80,
+
+            teammate_press_boost=0.85,
+            teammate_conf_boost=0.92,
+
+            can_hunt_in_packs=False,
+        ),
+
+        SoulArchetype.ANTI_WIDE_DESTROYER: SoulProfile(
+            archetype=SoulArchetype.ANTI_WIDE_DESTROYER,
+            label="The Static",
+            description=(
+                "Will not take his man on. Goes sideways or back, never "
+                "direct, never at the fullback. The one weapon he has perfected "
+                "is not taking one. The Wide Destroyer's dark twin."
+            ),
+            positions=["LW", "RW", "LB", "RB"],
+
+            dribble_success_mult=0.70,
+            carry_frequency_mult=0.72,
+            shot_quality_mult=0.85,
+
+            losing_state_boost=0.90,
+            late_game_boost=0.85,
+            pressure_resistance=0.80,
+
+            teammate_conf_boost=0.90,
+
+            can_destroy_one_v_one=False,
+        ),
+
+        SoulArchetype.ANTI_SWEEPER_SAGE: SoulProfile(
+            archetype=SoulArchetype.ANTI_SWEEPER_SAGE,
+            label="The Blindspot",
+            description=(
+                "Reads nothing a second before anyone else — reacts after the "
+                "danger has already arrived. Out of position, late to the "
+                "pass, caught by the run he did not see coming. The Sweeper "
+                "Sage's dark twin."
+            ),
+            positions=["CDM", "CM", "CB"],
+
+            interception_mult=0.72,
+            pass_accuracy_mult=0.80,
+            pressure_resistance=0.75,
+            tackle_success_mult=0.80,
+
+            losing_state_boost=0.90,
+            late_game_boost=0.85,
+
+            teammate_pass_boost=0.92,
+            teammate_conf_boost=0.92,
+
+            can_read_game_early=False,
+            can_dictate_tempo=False,
+        ),
+
+        SoulArchetype.ANTI_WALL: SoulProfile(
+            archetype=SoulArchetype.ANTI_WALL,
+            label="The Sieve",
+            description=(
+                "Concedes everything. Every tackle, every aerial, every "
+                "clearance — authoritative in the wrong direction. Attackers "
+                "learn quickly that going his side is the easiest option. "
+                "The Wall's dark twin."
+            ),
+            positions=["CB", "LB", "RB"],
+
+            tackle_success_mult=0.70,
+            interception_mult=0.75,
+            pressure_resistance=0.70,
+
+            losing_state_boost=0.85,
+            late_game_boost=0.85,
+
+            teammate_conf_boost=0.88,
+
+            can_hold_defensive_line=False,
+        ),
+
+        SoulArchetype.RED_MIST: SoulProfile(
+            archetype=SoulArchetype.RED_MIST,
+            label="The Hothead",
+            description=(
+                "Loses his head. Cards, penalties, needless fouls — discipline "
+                "abandoned for emotion. A red mist that costs his team men and "
+                "goals. No greatness formula can temper a temper."
+            ),
+            positions=["ST", "LW", "RW", "CM", "CAM", "CB", "LB", "RB", "CDM"],
+
+            tackle_success_mult=0.80,
+            pressure_resistance=0.70,
+            pass_accuracy_mult=0.82,
+
+            losing_state_boost=0.85,
+            late_game_boost=0.85,
+            added_time_boost=0.80,
+
+            teammate_conf_boost=0.90,
+
+        ),
+
+        SoulArchetype.GLASS: SoulProfile(
+            archetype=SoulArchetype.GLASS,
+            label="The Fragile",
+            description=(
+                "Cannot stay on the pitch. Talent that never completes a "
+                "matchday — injuries, niggles, absences. The greatest ability "
+                "is availability, and he has none of it."
+            ),
+            positions=["ST", "LW", "RW", "CM", "CAM", "CB", "LB", "RB", "CDM", "GK"],
+
+            pressure_resistance=0.75,
+            late_game_boost=0.80,      # fades as the match wears on
+            added_time_boost=0.75,
+
+            losing_state_boost=0.90,
+
+            teammate_conf_boost=0.92,
+
+        ),
     }
 
     @classmethod
@@ -712,6 +1052,58 @@ _SOUL_ATTRIBUTE_CEILINGS: Dict[SoulArchetype, Dict[str, float]] = {
         "defending.blocking": 91.0, "defending.marking": 91.0,
         "technical.finishing": 90.0, "technical.dribbling": 89.0,
         "physical.stamina": 95.0, "physical.agility": 92.0,
+    },
+    SoulArchetype.FLAIR_DRIBBLER: {
+        "technical.dribbling": 96.0, "technical.ball_control": 92.0,
+        "technical.first_touch": 90.0, "physical.acceleration": 94.0,
+        "physical.agility": 95.0, "physical.pace": 93.0,
+        "mental.decisions": 88.0, "mental.composure": 88.0,
+    },
+    # Anti-souls declare ceilings too (required by the non-vacuity test) but
+    # they never activate: anti-souls have G < 1.00 and the soul lift only
+    # fires above G = 1.00. They drag via negative multipliers, not lifts.
+    SoulArchetype.ANTI_ATTACKING_PROPHET: {
+        "technical.finishing": 60.0, "technical.dribbling": 60.0,
+        "mental.composure": 60.0, "mental.decisions": 60.0,
+    },
+    SoulArchetype.ANTI_DEFENSIVE_PURIST: {
+        "defending.tackling": 60.0, "defending.interceptions": 60.0,
+        "mental.composure": 60.0, "mental.anticipation": 60.0,
+    },
+    SoulArchetype.ANTI_MIDFIELD_PHILOSOPHER: {
+        "passing.short_passing": 60.0, "passing.through_balls": 60.0,
+        "mental.vision": 60.0, "mental.decisions": 60.0,
+    },
+    SoulArchetype.ANTI_CREATIVE_ORACLE: {
+        "passing.short_passing": 60.0, "technical.dribbling": 60.0,
+        "mental.vision": 60.0, "mental.composure": 60.0,
+    },
+    SoulArchetype.ANTI_GOALSCORING_SAVANT: {
+        "technical.finishing": 60.0, "mental.composure": 60.0,
+        "mental.positioning": 60.0, "mental.anticipation": 60.0,
+    },
+    SoulArchetype.ANTI_PRESSING_EVANGELIST: {
+        "mental.work_rate": 60.0, "mental.anticipation": 60.0,
+        "defending.tackling": 60.0, "defending.interceptions": 60.0,
+    },
+    SoulArchetype.ANTI_WIDE_DESTROYER: {
+        "technical.dribbling": 60.0, "physical.acceleration": 60.0,
+        "physical.pace": 60.0, "mental.work_rate": 60.0,
+    },
+    SoulArchetype.ANTI_SWEEPER_SAGE: {
+        "defending.interceptions": 60.0, "passing.short_passing": 60.0,
+        "mental.positioning": 60.0, "mental.anticipation": 60.0,
+    },
+    SoulArchetype.ANTI_WALL: {
+        "defending.tackling": 60.0, "defending.marking": 60.0,
+        "defending.blocking": 60.0, "mental.concentration": 60.0,
+    },
+    SoulArchetype.RED_MIST: {
+        "defending.tackling": 60.0, "mental.composure": 60.0,
+        "mental.decisions": 60.0,
+    },
+    SoulArchetype.GLASS: {
+        "physical.stamina": 60.0, "mental.concentration": 60.0,
     },
 }
 
@@ -1223,11 +1615,21 @@ class SoulApplicator:
 
     @staticmethod
     def _apply_to_probability(base_prob: float, mult: float, ceiling: float) -> float:
-        """Lift a probability toward its ceiling by the soul's multiplier."""
-        if mult <= 1.0:
-            return base_prob
-        lifted = base_prob + (ceiling - base_prob) * (mult - 1.0)
-        return max(0.0, min(ceiling, lifted))
+        """Lift a probability toward its ceiling (positive soul) or drag it
+        down toward the floor (anti-soul).
+
+        mult > 1.0: lift toward ceiling — the positive-soul path.
+        mult == 1.0: unchanged.
+        mult < 1.0: anti-soul path — scale the probability down by `mult`,
+        so a Wide Destroyer's 1.50 dribble boost becomes The Static's 0.70
+        dribble cut. The result stays inside [0, ceiling].
+        """
+        if mult >= 1.0:
+            lifted = base_prob + (ceiling - base_prob) * (mult - 1.0)
+            return max(0.0, min(ceiling, lifted))
+        # anti-soul: drag downward (never above base_prob)
+        dragged = base_prob * mult
+        return max(0.0, min(ceiling, dragged))
 
     # ── THRESHOLD / DECISION modifiers (not probabilities) ───────
     # Some soul multipliers describe how OFTEN a player acts, not how well.
@@ -1472,7 +1874,7 @@ if __name__ == "__main__":
     players_demo = [
         ("Percy",            SoulArchetype.ATTACKING_PROPHET,    0.99, 0.90, 0.99),
         ("Juan Massey",     SoulArchetype.DEFENSIVE_PURIST,     0.91, 0.93, 0.91),
-        ("Zachery Worth",     SoulArchetype.WIDE_DESTROYER,   0.72, 0.99, 0.99),
+        ("Zachery Worth",     SoulArchetype.FLAIR_DRIBBLER,   0.72, 0.99, 0.99),
         ("Danso Potwemi",      SoulArchetype.CREATIVE_ORACLE,      0.87, 0.97, 0.99),
         ("Hill Prosper",      SoulArchetype.GOALSCORING_SAVANT,       0.90, 0.80, 0.90),
         ("Caut Mayoderoki",   SoulArchetype.MIDFIELD_PHILOSOPHER,  0.99, 0.95, 0.92),
