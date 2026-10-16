@@ -4078,55 +4078,159 @@ class PLOFAExporter:
         print(f"   xG Timeline    -> {filepath}")
 
     def plot_momentum(self, filepath: str):
-        """Render SofaScore-style per-minute momentum bars.
+        """Opta-style MATCH MOMENTUM — threat, not the scoreboard.
 
-        Momentum is +100..-100 from the home team's perspective. Positive
-        bars belong to the home team; negative bars belong to the away team.
+        WHAT CHANGED AND WHY
+        --------------------
+        The previous chart drew per-minute BARS from
+        `result.momentum_log`, and the only writers to that log were
+        `MomentumEngine.after_goal`, `after_red_card`, and a per-minute decay
+        toward zero. So the series was mathematically obliged to be flat
+        whenever nothing was scored — which is most minutes of a football
+        match — and every goal appeared as a spike at a fixed height. That
+        chart could not show a team dominating, and it could not show a goal
+        arriving in low momentum, because both are impossible under a model
+        whose only input is the scoreboard.
+
+        This now draws `momentum_model`'s xT series (see that module for the
+        algorithm and the research behind it): the change in scoring threat
+        caused by each on-ball action, per-minute max, recency-decayed, and
+        the difference between the two sides.
+
+        READING IT
+        -----------
+        Above the line = HOME more threatening. Below = AWAY. The y-axis is
+        deliberately UNLABELLED and the zero line reads "Balanced", which is
+        what Opta do: the quantity is a difference in probability of scoring
+        within the next 10 seconds, so a number on the axis would imply a
+        precision the model does not have. The definition is printed in the
+        footnote instead.
+
+        GOALS ARE ANNOTATIONS, NOT DATA. They are drawn on their own team's
+        side at the minute they happened, and they do NOT move the curve —
+        so a scrappy corner goal sits at whatever height the threat had
+        genuinely reached, which is often nowhere near the top. That is the
+        point, and it is the one thing the old chart could not express.
         """
         home = self.config.home_team
         away = self.config.away_team
-        series = getattr(self.accumulator, "opta", None)
-        series = series.momentum_series if series is not None else []
+        opta = getattr(self.accumulator, "opta", None)
+        series = opta.momentum_series if opta is not None else []
+        diag = getattr(opta, "momentum_diagnostics", {}) or {}
 
-        fig, ax = plt.subplots(figsize=(14, 6), facecolor=PLOFAStyle.BG_DARK)
+        fig, ax = plt.subplots(figsize=(16, 8), facecolor=PLOFAStyle.BG_DARK)
         ax.set_facecolor(PLOFAStyle.BG_PANEL)
 
         if series:
             mins = [r["minute"] for r in series]
             vals = [r["momentum"] for r in series]
-            home_vals = [max(0.0, v) for v in vals]
-            away_vals = [min(0.0, v) for v in vals]
-            ax.bar(mins, home_vals, width=0.86, color=self.home_color,
-                   alpha=0.90, label=f"{home} momentum")
-            ax.bar(mins, away_vals, width=0.86, color=self.away_color,
-                   alpha=0.90, label=f"{away} momentum")
+            # Symmetric axis so the two halves are visually comparable.
+            peak = max((abs(v) for v in vals), default=0.05) or 0.05
+            pad = peak * 1.30
 
-        ax.axhline(0, color=PLOFAStyle.TEXT_MUTED, linewidth=1.0, alpha=0.6)
+            ax.fill_between(mins, 0, [max(0.0, v) for v in vals],
+                            color=self.home_color, alpha=0.55, lw=0)
+            ax.fill_between(mins, 0, [min(0.0, v) for v in vals],
+                            color=self.away_color, alpha=0.55, lw=0)
+            ax.plot(mins, vals, color=PLOFAStyle.TEXT_PRIMARY,
+                    linewidth=1.4, alpha=0.85, zorder=4)
 
-        # Goal markers push momentum on the scoring team's side
-        for g in self.result.goals:
-            gm = g.minute
-            base = 100 if g.team == home else -100
-            ax.scatter(gm, base * 0.95, s=120, zorder=6,
-                       color=self.home_color if g.team == home else self.away_color,
-                       edgecolors="white", linewidth=1.2)
-        if self.result.goals:
-            ax.text(0.985, 0.96,
-                    "● goals", transform=ax.transAxes, ha="right",
-                    color=PLOFAStyle.TEXT_MUTED, fontsize=9)
+            ax.set_ylim(-pad, pad)
+            goal_icons = []
+            for g in self.result.goals:
+                gm = g.minute
+                is_home = (g.team == home)
+                # Sit the icon just inside its own side, at a FIXED offset so
+                # a run of goals in one minute does not stack into a smear.
+                base = pad * 0.90 if is_home else -pad * 0.90
+                ax.scatter([gm], [base], s=190, zorder=6, marker="o",
+                           color=self.home_color if is_home else self.away_color,
+                           edgecolors=PLOFAStyle.TEXT_PRIMARY, linewidth=1.3)
+                goal_icons.append((gm, is_home))
 
-        ax.set_title(f"MOMENTUM — {home} vs {away}",
-                     color=PLOFAStyle.TEXT_PRIMARY, fontsize=14, fontweight="bold")
+            if goal_icons:
+                # Stagger labels for goals that cluster. Two goals three
+                # minutes apart drew their minute labels straight on top of
+                # each other (83'/84' in one match). The ICON stays at a fixed
+                # offset so it always reads as an annotation on that team's
+                # side; only the TEXT steps.
+                for gm, is_home in sorted(goal_icons):
+                    cluster = sum(1 for other, oh in sorted(goal_icons)
+                                  if oh == is_home and other < gm
+                                  and gm - other <= 3)
+                    step = 15 * (cluster % 2)
+                    ax.annotate(f"{gm}'", xy=(gm, pad * (0.90 if is_home else -0.90)),
+                                xytext=(0, (13 + step) if is_home else (-19 - step)),
+                                textcoords="offset points",
+                                ha="center", fontsize=9, fontweight="bold",
+                                color=PLOFAStyle.TEXT_PRIMARY)
+
+            # Team labels live OUTSIDE the axes, on the left, as Opta draw
+            # them. Inside the plot they collide with goal icons near the
+            # start and end of the match — the first version of this chart put
+            # them at x=0.012 and the 4'/10' markers sat straight on top of
+            # "Hartwell City more threatening".
+            ax.annotate(f"{home} more threatening", xy=(0, 1),
+                        xycoords="axes fraction", xytext=(-10, -6),
+                        textcoords="offset points", ha="right", va="top",
+                        fontsize=11, color=self.home_color, fontweight="bold")
+            ax.annotate("Balanced", xy=(0, 0.5),
+                        xycoords="axes fraction", xytext=(-10, 0),
+                        textcoords="offset points", ha="right", va="center",
+                        fontsize=10, color=PLOFAStyle.TEXT_MUTED)
+            ax.annotate(f"{away} more threatening", xy=(0, 0),
+                        xycoords="axes fraction", xytext=(-10, 6),
+                        textcoords="offset points", ha="right", va="bottom",
+                        fontsize=11, color=self.away_color, fontweight="bold")
+
+            # half-time: the y axis never flips, but the ENDS do
+            if len(mins) > 45:
+                ax.axvline(45.5, color=PLOFAStyle.TEXT_MUTED, linewidth=1.0,
+                           linestyle="--", alpha=0.45)
+                ax.annotate("HALF TIME", xy=(45.5, 0.985),
+                            xycoords=("data", "axes fraction"),
+                            xytext=(4, 0), textcoords="offset points",
+                            ha="left", va="top", fontsize=9,
+                            color=PLOFAStyle.TEXT_MUTED)
+
+            ax.set_xlim(0, max(mins))
+            xticks = list(range(0, max(mins) + 1, 15))
+            ax.set_xticks(xticks)
+            ax.set_xticklabels([str(t) for t in xticks])
+        else:
+            ax.text(0.5, 0.5, "no momentum series available",
+                    transform=ax.transAxes, ha="center", color=PLOFAStyle.TEXT_MUTED)
+
+        ax.axhline(0, color=PLOFAStyle.TEXT_MUTED, linewidth=1.1, alpha=0.7)
+        # no y tick labels: the quantity is a probability DIFFERENCE, and a
+        # numeric axis would promise precision the model does not carry
+        ax.set_yticks([])
+        ax.spines["left"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["bottom"].set_color(PLOFAStyle.TEXT_MUTED)
+
+        hg, ag = self.state.home_goals, self.state.away_goals
+        ax.set_title(f"{home}  {hg}–{ag}  {away}", color=PLOFAStyle.TEXT_PRIMARY,
+                     fontsize=17, fontweight="bold", pad=18)
         ax.set_xlabel("Minute", color=PLOFAStyle.TEXT_MUTED)
-        ax.set_ylabel("Momentum", color=PLOFAStyle.TEXT_MUTED)
-        ax.legend(facecolor=PLOFAStyle.BG_CARD, labelcolor=PLOFAStyle.TEXT_PRIMARY,
-                  fontsize=10, framealpha=0.8)
-        total_mins = 90 + self.state.added_time
-        ax.set_xlim(0, total_mins)
-        ax.set_ylim(-110, 110)
-        ax.grid(True, alpha=0.15, color=PLOFAStyle.TEXT_MUTED)
 
-        plt.tight_layout()
+        grid_note = diag.get("grid_source", "prior")
+        # The footnote goes UNDER the axes as figure text. Inside the plot it
+        # collided with a late goal marker — the 89' icon in one match sat
+        # straight on top of the sentence.
+        fig.text(0.99, 0.015,
+                 f"Threat model (xT): how much more likely each team was to "
+                 f"score in the next 10 seconds.  Goals are marked but do not "
+                 f"move the curve.  Threat grid: {grid_note}.",
+                 ha="right", va="bottom", fontsize=8,
+                 color=PLOFAStyle.TEXT_MUTED, alpha=0.9)
+
+        ax.grid(True, axis="x", alpha=0.12, color=PLOFAStyle.TEXT_MUTED)
+
+        # NO tight_layout: the team labels sit OUTSIDE the axes on the left and
+        # tight_layout will happily crop them. `bbox_inches="tight"` below is
+        # what accounts for them.
         plt.savefig(filepath, dpi=150, bbox_inches="tight",
                     facecolor=PLOFAStyle.BG_DARK)
         plt.close()

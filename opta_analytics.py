@@ -10,7 +10,9 @@ expose directly. Every number is modelled from the simulation itself
   - Activity & movement   : standing / walking / jogging / running /
                             sprinting seconds per player per minute,
                             true distance covered, runs and sprints.
-  - Momentum series       : per-minute momentum + scoreline.
+  - Momentum series       : per-minute THREAT (xT) + scoreline. This is the
+                            Opta model, not the engine's goal counter — see
+                            `momentum_model.py` for the algorithm.
   - Game-state minutes    : per-player minutes in each match state.
   - Errors -> shot/goal   : turnover chains that produce chances.
   - Dribblers tackled     : credit for beating a dribbling opponent.
@@ -23,9 +25,10 @@ sequence_engine.SequenceTracker and are merged by the exporter.
 
 from __future__ import annotations
 import math
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from match_engine import MatchEvent, EventType, MatchResult, SituationType
+from momentum_model import compute_momentum
 
 
 # Representative speed (m/s) for each activity band. These are the
@@ -174,6 +177,7 @@ class OptaAnalytics:
 
         # Per-minute tables / series
         self.momentum_series: List[Dict] = []
+        self.momentum_diagnostics: Dict[str, Any] = {}
         self.game_state_table: List[Dict] = []
         self.lines_by_minute: Dict[str, Dict[int, Dict[str, float]]] = {}
         self.error_chains: List[Dict] = []
@@ -427,14 +431,34 @@ class OptaAnalytics:
     # ── Momentum & game state ───────────────────────────────────
 
     def _compute_momentum(self):
+        """Threat-based momentum (Opta/xT lineage), NOT the engine's goal counter.
+
+        The engine's `MomentumEngine` is a live gameplay scalar whose only
+        writers are a goal, a red card and a per-minute decay, so its log was
+        mathematically obliged to be flat whenever nothing was scored — which
+        is almost every minute of a football match. The chart built from it
+        showed the scoreboard, not the match.
+
+        `momentum_model` derives the series from the finished timeline instead
+        (xT per action -> clip -> per-minute max -> recency decay -> the
+        difference). Goals do NOT move the curve; they appear on it as
+        annotations at whatever height the threat had genuinely reached.
+
+        Pure function of the result: reads the timeline, draws no random
+        numbers, mutates no simulation state.
+        """
+        mom = compute_momentum(self.result)
+        self.momentum_diagnostics = mom.diagnostics
         self.momentum_series = [
             {
                 "minute": row["minute"],
                 "momentum": row["momentum"],
-                "home_goals": row.get("home_goals", 0),
-                "away_goals": row.get("away_goals", 0),
+                "home_threat": row["home_threat"],
+                "away_threat": row["away_threat"],
+                "home_goals": row["home_goals"],
+                "away_goals": row["away_goals"],
             }
-            for row in self.result.momentum_log
+            for row in mom.series
         ]
 
     def _compute_game_state_minutes(self):

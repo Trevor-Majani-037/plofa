@@ -3321,6 +3321,124 @@ idempotency key (without it the second apply short-circuits and the team stays
 on the previous style's line). Same reasoning as the `attacks_right` and
 `shooter_name` guards.
 
+## MATCH MOMENTUM — the chart measured the scoreboard, not the match (2026-10-16)
+
+User complaint: *"a graph bar/line can rise even if no goal was scored"* —
+and the chart could not, ever. They were right, and the cause was total.
+
+- **THE OLD SERIES HAD THREE WRITERS.** `MomentumEngine.after_goal` (+18–30),
+  `after_red_card` (+25–40), and `natural_decay` (×0.92 **per minute**, toward
+  0). That was the complete set. So a match with no goals and no red cards was
+  *mathematically obliged* to produce a flat line — and 45 flat minutes is
+  what the exported PNG showed. Every visible feature was a goal spike with a
+  decay tail. `after_save` was defined and **never called at all**.
+- **THE THREE SYMPTOMS WERE ALL FORCED BY THAT.** (a) It could not rise
+  without a goal — a team shredding a flank for four minutes registered
+  nothing. (b) A goal was pinned at ±100 in the PLOT, so every goal looked
+  like it arrived on a wave; a scrappy corner goal for an outpossessed side
+  was **unreachable by construction**. (c) It was never a
+  possession/shots/chances measure at all.
+- **THE MODEL SHIPPED** (`momentum_model.py`, new): the published Opta
+  algorithm with the xT substitution the independent literature uses when the
+  proprietary possession-value model is unavailable (Kapich 2024, following
+  Karun Singh). Threat grid (18×12, attacking frame) → per-action
+  `xT = value(end_zone) − value(start_zone)` → clip to **[0, 0.10]** →
+  **per-minute MAX per team** → **EWMA over 4 minutes, decay 0.25,
+  normalised** → the difference. `XT_CLIP`/`WINDOW`/`DECAY` are Opta's
+  published constants, named as such.
+- **THE GRID IS DERIVED, NOT TYPED.** Every cell equals
+  `XGEngine.calculate_geometric()` at that cell's CENTRE, so the threat model
+  and the engine's own xG cannot disagree. It is still a **PRIOR, not a fit**,
+  and says so: `fit_grid_from_matches()` does the real goals/shots fit with
+  Laplace shrinkage toward the prior and **REFUSES to install** one whose
+  median cell is under 25 shots, reporting why. `grid_source` travels into the
+  export.
+- **GOALS DO NOT MOVE THE CURVE.** Verified as a first-class property: a
+  goal is valued **exactly** as the shot it was (0.20230 vs 0.20230 at the
+  same spot), because a goal IS a shot; if it scored more, the old defect
+  would return. Measured on a real match: Thornfield's 59' goal sat at
+  **8.8% of the match's peak** — the user's exact example, and now reachable.
+  A scrappy corner scramble is worth **4.0× less** than a clean finish, and a
+  clean goal in the *same* minute of a turgid match reads **2.0× higher**.
+- **HIT_WOODWORK IS IN `_SHOT_EVENTS` even though `is_shot` omits it** — that
+  omission is a separate documented calibration question, and five hits off
+  the frame is not zero threat.
+- **THE FRAME TRAP, HANDLED ONCE.** `team_attacks_right` is never flipped at
+  half time, so raw x is per-team. Every lookup goes through
+  `to_attacking_frame()`. The strongest test is the mirror: an identical
+  attack on either side gives momentum **exactly 0.000000000**, and a one-sided
+  match flips sign to the last decimal. The 9 off-pitch coordinates a match
+  are clamped for the lookup and **counted** in `clamped_coordinates`.
+- **⛔ IT IS POST-HOC, AND THAT IS THE POINT.** The live `MomentumEngine` also
+  feeds gameplay (`get_attacking_probability_modifier`; `state.momentum/100*
+  0.08` at the shot funnel) and was **left completely untouched** — rewriting
+  it changes every event in every match and invalidates every calibration
+  number in this file. So the dependency is one-way and guarded:
+  `match_engine ← momentum_model ← opta_analytics ← exporter`, and **no engine
+  module may import `momentum_model`**.
+  > **NAMING COLLISION, DELIBERATE.** `state.momentum` (live, gameplay) and
+  > the exported "momentum" (threat) are different quantities under the same
+  > name. `momentum_log` still exists and still feeds the live scalar; it is
+  > simply no longer what the chart reads. Guarded by AST.
+- **SUITE `tests/test_momentum_model.py` (33, new file)** + **negative control
+  `_diag_momentum_guard.py`** (3 mutations, all caught, files restored
+  byte-identically). A guard that has never been seen to fail is not a guard,
+  so M1/M2 reintroduce each defect and confirm the RIGHT guard goes red and
+  the other stays green; M3 confirms prose mentioning `momentum_log` does
+  **not** trip the guard.
+
+- **FOUR OF MY OWN ERRORS, all the documented class, all found by the probes:**
+  1. **A real defect I introduced:** `_situation_bonus` first returned
+     `end_value * 1.0` for *every* situation, so an open-play pass scored
+     `2*end − start`. Both teams pinned at the clip on identical ground and the
+     **difference — the only thing the chart plots — collapsed to zero for the
+     whole match.** A term modelling the exceptional case must be zero
+     everywhere else. Found by the "home must be positive" check.
+  2. **Four false failures from one probe bug:** I asserted over all 90 rows
+     when the fixture covered 30, and the series legitimately decays to
+     `0.0000` past the EWMA window. Same cause as the documented CM
+     knife-edge: *the thing measured is not the thing asked for.*
+  3. **An off-by-one that silently measured the wrong minute** — an index
+     expression asserting minute 24 while the label said 25. Replaced with an
+     `at(result, minute)` lookup, because index arithmetic by eye is how you
+     assert the wrong minute and never notice.
+  4. **A dishonest LABEL:** one check compared "no goal at all" against "clean
+     goal" and titled the no-goal arm "scrappy". A column whose heading
+     asserts more than its expression computes.
+- **A FIFTH, AND IT IS THE EXPENSIVE ONE — THE TREE WAS WIPED MID-SESSION.**
+  `momentum_model.py`, `tests/test_momentum_model.py` and all three
+  `tools/diag/_diag_momentum*.py` probes were **deleted by something outside
+  this session**, along with the `opta_analytics.py` edit, while a stale
+  `.pyc` for the deleted module remained and `git status` reverted to a single
+  modified file. Everything was recreated from the conversation and
+  re-verified green, but **this is the second recorded instance of a parallel
+  session operating on these files** (see the *Commit hazard* note) and the
+  third recorded instance of a **stale `.pyc` outliving its deleted source** —
+  which makes a module look importable when `Test-Path` says it is not.
+  **For a reader: verify with `Test-Path` / `read_bytes().count()`, not with
+  "the import worked".**
+- **PROBE-BUG THAT ALMOST REVERTED REAL WORK.** The negative control's
+  `restore()` compared the file against its backup and raised *before*
+  writing — and on a later run "restored" a **stale backup captured before the
+  previous run's crash**, silently reverting `plot_momentum` to the old bar
+  chart while the probe reported success. Fix: snapshot the file **inside**
+  `mutate()`, immediately before the mutation, and return it. **A backup is
+  only valid for the state it was taken from.**
+- **THE EXPORTER GUARD IS AN AST GUARD, NOT A TEXT SCAN, for the documented
+  reason.** `plot_momentum`'s docstring quotes `result.momentum_log` in order
+  to explain what changed, so a substring scan matched the explanation —
+  the fifth recorded instance of "a name inside prose is not a call site".
+  Stripping `#` comments is not enough; the string was in a **docstring**.
+- **GATES:** `test_momentum_model` 33 passed; `test_opta_analytics_runs_sprints`
+  3 passed (a pre-existing test builds a `SimpleNamespace` result with **no
+  `state`**, which `compute_momentum` now reads defensively — it is a pure
+  function of a timeline and should not require one); `_diag_momentum.py`
+  all checks passed; `_diag_momentum_guard.py` all controls passed; one real
+  match rendered end to end (5–2, 7 goal icons all placed, the 40' goal on a
+  genuine blue peak, the 83'/84' pair in a deep away trough).
+  **NOT gated by the 26/27 regression** (per the standing no-hour-regression
+  instruction).
+
 ## Next Move
 **NEW 2026-10-15 — from the SHAPE ANCHOR work, three items in priority order
 before anything spatial is tuned further:**
