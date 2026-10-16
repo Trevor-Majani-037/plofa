@@ -4094,7 +4094,134 @@ documented signature (matrix − manual = the number of successful crosses, a
 test-vs-production definitional mismatch in `PassMatrix.build`, not a sim bug).
 No new 26/27 regression.
 
-## RESOLVED — 20 vs 18 clubs (Trevor, 2026-09-25)
+## PERCY THE CHOSEN ONE — GOAT PLAYER WIRING (2026-10-16)
+
+Percy Luka (Player ID 11, RW, Team 1, Tolandian, traditional_winger) is the first player in the universe (2018 → today). He already had a soul (ATTACKING_PROPHET, Ω=1.55) and the cognition layer existed, but he played with the same 24→32→32→10 brain (2,186 params) as everyone else. This section documents how he was made into the chosen one — bigger brain, dedicated training, never-forgetting mind — wired into both runners so he's active in Sunday's fixture and available for testing.
+
+### Module: `percy_the_chosen.py` (new file)
+
+Self-contained module. Does not modify any existing brain/evolution code. Registers Percy's brain + mind by exact player **name** in the brain/mind registries, so `NeuralDecisionBrain.decide` serves him before any position-file auto-load. No other player is affected.
+
+### Brain architecture
+
+| | Percy | Standard player |
+|---|---|---|
+| Architecture | 32 → 64 → 64 → 10 | 24 → 32 → 32 → 10 |
+| Params | **6,922** | 2,186 |
+| Input | 24 shared + 8 WING role features | 24 shared only |
+| Role family | WING | per position |
+
+The WING role block feeds Percy wing-specific geometry: `marker_dist, one_v_one, inside_channel, overlap_option, cross_zone, cross_target_open, box_arrival, cover_behind`. He learns winger decisions, not generic ones.
+
+### Training pipeline (the project's real pipeline, not a custom shortcut)
+
+`train_percy()` uses `brain_evolution.synthetic_fitness()` scored against the production surrogate `brains/surrogate_pos.json` — the exact same fitness signal that trained the brains in `brains/`.
+
+T1 production hyperparams (per `brains/_manifest_all.json`):
+- surrogate: `brains/surrogate_pos.json`
+- 80 gen × 32 pop × 300 states, seed 123
+- role_features ON, perception ON
+- goal_bias: 0.0 (playmaker) / 0.25 (attack-oriented)
+
+Two trained variants saved:
+
+| File | Style | goal_bias | attack_oriented | Fitness | Best for |
+|---|---|---|---|---|---|
+| `brains/percy.json` | Attack-oriented | 0.25 | True | 0.5336 | Scoring, crosses, shots |
+| `brains/percy_attack.json` | Attack-oriented | 0.25 | True | 0.5336 | Backup (identical to percy.json) |
+| `brains/percy_playmaker.json` | Playmaker/creator | 0.0 | False | 0.4746 | Through-balls, switches, safe build-up |
+
+`percy.json` is the active brain wired for Sunday. If attack doesn't click in the real season, copy `percy_playmaker.json` over `percy.json` and Percy switches to creator mode.
+
+### Wiring — call once before kickoff
+
+`wire_percy(player, train_if_missing=False)` registers:
+1. **Big brain** under `"Perćy Luka"` (real roster) and `"Percy"` (scratch alias)
+2. **Never-forgetting mind** under both names (decay OFF, forget threshold 0, view_radius 45m, confidence 1.5)
+3. **Player DNA** (vision/composure/decisions → 99) and **soul** (ATTACKING_PROPHET, Ω=1.55) if the player object is passed
+
+Insertion points:
+- `auto_run_match.py` — after the cognition loop (line ~1244), before `MatchEngine` creation
+- `run_match.py` — after soul attachment (line ~337), before match config
+
+Example:
+```python
+from percy_the_chosen import wire_percy
+percy_player = next((p for p in all_players_flat if p.name in ("Perćy Luka", "Percy")), None)
+if percy_player is not None:
+    wire_percy(player=percy_player, train_if_missing=False)
+```
+
+If Percy isn't in the squad → `percy_player` is None, wiring skipped, warning printed, match runs normal. No crash.
+
+### A/B test results (7 matches per arm, same seeds)
+
+| Stat | Chosen-One (attack) | Baseline RW | Delta |
+|---|---|---|---|
+| Goals | 1 | 1 | 0 |
+| Shots on target | 2 | 1 | +1 |
+| xG | 0.838 | 0.356 | +0.482 |
+| Passes | 84 | 78 | +6 |
+| Carries | 78 | 114 | −36 |
+| Decision quality | 0.801 | 0.705 | +0.096 |
+| Team points | 13 (4W-1D-2L) | 16 (5W-1D-1L) | −3 |
+
+Intent mix (chosen-one): SAFE_PASS:42, SWITCH:37, PROGRESSIVE_PASS:41, CARRY:9, CROSS:3, PROTECT_POSSESSION:5
+Intent mix (baseline): CARRY:39, PROGRESSIVE_PASS:39, SAFE_PASS:27, DRIBBLE:8, SWITCH:18, PROTECT_POSSESSION:11, RECYCLE:1, SHOOT:1, CROSS:1
+
+Percy is definitively different — playmaker/creator (switches, through-balls, progressive passes) vs baseline carrier/dribbler. Higher decision quality, higher xG, more crosses/shots on target.
+
+### Reusable template for future "goat" players
+
+To make any player the chosen one, follow these steps:
+
+1. **Create a module** like `percy_the_chosen.py`:
+   - `build_<name>_brain(seed, input_size)` — oversized architecture, DNA-seeded weights
+   - `train_<name>(generations, population, n_states, seed, goal_bias, attack_oriented)` — GA using `synthetic_fitness()` + `surrogate_pos.json`
+   - `build_<name>_mind(view_radius)` — never-forgetting (decay OFF, threshold 0), supreme confidence
+   - `wire_<name>(player, ...)` — register brain + mind by exact name
+
+2. **Pick input width**: Use `V2_INPUT_D[role_family]` for role-features (e.g., WING=32, ST=32, CB=31) or `INPUT_SIZE=24` for plain
+
+3. **Pick architecture**: Bigger hidden layers (64→64) give ~3× capacity. Don't go so big that training collapses.
+
+4. **Train with the project's pipeline**: `synthetic_fitness()` + production surrogate, not a custom fitness function
+
+5. **Wire into runners**: `auto_run_match.py` (after cognition loop) and `run_match.py` (after soul attachment)
+
+6. **Register by name, not position**: `_brain_registry[player.name]` is checked before position-file auto-load, so the player keeps their special brain regardless of what position they're listed as
+
+7. **Save variants**: Save attack-oriented and playmaker variants separately; switch by copying the desired one over `brains/<name>.json`
+
+### Position flexibility — if Percy plays ST or CAM instead of RW
+
+Percy's brain is registered by **name** (`"Perćy Luka"`), not position, so `NeuralDecisionBrain.decide` serves him his oversized brain **regardless of what position he's played at**. He's still Percy — soul (Ω=1.55), never-forgetting mind, maxed DNA, bigger network all carry over.
+
+**However**, his brain was trained with WING role features (8 dims: marker_dist, one_v_one, cross_zone, box_arrival, cover_behind, etc.). If played at ST or CAM:
+- The sensor builder still produces a 32-d vector (24 shared + 8 role block) because ST/CAM role blocks are also 8 dims
+- But the role block features are ST/CAM semantics, not WING semantics — the dimensions match but the meanings differ
+- He'd be interpreting ST/CAM geometry through WING-trained weights: still "Percy" (same network, same mind, same soul), but not optimally utilized since his weights were tuned for wing geometry
+
+So yes, he's still Percy everywhere — but he's at his best as a RW (or wide attacking role) where his WING-trained role features match what he actually sees.
+
+### Files modified (commit ea56071)
+
+- `auto_run_match.py` — Percy wiring after cognition loop
+- `run_match.py` — Percy wiring after soul attachment
+- `tools/gates/validate_neural_xl.py` — fixed heuristic decide kwarg (pops `coach_instructions`)
+- `percy_the_chosen.py` — new module (brain, mind, training, wiring)
+- `percy_ab_test.py` — 7-match A/B test script
+- `percy_match_test.py` — single-match attestation script
+- `brains/percy.json` — active attack-oriented brain
+- `brains/percy_attack.json` — attack backup
+- `brains/percy_playmaker.json` — playmaker backup
+
+### All-time DB reference (Percy's career before the brain upgrade)
+
+Player ID 11, Perćy Luka, RW, Team 1, Tolandian, traditional_winger — all-time totals:
+- Goals: 52, Assists: 25, xG: 21.54, xA: 13.93, Shots: 200, SOT: 111 (55.5%), Progressive passes: 546, Progressive carries: 390
+- Scores at 2.4× his xG — elite finisher who also creates
+
 `auto_run_match.TEAM_CATALOG` defines 20 clubs; `PLOFA-2026-2027.xlsx` carries
 squads for 18. **Resolved by Trevor: Hartwell City and Thornfield United are test
 teams with test players, entered by hand in the scratch runner `run_match.py`.
