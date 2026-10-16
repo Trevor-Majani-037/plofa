@@ -3077,8 +3077,268 @@ A CB playing as a deep-lying playmaker, in the opponent's box.
   (crc32 since 2026-10-04) but not the same fixture. Direction is consistent
   across four surfaces and mechanistically explained; each delta is one sample.
   Multi-seed not run (cost, and matches are not cheap here).
+- **⛔ SUPERSEDED 2026-10-15 — the clamp was never the problem, it was the
+  SATURATION.** The CB ceiling only ever *bound* (70.4% of calls) because the
+  shape chain was feeding it a target 30–38 m past the formation post; the
+  centre-backs were parked ON the ceiling at p25/p50/p75 = 55.5/56.8/57.9, not
+  holding a line. Both switches now report 0.0% binding. See *SHAPE ANCHOR +
+  MIRRORED BLOCK* below. The clamp test above is still correct; its premise
+  was not.
+
+## SHAPE ANCHOR + MIRRORED BLOCK + STYLE-BLIND DEFENCE (2026-10-15, FIXED)
+
+Commit `361cd0b`. Started from one user complaint — *"Left back plays super
+high almost like a LW (same for RB and RW)"* — and produced **three defects**,
+plus one retraction of my own reasoning that a future session should not
+repeat. This is the single most consequential spatial finding in the project
+and it **supersedes the WIDTH GATE and CB CEILING sections above** — both were
+measuring symptoms of one cause.
+
+### ⛔ READ THIS FIRST — MY BENCHMARK WAS WRONG AND I ALMOST SHIPPED TO IT
+
+I used "real PL: LB 22–30, CB 20–26" throughout, from memory. **22–30 is a
+deep-block line, not a fullback.** Actual data (Opta / The Analyst, Premier
+League 2024-25, average full-back **touch** location):
+
+| | metres from own goal |
+|---|---|
+| Man City | 60.1 |
+| Tottenham | 59.4 |
+| **league average** | **53.2** |
+| Chelsea (deepest team) | 46.8 |
+
+Robertson's touch position moved 56.4 → 51.5 m between two Liverpool seasons
+and was written up as a style shift — the real range is narrow and HIGH. My
+band was off by ~25 m, which is roughly why I first reported "a winger with a
+different name". **Opta touch location is over EVENTS; a 10 Hz position median
+is over TIME.** Same instrument, different aggregation. They are not
+interchangeable and a benchmark that does not name its frame is not a
+benchmark. Get real data before quoting a band. (Source: theanalyst.com
+"Premier League full-backs", 2024-10-15.)
+
+### DEFECT 1 — the shape anchor was a PERSISTENCE TERM (the root cause)
+
+`match_engine._offball_move_player` built its target from:
+
+```python
+ax, ay = self._minute_start_snapshot.get(pname, (st.current_x, st.current_y))   # was 2757
+tx    = ax + (ball_x - ax) * 0.14
+```
+
+and `_minute_start_snapshot` is rebuilt **every minute** from
+`snapshot_positions(team)` — the player's **TRACKED position**, not
+`state.home_x`. So depth was 86% *"wherever you already were"*, and because that
+value became next minute's anchor, the recursion's **only fixed point is the
+ball's x from any starting position** (`_diag_shape_fixed_point.py` prints the
+algebra; every outfield role converges to the ball from any start).
+
+**The decomposition is what proves it** (`_diag_chain_attrib.py`). The anchor
+reached the chain already **30–38 m past the formation post**, while everything
+downstream was correcting single metres:
+
+| term | Δ nx (Frost) |
+|---|---|
+| **anchor itself, before any rule votes** | **+37.6** |
+| compaction (0.14) | −1.3 |
+| danger squeeze + cross crash | −4.6 |
+| run blend | +5.6 |
+| **depth anchor (new)** | **−7.4** |
+| CK36 / CK37 / CK38 | 0.00 |
+
+The chain started 37 m wrong and spent its whole budget arguing about 5.
+
+**The y axis never had this hole**, and that is the whole explanation for why
+*WIDTH* was only ~8 m short (WIDTH GATE, 2026-10-05) while *DEPTH* was fully
+collapsed: `CK35` is the one live rule reading an **absolute** formation
+reference (`st.home_y`). The x-axis twin existed once — `drift_minute`'s
+forward x-anchor — and MatchEngine never calls `drift_minute`.
+
+**FIX:** `PositionEngine.SHAPE_ANCHOR_FORMATION` (default `True`) makes the
+chain compact from `state.home_x/home_y`. The compaction then reads as what it
+always meant — a team shifting toward the ball — rather than a per-tick
+ball-tracking recursion. `_minute_start_snapshot` is **NOT** removed: the
+involvement gate at ~2981 still uses it, where *"where was this player when
+the minute began"* is a legitimate question about persistence.
+
+### DEFECT 2 — `defensive_block_target` had its depth axis MIRRORED
+
+```python
+tx = (self.PITCH_X_MAX - depth if attacks_right else depth)   # was WRONG in both branches
+```
+
+`depth` is documented as measured **from the player's own goal** (and
+`LB_BACK_DEPTH = 19.0` means it). So a low block's back four stood at **x=86**
+attacking right — inside the *opponent's* penalty area — and at **x=19**
+attacking left. Verified 6/6 in both directions by `_diag_block_frame.py`,
+which checks against the constant's own documented meaning.
+
+**Why it survived, and this is the transferable lesson:** the comment directly
+above that function *already recorded the symptom* — *"the shape reached 47.5 m
+from its own goal when the block slot was 19 m"* — and attributed it to a blend
+weight losing to a competing value. The blend weight was raised. The mirror was
+left. **A tune applied on top of an arithmetic error looks like progress for
+exactly as long as the error is small relative to the gain.**
+
+### DEFECT 3 — the defensive shape was STYLE-BLIND
+
+`formation_stance_for` takes a `profile` and its docstring claimed it read the
+style. **The body reads `state.goal_difference` and `state.minute` and never
+`.style`.** So the **attacking** half of the shape was style-driven
+(`pattern_for` → `_STYLE_PATTERN_POOLS`) and the **defending** half was not: a
+park-the-bus side and a gegenpressing side held an identical back line until
+minute 60. Measured confirmation: two tactical frames produced per-role lines
+within **0.3 m** of each other.
+
+**FIX:** `tactical_shapes.style_defense_deltas`, threaded through
+`apply_formation_stance(style=...)`, **stacked under** the game-state stance
+(style → stance → man-down → fatigue, all additive). Four archetypes keyed to
+the ordering the attack pools already imply:
+
+| archetype | styles | LB | CB | ST |
+|---|---|---|---|---|
+| **sunk** | park_the_bus, ultra_defensive | −8.0 | −6.0 | **−3.0** |
+| **low** | defensive, fluid_counter, route_one | −4.0 | −3.0 | −2.0 |
+| **neutral** | balanced, wing_play | 0 | 0 | 0 |
+| **high** | tiki_taka, gegenpressing, attacking, … | +4.0 | +3.0 | +2.0 |
+
+Two deliberate choices: **magnitude under the stance tables** (game-state
+stances run −20…+17 m on a fullback; a style bias able to outvote
+`SEE_IT_OUT` would make a side abandon its identity to protect a lead), and
+**the striker holds up** (`park_the_bus` moves LW −10 but ST only −3, copying
+the principle `SEE_IT_OUT` already encodes — a block whose front pair all drop
+has no outlet).
+
+### ALSO SHIPPED — `DEPTH_ANCHOR_ENABLED`
+
+A bounded pull toward the formation post on **x** (the mirror of `CK35`) for
+CB/LB/RB, banded on depth drift. It **yields to a live run target** — an
+overlap is a fullback getting to the byline to cross, not drift, so the
+backstop's remaining job is drift with no decision behind it. It is now a
+backstop doing ~a third of the work it did when the anchor was broken; **its
+weights were deliberately NOT retuned** afterwards, because restoring the old
+magnitude would reintroduce the servo through the back door.
+
+### MEASURED (seed 777, correct frame, `_diag_depth_anchor_ab.py`)
+
+Frame matters: Hartwell **ATTACKING/HIGH_PRESS** v Thornfield
+**FLUID_COUNTER/COUNTER** — `run_match.py`'s own constants, i.e. the frame the
+export was produced under. **The probe now defaults to that frame** via
+`--home-style/--away-style/...`; the first version hard-coded BALANCED/MIXED.
+
+| | before | after |
+|---|---|---|
+| `cb_advance_clamp` binding share | 70.4% | **0.0%** |
+| CB median depth | 56.8 (on the ceiling) | **33.8** |
+| Darius Frost (LB) median | 67.4 | **35.6** |
+| Frost passes from final third | 65% | **20%** |
+| Frost backward pass share | 61% | **20%** |
+| Frost median pass origin | 74.8 m | **41.1 m** |
+| ST / LW median in possession | 55.8 / 62.2 | **78.3 / 71.2** |
+| width control (untouched axis) | — | flat |
+
+### ⛔ RETRACTED — "the CAM's pass map got worse", and my wrong hypothesis
+
+**Kwame Asante is NOT a defect and NO change was made.** I called 59.3 → 46.2 a
+regression. That was wrong twice over:
+
+1. It compared **two different tactical frames** (BALANCED/MIXED vs the
+   FLUID_COUNTER/COUNTER his export actually ran). **Check the frame of a
+   number before comparing it to anything.**
+2. Even frame-matched, 60.6 and 48.4 were **two different matches**, not a
+   controlled pair. No pre-fix arm was ever run under that frame.
+
+The instrument that settles it is the **receipt/origin join** — a CAM's
+position and his ball-contact depth are one question, not two:
+
+| player | pos | receipt median | pass-origin median | gap |
+|---|---|---|---|---|
+| **Kwame Asante** | CAM | 46.2 | 48.4 | **−2.2** |
+| Kofi Mensah | CAM | 51.2 | 51.6 | −0.4 |
+| Nico Strauss | ST | 50.8 | 54.8 | −4.1 |
+
+He plays from within 2.2 m of where he receives — the positioning is doing what
+it is told — and sits **0.4 m off his team's own ball depth** (Thornfield 48.8).
+His pass map *is* his team's. Both CAMs are at **0%** of their team's
+final-third passes while the ST takes 26% and the RW 19%: that is the attack
+selecting wide and forward players. And Asante has **8% of his receipts** in
+the final third but **0% of his passes** from there — which is a #10 shooting
+rather than passing once he is in the box, not an absence.
+
+**My second hypothesis was also wrong.** I claimed the depth anchor was vetoing
+legitimate overlaps. Gating it off during live runs moved Frost **36.1 → 33.9** —
+runs only fire ~21% of the time. **The measurement killed it; I should have run
+it before asserting it.** Recorded because it is the second time this session
+that an asserted mechanism had to be walked back.
+
+### ⛔ STILL OPEN — the `0.14` compaction coefficient is never fitted
+
+Frost sits at **41.1 m** median pass origin against a real **53.2 m**. He is
+now slightly on the *deep* side — I traded "never came back" for "never quite
+arrives". Calibrating `COMPACTION` needs a **multi-seed sweep** against the
+Opta benchmark (~10 matches) and is deliberately **not attempted**. It is a
+refinement, not a defect, and it will **not** touch the three bugs above.
+
+### REUSABLE INSTRUMENTS — use these before writing a new probe
+
+| probe | what it answers | cost |
+|---|---|---|
+| `_diag_depth_anchor_ab.py --arm off\|on\|anchor\|anchor_only` | the master A/B: per-role depth, clamp saturation, target-vs-position lag, pass origins, **team-vs-player comparison (s7)**, **receipt/origin join (s8)** | 1 match |
+| `_diag_chain_attrib.py` | term-by-term Δ of `tx` through the whole chain, per player per tick | 1 match |
+| `_diag_block_frame.py` | is a mirror/arithmetic error in a geometry function? both directions | **ms** |
+| `_diag_shape_fixed_point.py` | where a target recursion settles, in pure algebra | **ms** |
+| `_diag_depth_anchor_control.py` | is a new lever actually REACHED (role scope, band non-vacuity, switch reversibility) | **ms** |
+| `_diag_style_temp_control.py` | same, for the style temperament | **ms** |
+| `_diag_wide_depth_live.py [--report-only]` | whole-team per-role shape + frame validation; caches samples so a re-report costs nothing | 1 match, then free |
+
+**The reusable idea worth stealing: `_diag_depth_anchor_ab.py` §7/§8.** §7 asks
+"is this player an outlier or is this his TEAM", and §8 asks "does the ball
+ever reach him" by joining receipts to pass origins. Both turn *"this player's
+number is wrong"* into a question about mechanism. A player-level figure with
+no team context and no receipt join is not evidence.
+
+**⚠️ DO NOT COMMIT `_diag_wide_depth_cache.json`.** It is a **166 MB** probe
+output sitting untracked at the repo root. `git add -u` would also have dropped
+all 16 new untracked tests while committing the code they justify (see the
+*Commit hazard* note above). Both hazards were live on 2026-10-15.
+
+### GATES
+
+`tests/test_style_defensive_temperament.py` (16, **new file** — the stance
+suite is green *about* the style's influence and silent on it) plus
+`test_positional_play` 46 passed, `test_cb_ceiling` 7 passed. Two failures are
+**pre-existing and characterised**: `test_out_of_possession_touchline_press_
+gated_by_press_intensity` (bisected to fail identically with the switches
+off; it drives `drift_minute`) and `test_lever_b_starve_squashes`
+(**flaky by construction** — `sequence_length` calls an unseeded
+`random.randint(3, 8)` and the test asserts an inequality on a stochastic
+function; it passed and failed on consecutive runs, and never touches the shape
+chain).
+
+Two guards worth copying: an **AST** guard that `match_engine` actually passes
+`style=` (a defaulted argument is a silent omission — every delta test still
+passes with it dead), and that `style` is in `apply_formation_stance`'s
+idempotency key (without it the second apply short-circuits and the team stays
+on the previous style's line). Same reasoning as the `attacks_right` and
+`shooter_name` guards.
 
 ## Next Move
+**NEW 2026-10-15 — from the SHAPE ANCHOR work, three items in priority order
+before anything spatial is tuned further:**
+1. **Calibrate `COMPACTION` (currently the literal `0.14` in
+   `match_engine._offball_move_player`).** It was never fitted to anything.
+   Frost now sits at 41.1 m median pass origin against a real 53.2 m, so the
+   fullbacks are slightly on the DEEP side. **Needs a multi-seed sweep (~10
+   matches) against the Opta benchmark, and it will not touch any of the three
+   defects already fixed.** See *SHAPE ANCHOR* below for the full method.
+2. **Style's influence on the ATTACKING lines is still only indirect** — it
+   arrives via `pattern_for`'s pools, and `formation_stance_for` still does not
+   read the profile (by design now, documented). If a style ever needs to move
+   a line directly, `style_defense_deltas` is the seam.
+3. **Re-verify the WIDTH band.** The width findings above predate the anchor
+   fix; the anchor changed *depth*, and CK35's home-`y` pull is now the only
+   absolute lateral reference in the chain. `_diag_width_gate.py` predates this
+   work — **do not trust its numbers without re-running it.**
+
 **ACTIVE — THE FABRICATION AUDIT IS NOT FINISHED.** The assist/shooter work closed
 one path, not the class. Do not report "fabrication eliminated". Remaining, in
 the order I would take them:
@@ -3207,6 +3467,52 @@ out) → geometric shot resolution → exporter.
    trained-brain gate history (like the validate_neural_xl results).
 
 ## Relevant Files
+**SHAPE / DEPTH AXIS (2026-10-15) — read before tuning anything spatial:**
+- `match_engine.py:2757` — `ax, ay = st.home_x, st.home_y` under
+  `position_engine.SHAPE_ANCHOR_FORMATION`. **This one line is the fix for
+  "the left back plays like a winger"** — it was `_minute_start_snapshot`
+  (tracked position, refreshed every minute), a persistence term whose only
+  fixed point is the ball. ~2981 still uses the snapshot deliberately.
+- `position_engine.py` `SHAPE_ANCHOR_FORMATION` (default `True`) — what `ax`
+  means.
+- `position_engine.py` `DEPTH_ANCHOR_ENABLED` / `depth_home_anchor_blend` /
+  `DEPTH_ANCHOR_*_W` — the CK35 mirror on x for CB/LB/RB. **Backstop only**;
+  yields to a live run target; weights deliberately NOT retuned after the
+  anchor fix.
+- `position_engine.py` `defensive_block_target` — **the depth axis was mirrored
+  in both branches and is now fixed.** `depth` is from the player's OWN goal.
+- `tactical_shapes.py` `style_defense_deltas` + `_STYLE_DEFENSE_ARCHETYPE` —
+  the defensive-shape style temperament. `formation_stance_for` does NOT read
+  the profile, by design and by documentation now.
+- `position_engine.py` `apply_formation_stance(style=...)` — the style is part
+  of the idempotency key; dropping it from either is a silent no-op.
+- `tools/diag/_diag_depth_anchor_ab.py` — **the master A/B.** 4 arms,
+  frame-selectable (`--home-style/--away-style`, defaults to `run_match.py`'s
+  own constants). §7 = is-this-player-an-outlier-or-his-team; §8 = the
+  receipt/origin join. **Use §7/§8 before concluding anything about a single
+  player.**
+- `tools/diag/_diag_chain_attrib.py` — term-by-term Δ of `tx` through the
+  whole chain. This is what found the 37 m anchor error. Read its per-stage
+  output before blaming any single rule.
+- `tools/diag/_diag_block_frame.py` — milliseconds; catches an
+  `attacks_right` mirror or any depth arithmetic error in a geometry function.
+  **Highest value per second in the repo — run it first whenever a shape looks
+  wrong.**
+- `tools/diag/_diag_shape_fixed_point.py` — milliseconds; where a target
+  recursion settles, in pure algebra.
+- `tools/diag/_diag_depth_anchor_control.py`,
+  `tools/diag/_diag_style_temp_control.py` — milliseconds; **is a new lever
+  actually REACHED?** (role scope, band non-vacuity, switch reversibility).
+  Copy this pattern for any new rule.
+- `tools/diag/_diag_wide_depth_live.py [--report-only]` — whole-team per-role
+  shape + frame validation (keeper/CB check). Caches samples, so a re-report
+  costs nothing. **Do not commit its `_diag_wide_depth_cache.json` — 166 MB.**
+- `tools/diag/_diag_frost_asante.py`, `_diag_cam_passmap.py`,
+  `_diag_asante_frame.py` — the pass-map / CAM analysis, all reading the
+  existing export (instant, no match).
+- `tests/test_style_defensive_temperament.py` — 16 tests. Includes two AST
+  guards (the call site actually passes `style=`; `style` is in the
+  idempotency key). Model these for any new rule.
 - `football_brain.py` — net, save/load, 10 intent labels; `OffBallBrain`
   (conscience, abandoned) and `TeamPressBrain` (shared XI engagement GATE).
 - `brain_sensors.py` — 24-d sensor extraction (+ `extract_offball_sensors`, same
