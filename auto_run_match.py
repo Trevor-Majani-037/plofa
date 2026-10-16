@@ -1242,6 +1242,21 @@ def run(force_replay: bool = False):
             register_mind(p.name, mind)
         set_cognition(True)
         engage_mind_observer()
+
+    # ── Percy — The Chosen One ──
+    # Wire Percy's oversized role-specialized brain (32->64->64->10, trained
+    # on the project's surrogate pipeline) and his never-forgetting mind
+    # under his exact roster name so NeuralDecisionBrain serves him before
+    # any position-file auto-load.  No other player is affected.
+    from percy_the_chosen import wire_percy
+    percy_player = next(
+        (p for p in all_players_flat if p.name in ("Perćy Luka", "Percy")),
+        None,
+    )
+    if percy_player is not None:
+        wire_percy(player=percy_player, train_if_missing=False)
+    else:
+        print("  ⚠️  Percy not found in squads — chosen-one brain not wired.")
     engine = MatchEngine(config, HOME_STYLE, AWAY_STYLE)
     # Live brain-manager (since 2026-09-20 wired by default): the club's
     # persisted mind/memory drives posture/pressing/urgency via the engine's

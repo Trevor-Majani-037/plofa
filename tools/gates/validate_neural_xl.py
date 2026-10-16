@@ -109,8 +109,17 @@ def _run_heuristic(seed: int, home_style: str, away_style: str):
         # substitutes/unregistered players cannot auto-load neural brains, and
         # turn the team press controller OFF: the heuristic arm is the OLD
         # system (heuristic on-ball + pure role-rate Bernoulli off-ball).
+        # Wrap so the extra ``coach_instructions`` kwarg (passed by
+        # event_chain.py to NeuralDecisionBrain.decide) is ignored by the
+        # heuristic, which predates that parameter.
         saved_neural = NeuralDecisionBrain.decide
-        NeuralDecisionBrain.decide = staticmethod(_HEURISTIC_DECIDE)
+        _HEURISTIC_DECIDE = DecisionBrain.decide
+
+        def _heuristic_decide(*a, **kw):
+            kw.pop("coach_instructions", None)
+            return _HEURISTIC_DECIDE(*a, **kw)
+
+        NeuralDecisionBrain.decide = staticmethod(_heuristic_decide)
         from match_engine import set_team_press_auto
         set_team_press_auto(False)
         config = match_probe.MatchConfig(

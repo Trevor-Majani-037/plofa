@@ -334,6 +334,19 @@ def run():
                   f"{'⚡ OMEGA ACTIVE' if soul.pillars.omega_activated else 'No Omega'}")
         print()
 
+    # ── Percy — The Chosen One ──
+    # Wire Percy's oversized role-specialized brain and never-forgetting mind
+    # so he's active in this runner for your own testing.
+    from percy_the_chosen import wire_percy
+    percy_player = next(
+        (p for p in all_players_flat if p.name in ("Perćy Luka", "Percy")),
+        None,
+    )
+    if percy_player is not None:
+        wire_percy(player=percy_player, train_if_missing=False)
+    else:
+        print("  ⚠️  Percy not found in squads — chosen-one brain not wired.")
+
     # ── Match config ──────────────────────────────────────────
     config = MatchConfig(
         home_team=HOME_TEAM,
