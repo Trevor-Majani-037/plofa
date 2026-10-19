@@ -433,6 +433,32 @@ class FormationEngine:
 # LAYER 1 — PERSISTENT PER-PLAYER SPATIAL STATE
 # ─────────────────────────────────────────────
 
+# ── MEASURED ACTIVITY BANDS (2026-10-17) ───────────────────────────────────
+# Di Salvo's published GPS intensity thresholds (the same literature
+# `calibrate_gps.py` already cites), so the buckets mean something outside this
+# repo rather than being tuned to make a total come out right:
+#
+#     low intensity     < 2.0 m/s
+#     moderate          2.0 - 4.2 m/s
+#     high              4.2 - 7.0 m/s  (5.5-7.0 is Di Salvo's "high")
+#     sprint           >= 7.0 m/s      (>25.2 km/h)
+#
+# plus a `standing` band below 0.5 m/s, which had no representation at all
+# until 2026-10-17 and which the old template had to INVENT.
+ACTIVITY_BAND_EDGES: Tuple[float, ...] = (0.5, 2.0, 4.2, 7.0)
+ACTIVITY_BAND_NAMES: Tuple[str, ...] = (
+    "standing", "walk", "jog", "running", "sprint")
+
+
+def activity_band_index(speed_mps: float) -> int:
+    """Index into `ACTIVITY_BAND_NAMES` for a measured speed (m/s)."""
+    s = float(speed_mps)
+    for i, edge in enumerate(ACTIVITY_BAND_EDGES):
+        if s < edge:
+            return i
+    return len(ACTIVITY_BAND_NAMES) - 1
+
+
 @dataclass
 class PlayerSpatialState:
     """
@@ -485,8 +511,20 @@ class PlayerSpatialState:
     # ── PHYSICS-DERIVED MOVEMENT (from PossessionEpisode trace) ──────
     # These are populated by record_physics_distance() and reset each minute.
     physics_distance_m: float = 0.0
+    # ── MEASURED ACTIVITY BANDS (2026-10-17) ─────────────────────────────
+    # Time in each activity band, in SECONDS, measured tick by tick from the
+    # integrator's own speed. Added because the published `*_seconds` used to
+    # be a per-position TABLE (`opta_analytics.BASE_MINUTE_ACTIVITY`) and the
+    # table had to INVENT a large standing share: standing time was
+    # structurally unmeasurable, because `_record_offball_distance` opened
+    # with `if moved <= 0: return`. A player standing at his shape target was
+    # discarded before any measurement. Measured on a real match, that threw
+    # away 306,504 of 666,476 stepped ticks — 1,533 s per player, 26.6% of a
+    # nominal match — which is exactly the hole the table was papering over.
+    physics_standing_time_s: float = 0.0
     physics_walk_time_s: float = 0.0
     physics_jog_time_s: float = 0.0
+    physics_running_time_s: float = 0.0
     physics_sprint_time_s: float = 0.0
     physics_sprint_count: float = 0.0
     physics_high_speed_sprint_count: float = 0.0
@@ -1276,6 +1314,8 @@ class PositionEngine:
         walk_time_s: float = 0.0,
         jog_time_s: float = 0.0,
         sprint_time_s: float = 0.0,
+        standing_time_s: float = 0.0,
+        running_time_s: float = 0.0,
         sprint_count: float = 0.0,
         high_speed_sprint_count: float = 0.0,
         top_speed_mps: float = 0.0,
@@ -1285,6 +1325,22 @@ class PositionEngine:
 
         These are additive with the existing touch/drift accumulators and
         are reset each minute by pop_minute_activity().
+
+        TIME IS BANDED BY SPEED, ONCE, HERE. The band edges are Di Salvo's
+        published GPS thresholds — the same literature `calibrate_gps.py`
+        already cites for its sprint band — so the buckets mean something
+        outside this repo:
+
+            standing   < 0.5 m/s
+            walking    0.5 - 2.0 m/s   (Di Salvo "low intensity", <2.0)
+            jogging    2.0 - 4.2 m/s
+            running    4.2 - 7.0 m/s   (Di Salvo "high", 5.5-7.0)
+            sprinting >= 7.0 m/s       (Di Salvo >25.2 km/h = 7.0 m/s)
+
+        The per-band times passed in by a caller are added verbatim FIRST,
+        then `duration_s` is banded from `speed_mps` -- so a caller that
+        already knows the band (the episode trace) is never double-counted,
+        because it passes `duration_s=0.0`.
         """
         state = self.states.get(player_name)
         if state is None:
@@ -1292,16 +1348,16 @@ class PositionEngine:
         state.physics_distance_m += float(distance_m)
         duration_s = max(0.0, float(duration_s))
         speed_mps = max(0.0, float(speed_mps))
+        state.physics_standing_time_s += max(0.0, float(standing_time_s))
         state.physics_walk_time_s += max(0.0, float(walk_time_s))
         state.physics_jog_time_s += max(0.0, float(jog_time_s))
+        state.physics_running_time_s += max(0.0, float(running_time_s))
         state.physics_sprint_time_s += max(0.0, float(sprint_time_s))
         if duration_s > 0.0:
-            if speed_mps < 2.0:
-                state.physics_walk_time_s += duration_s
-            elif speed_mps < 7.0:
-                state.physics_jog_time_s += duration_s
-            else:
-                state.physics_sprint_time_s += duration_s
+            band = ACTIVITY_BAND_NAMES[
+                activity_band_index(speed_mps)]
+            setattr(state, f"physics_{band}_time_s",
+                    getattr(state, f"physics_{band}_time_s") + duration_s)
         state.physics_sprint_count += float(sprint_count)
         state.physics_high_speed_sprint_count += float(high_speed_sprint_count)
         if float(top_speed_mps) > state.physics_top_speed_mps:
@@ -1328,7 +1384,16 @@ class PositionEngine:
                                classification (a big single jump between
                                two touches implies fast movement between
                                them, unlike a slow accumulation).
-            physics_distance_m            — true distance from physics trace.
+            physics_distance_m: true distance from physics trace.
+            physics_standing_time_s — MEASURED seconds at < 0.5 m/s.
+            physics_walk_time_s     — MEASURED seconds 0.5-2.0 m/s.
+            physics_jog_time_s      — MEASURED seconds 2.0-4.2 m/s.
+            physics_running_time_s  — MEASURED seconds 4.2-7.0 m/s.
+            physics_sprint_time_s   — MEASURED seconds >= 7.0 m/s.
+              Band edges are Di Salvo's published GPS thresholds. The five
+              together are the raw material for the published activity
+              seconds -- which used to be authored from a per-position table
+              because standing time did not exist as a measurement at all.
             physics_sprint_count          — sprint segments from physics trace.
             physics_high_speed_sprint_count — high-speed sprint segments.
             physics_top_speed_mps         — max observed speed from physics trace.
@@ -1339,8 +1404,10 @@ class PositionEngine:
                 "distance_touch": 0.0, "distance_drift": 0.0,
                 "distance_total": 0.0, "touches": 0, "peak_touch_jump": 0.0,
                 "physics_distance_m": 0.0,
+                "physics_standing_time_s": 0.0,
                 "physics_walk_time_s": 0.0,
                 "physics_jog_time_s": 0.0,
+                "physics_running_time_s": 0.0,
                 "physics_sprint_time_s": 0.0,
                 "physics_sprint_count": 0.0,
                 "physics_high_speed_sprint_count": 0.0,
@@ -1353,9 +1420,11 @@ class PositionEngine:
             "touches": state.minute_touch_count,
             "peak_touch_jump": round(state.minute_peak_touch_jump, 2),
             "physics_distance_m": round(state.physics_distance_m, 2),
-            "physics_walk_time_s": round(state.physics_walk_time_s, 2),
-            "physics_jog_time_s": round(state.physics_jog_time_s, 2),
-            "physics_sprint_time_s": round(state.physics_sprint_time_s, 2),
+            "physics_standing_time_s": round(state.physics_standing_time_s, 3),
+            "physics_walk_time_s": round(state.physics_walk_time_s, 3),
+            "physics_jog_time_s": round(state.physics_jog_time_s, 3),
+            "physics_running_time_s": round(state.physics_running_time_s, 3),
+            "physics_sprint_time_s": round(state.physics_sprint_time_s, 3),
             "physics_sprint_count": round(state.physics_sprint_count, 1),
             "physics_high_speed_sprint_count": round(state.physics_high_speed_sprint_count, 1),
             "physics_top_speed_mps": round(state.physics_top_speed_mps, 2),
@@ -1365,8 +1434,10 @@ class PositionEngine:
         state.minute_peak_touch_jump = 0.0
         state.minute_drift_distance = 0.0
         state.physics_distance_m = 0.0
+        state.physics_standing_time_s = 0.0
         state.physics_walk_time_s = 0.0
         state.physics_jog_time_s = 0.0
+        state.physics_running_time_s = 0.0
         state.physics_sprint_time_s = 0.0
         state.physics_sprint_count = 0.0
         state.physics_high_speed_sprint_count = 0.0

@@ -2694,8 +2694,31 @@ class MatchEngine:
         """Accumulate REAL per-tick off-ball movement into PositionEngine's
         physics store, counting sprint SEGMENTS with minimum duration and
         cooldown so micro-oscillations around the threshold don't inflate
-        the count."""
+        the count.
+
+        ── `moved == 0` IS STANDING, NOT ABSENCE (2026-10-17) ──────────────
+        This used to open with `if moved <= 0: return`, which meant a player
+        standing AT his shape target was discarded before any measurement.
+        `_offball_move_player` has an `arrive` dead band, so a settled player
+        moves 0 m on the tick and his time vanished. Measured on a real match
+        that dropped **306,504 of 666,476 stepped ticks — 46% — about 1,533 s
+        per player, 26.6% of a nominal match.**
+
+        That is not a cosmetic gap. It is *why* the published activity seconds
+        had to be invented from a per-position table with a 16-83% standing
+        share: the data for the largest single band did not exist, so it was
+        authored. The band edges are Di Salvo's published GPS thresholds.
+
+        The sprint-segment state machine below is deliberately NOT touched: it
+        only ever ran on `moved > 0`, and it still does. Only the TIME record is
+        added, so sprint counts and cooldown behaviour are byte-identical to
+        before. Verified: `_diag_standing_gap.py` shows `booked` tick counts
+        unchanged for the moving bands.
+        """
         if moved <= 0:
+            self.position_engine.record_physics_distance(
+                name, distance_m=0.0, duration_s=duration_s,
+                speed_mps=speed)
             return
         st = self._sprint_state.setdefault(name, {
             "in_sprint": False, "in_hi": False,
@@ -4035,8 +4058,10 @@ class MatchEngine:
                         "touches": activity["touches"],
                         "peak_touch_jump": activity["peak_touch_jump"],
                         "physics_distance_m": activity.get("physics_distance_m", 0.0),
+                        "physics_standing_time_s": activity.get("physics_standing_time_s", 0.0),
                         "physics_walk_time_s": activity.get("physics_walk_time_s", 0.0),
                         "physics_jog_time_s": activity.get("physics_jog_time_s", 0.0),
+                        "physics_running_time_s": activity.get("physics_running_time_s", 0.0),
                         "physics_sprint_time_s": activity.get("physics_sprint_time_s", 0.0),
                         "physics_sprint_count": activity.get("physics_sprint_count", 0.0),
                         "physics_high_speed_sprint_count": activity.get("physics_high_speed_sprint_count", 0.0),

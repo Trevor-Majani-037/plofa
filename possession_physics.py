@@ -1402,7 +1402,7 @@ class PossessionEpisode:
                 dx = x1 - x0
                 dy = y1 - y0
                 seg_dist = math.hypot(dx, dy)
-                total_dist += seg_dist
+                dt = t1 - t0
                 # Speed-band classification uses the trace's speed label
                 # (the intended race/carry effort of the action) rather than
                 # geometry velocity: the coarse per-tick interpolation makes
@@ -1410,15 +1410,34 @@ class PossessionEpisode:
                 # implied 10-20 m/s), which a real GPS would never see.
                 # The label already caps race effort at RACE_EFFORT * top_speed,
                 # so sprint/HSR banding reflects the simulated effort.
-                # Distance accumulated remains geometry-real (seg_dist).
-                dt = t1 - t0
-                # Only per-tick consecutive rows (≈ one 10 Hz step) carry a
-                # measurable effort. Anything else is a position gap (sparse
-                # trace rows, cross-action jumps) -> contributes to total
-                # distance but not to sprint/HSR classification (GPS losing
-                # sync).
+                #
+                # ── AND THE DISTANCE NOW READS THE SAME LABEL ─────────────
+                # It used not to. The three race resolvers place a player by
+                # GEOMETRIC interpolation toward a MOVING target:
+                #     pos = start + (ball_now - start) * dr,  dr = ts/arrival
+                # so his per-tick displacement scales with the BALL's speed,
+                # not his own, and `seg_dist` stops being a distance any body
+                # could cover. Measured on a real match
+                # (tools/diag/_diag_distance_audit.py, _diag_trace_overcount.py):
+                #     mean implied speed                 33.2 m/s (120 km/h)
+                #     metres above 8.5 m/s (30.6 km/h)     70.1%
+                #     98.2% of it from the race notes (intercept_race 53.5%,
+                #     pursuit 22.4%, contact 22.3%)
+                #     trace total 405 km vs the 10 Hz integrator's 74 km
+                # and `opta_analytics` adds `physics_dist * 0.45` ON TOP of a
+                # DNA template that is already the authoritative full-match
+                # total — so the exported "Distance Covered" read 16-21 km a
+                # match against a real 10.5-13.0 km.
+                # The engine already carries a physically-modelled speed for
+                # every tick, so book what the body could actually have
+                # covered and keep the geometry only where it is reachable.
+                # DISTANCE now reads the same quantity SPEED does, which is the
+                # whole point: the label was always the honest one, and it was
+                # already driving sprint/HSR banding a few lines below.
                 if 0.05 <= dt <= 0.15:
                     speed = s1
+                    seg_dist = min(seg_dist, dt * speed)
+                    total_dist += seg_dist
                     if speed < 2.0:
                         walk_time_s += dt
                     elif speed < SPRINT_THRESHOLD:
@@ -1426,6 +1445,12 @@ class PossessionEpisode:
                     else:
                         sprint_time_s += dt
                 else:
+                    # Only per-tick consecutive rows (≈ one 10 Hz step) carry a
+                    # measurable effort. Anything else is a position gap (sparse
+                    # trace rows, cross-action jumps): no elapsed time, so no
+                    # distance to book. It still zeroes `speed` so an open
+                    # sprint run is closed below — same rule, and the same
+                    # precedent, as `run_tracking.RunTracker`'s jump filter.
                     speed = 0.0
                 top_speed = max(top_speed, speed)
                 if speed >= HSR_THRESHOLD:

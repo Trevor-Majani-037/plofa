@@ -42,7 +42,19 @@ ACTIVITY_BUCKETS: List[str] = ["standing", "walking", "jogging", "running", "spr
 # Baseline per-minute activity split (fractions of 60s) per position.
 # A GK mostly stands; a wide player carries the most jogging/running.
 BASE_MINUTE_ACTIVITY: Dict[str, Tuple[float, float, float, float, float]] = {
-    "GK":  (0.80, 0.18, 0.02, 0.00, 0.00),
+    # GK was (0.80, 0.18, 0.02, 0.00, 0.00) = 29.2 m/min = 2.80 km a match,
+    # which is roughly HALF what a real keeper covers. Two independent GPS
+    # studies, both of which this project already cites elsewhere (Di Salvo's
+    # 19.8 / 25.2 km/h speed bands):
+    #   Di Salvo et al. 2008, elite goalkeepers, GPS: 5,611 +/- 613 m
+    #   Kubayi et al. 2020, Olympic GKs:            4,819 m (4,036-6,640)
+    # A keeper is not stationary -- he is a sweeper who repositions behind a
+    # back four that never stops shifting, and he crosses his box on every
+    # switch of play. The new split gives 54.2 m/min at effort 1.0 (5.20 km),
+    # spanning 47.9-60.4 m/min (4.61-5.80 km) across the work_rate range, which
+    # sits inside both studies. Effort scaling is applied to the moving bands
+    # only, so the standing share is what keeps a keeper's average plausible.
+    "GK":  (0.66, 0.17, 0.15, 0.02, 0.00),
     "CB":  (0.30, 0.42, 0.26, 0.02, 0.00),
     "LB":  (0.20, 0.36, 0.36, 0.07, 0.01),
     "RB":  (0.20, 0.36, 0.36, 0.07, 0.01),
@@ -192,6 +204,11 @@ class OptaAnalytics:
         self._dribbler_tackles: Dict[str, Dict] = {}
         self._packing: Dict[str, Dict] = {}
         self._game_state_mins: Dict[str, Dict] = {}
+        # Seconds of each player's match that carry a MEASURED speed, and the
+        # seconds available in total. Published as `activity_measured_pct` so
+        # a consumer can never mistake an authored value for an observation.
+        self._measured_s_total: Dict[str, float] = {}
+        self._available_s_total: Dict[str, float] = {}
         self._physics_stats: Dict[str, Dict] = {}     # physics-derived distance/sprint data
 
         # Per-minute team position index (for opponent-geometry on each event)
@@ -527,6 +544,8 @@ class OptaAnalytics:
         distances: Dict[str, float] = {}
         runs: Dict[str, Dict] = {}
         table: List[Dict] = []
+        measured_s_total = self._measured_s_total
+        available_s_total = self._available_s_total
 
         SPRINT_JUMP_THRESHOLD = 20.0
         RUN_JUMP_THRESHOLD = 12.0
@@ -544,73 +563,99 @@ class OptaAnalytics:
                     physics_sprints = row.get("physics_sprint_count", 0.0)
                     physics_high_sprints = row.get("physics_high_speed_sprint_count", 0.0)
                     physics_top_speed = row.get("physics_top_speed_mps", 0.0)
+                    # Seconds for which we hold REAL physics, from the same
+                    # accumulator that produced physics_dist. Needed because
+                    # the trace only covers the action windows, so comparing
+                    # its distance against a whole-minute baseline without
+                    # dividing out the time is not like-for-like.
+                    traced_s = (row.get("physics_walk_time_s", 0.0)
+                                + row.get("physics_jog_time_s", 0.0)
+                                + row.get("physics_sprint_time_s", 0.0))
+
+                    measured_s = {
+                        "standing": row.get("physics_standing_time_s", 0.0),
+                        "walking": row.get("physics_walk_time_s", 0.0),
+                        "jogging": row.get("physics_jog_time_s", 0.0),
+                        "running": row.get("physics_running_time_s", 0.0),
+                        "sprinting": row.get("physics_sprint_time_s", 0.0),
+                    }
+                    measured_total_s = sum(measured_s.values())
+                    uncovered_s = max(0.0, 60.0 - measured_total_s)
 
                     stand, walk, jog, run, sprint = self._activity_profile(name)
-                    secs = {
-                        "standing": stand * 60, "walking": walk * 60,
-                        "jogging": jog * 60, "running": run * 60,
-                        "sprinting": sprint * 60,
+                    prof = {
+                        "standing": stand, "walking": walk, "jogging": jog,
+                        "running": run, "sprinting": sprint,
                     }
-                    baseline_dist = sum(secs[b] * SPEEDS[b] for b in ACTIVITY_BUCKETS)
 
-                    real_dist = touch_dist + drift_dist
+                    # ── MEASURED FIRST, TEMPLATE ONLY FOR THE GAP ───────────
+                    # What this method used to publish, in full:
+                    #   - five `*_seconds` = a per-position TABLE, perturbed,
+                    #     renormalised to 60 s
+                    #   - `distance_covered` = the table's distance PLUS a
+                    #     fraction of the physics trace
+                    # Both were authored. The table had to INVENT its standing
+                    # share (16-83% by position) because standing time was not
+                    # measurable at all: `_record_offball_distance` opened with
+                    # `if moved <= 0: return`, so a player settled at his shape
+                    # target was discarded before any measurement. Measured on a
+                    # real match that dropped 306,504 of 666,476 stepped ticks
+                    # -- 46%, ~1,533 s per player, 26.6% of a match
+                    # (`_diag_standing_gap.py`).
+                    #
+                    # Now the tick stream is banded into all five activity
+                    # bands with Di Salvo's published GPS thresholds
+                    # (`position_engine.ACTIVITY_BAND_EDGES`), and for every
+                    # second we actually measured we publish what we measured.
+                    # The table is demoted to the residue: it supplies the shape
+                    # of the `uncovered_s` seconds the integrator did not watch
+                    # (a player who is on the ball all minute is not stepped).
+                    #
+                    # The two are kept strictly separate, which is why the
+                    # distance below is the MEASURED metres plus a template
+                    # budget for the unwatched seconds -- not a template minute
+                    # with a correction bolted on. That also retires the
+                    # flat/excess `physics_dist_additive` entirely: the trace is
+                    # no longer an *addition* to a full-match template, it is
+                    # the full-match template's replacement on the seconds it
+                    # covers.
+                    tpl_s = {b: prof[b] * uncovered_s for b in ACTIVITY_BUCKETS}
 
-                    # Physics integration: the trace only captures movement
-                    # during brief action windows, so it is NOT a full-minute
-                    # distance replacement. Instead:
-                    #   - baseline_dist remains the authoritative total distance
-                    #   - physics trace corrects the speed-band split and adds
-                    #     high-intensity distance that the baseline undercounts.
-                    physics_dist_additive = 0.0
-                    if physics_dist > 0:
-                        physics_dist_additive = physics_dist * 0.45
+                    # Telemetry may still shape the UNWATCHED part only. A
+                    # measured second is a fact and is never overwritten.
+                    if uncovered_s > 0.0:
                         if physics_top_speed > 0:
                             sprint_secs = min(8.0, physics_sprints * 6.0)
-                            secs["sprinting"] = min(8.0, sprint_secs)
+                            tpl_s["sprinting"] = min(tpl_s["sprinting"],
+                                                     sprint_secs * uncovered_s / 60.0)
                             high_sprint_secs = min(6.0, physics_high_sprints * 6.0)
-                            secs["running"] = min(28.0, secs["running"] + high_sprint_secs)
-                            secs["running"] = max(secs["running"], secs["sprinting"] * 0.5)
+                            tpl_s["running"] = min(tpl_s["running"],
+                                                   tpl_s["running"] + high_sprint_secs * uncovered_s / 60.0)
+                            tpl_s["running"] = max(tpl_s["running"],
+                                                   tpl_s["sprinting"] * 0.5)
                         if touches > 0:
-                            secs["jogging"] = min(20.0, secs["jogging"] + touches * 0.3)
-                            secs["running"] = min(28.0, secs["running"] + touches * 0.5)
-                    else:
+                            tpl_s["jogging"] = min(tpl_s["jogging"],
+                                                   tpl_s["jogging"] + touches * 0.3 * uncovered_s / 60.0)
+                            tpl_s["running"] = min(tpl_s["running"],
+                                                   tpl_s["running"] + touches * 0.5 * uncovered_s / 60.0)
                         if peak_jump >= SPRINT_JUMP_THRESHOLD:
-                            sprint_secs = min(8.0, 2.0 + (peak_jump - SPRINT_JUMP_THRESHOLD) * 0.15)
-                            secs["sprinting"] = min(8.0, secs["sprinting"] + sprint_secs)
+                            tpl_s["sprinting"] += (2.0 + (peak_jump - SPRINT_JUMP_THRESHOLD) * 0.15) * uncovered_s / 60.0
                         elif peak_jump >= RUN_JUMP_THRESHOLD:
-                            run_secs = min(12.0, 2.0 + (peak_jump - RUN_JUMP_THRESHOLD) * 0.1)
-                            secs["running"] = min(28.0, secs["running"] + run_secs)
+                            tpl_s["running"] += (2.0 + (peak_jump - RUN_JUMP_THRESHOLD) * 0.1) * uncovered_s / 60.0
 
-                        if touches > 0:
-                            touch_run = min(10.0, touches * 0.8)
-                            secs["running"] = min(28.0, secs["running"] + touch_run)
-                            secs["jogging"] = min(20.0, secs["jogging"] + touches * 0.3)
+                    secs = {b: measured_s[b] + tpl_s[b] for b in ACTIVITY_BUCKETS}
+                    template_dist = sum(tpl_s[b] * SPEEDS[b] for b in ACTIVITY_BUCKETS)
+                    # MEASURED metres + a template budget for the unwatched
+                    # seconds. Not `template + fraction_of_trace`.
+                    baseline_dist = physics_dist + template_dist
 
-                        if real_dist > baseline_dist * 1.15:
-                            excess = real_dist - baseline_dist
-                            run_boost = min(14.0, excess * 0.45)
-                            sprint_boost = min(6.0, excess * 0.15)
-                            secs["running"] = min(28.0, secs["running"] + run_boost)
-                            secs["sprinting"] = min(8.0, secs["sprinting"] + sprint_boost)
-
-                    total = sum(secs.values())
-                    diff = total - 60.0
-                    if diff > 0:
-                        for bucket in ("standing", "walking", "jogging"):
-                            if diff <= 0:
-                                break
-                            take = min(secs[bucket], diff)
-                            secs[bucket] -= take
-                            diff -= take
-                        if diff > 0:
-                            secs["running"] = max(0.0, secs["running"] - diff)
-                    else:
-                        secs["standing"] += -diff
+                    measured_s_total[name] = measured_s_total.get(name, 0.0) + measured_total_s
+                    available_s_total[name] = available_s_total.get(name, 0.0) + 60.0
 
                     acc = activity.setdefault(name, {b: 0.0 for b in ACTIVITY_BUCKETS})
                     for b in ACTIVITY_BUCKETS:
                         acc[b] += secs[b]
-                    distances[name] = distances.get(name, 0.0) + baseline_dist + physics_dist_additive
+                    distances[name] = distances.get(name, 0.0) + baseline_dist
 
                     # Collect physics-derived stats when available.
                     # IMPORTANT: these MUST be ACCUMULATED across every minute of
@@ -846,6 +891,20 @@ class OptaAnalytics:
                 "running_seconds": round(act["running"], 1),
                 "sprinting_seconds": round(act["sprinting"], 1),
                 "distance_covered": round(dist / 1000.0, 2),
+                # HOW MUCH OF THE ABOVE IS A MEASUREMENT. Published because a
+                # blended number that does not say which part is authored is a
+                # lie by omission: for every second the integrator actually
+                # watched we publish the measured band time and the measured
+                # metres; for the remainder the per-position table supplies the
+                # shape. `activity_measured_pct` is the share that is real, and
+                # `activity_source` says so in words.
+                "activity_measured_pct": round(
+                    100.0 * self._measured_s_total.get(name, 0.0)
+                    / max(self._available_s_total.get(name, 1.0), 1e-9), 1),
+                "activity_source": (
+                    "measured" if self._measured_s_total.get(name, 0.0)
+                    >= 0.995 * self._available_s_total.get(name, 1.0)
+                    else "measured + position template for unobserved seconds"),
                 "runs": runs_val,
                 "sprints": sprints,
                 "high_speed_sprints": high_speed_sprints,

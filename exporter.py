@@ -433,19 +433,7 @@ class StatAccumulator:
                 sh["trajectory"] = "reconstructed"
 
         # ── GK xGOT FACED & GOALS PREVENTED ────────────────────
-        # Opta/StatsBomb definition: Goals Prevented = xGOT_faced - Goals Conceded
-        # xGOT = sum of xG for all shots ON TARGET the GK faces (saves + goals
-        # conceded + woodwork hits + penalties faced). These events are credited
-        # to the attacking team; we map them to the defending team.
-        self.team_xgot: Dict[str, float] = defaultdict(float)
-        _XGOT_TYPES = (
-            EventType.SHOT_ON_TARGET, EventType.HIT_WOODWORK,
-            EventType.PENALTY_SCORED, EventType.PENALTY_MISSED,
-        )
-        for e in self.result.timeline:
-            if e.event_type in _XGOT_TYPES:
-                defending = config.away_team if e.team == config.home_team else config.home_team
-                self.team_xgot[defending] += e.xg or 0.0
+        self._accumulate_keeper_facing()
 
         # Opta telemetry analytics — movement/activity, line-breaking &
         # packing passes, errors→shot/goal chains, dribblers tackled and
@@ -553,6 +541,140 @@ class StatAccumulator:
             end_x = goal_x
 
         return round(end_x, 1), round(end_y, 1)
+
+    def _apply_keeper_stats(self, name: str, s: Dict) -> None:
+        """Write the goalkeeper's OWN goals-conceded / xGOT faced / goals
+        prevented onto his stat row.
+
+        Kept as its own method so the consumer is directly testable. The
+        original defect was HERE and not in the accumulator: every row with
+        `position == "GK"` was handed `self.team_xgot[team]`, so a bench keeper
+        who never came on published the whole team's xGOT and a non-zero Goals
+        Prevented while his `saves` was correctly 0.
+
+        Opta definition: Goals Prevented = xGOT faced - goals conceded. A
+        keeper who faced nothing prevents nothing: 0.0, not his team's.
+        """
+        k_conceded = int(self.keeper_conceded.get(name, 0))
+        s["goals_conceded"] = k_conceded
+        shots_faced = s["saves"] + k_conceded
+        s["save_pct"] = round(s["saves"] / shots_faced * 100, 1) if shots_faced > 0 else 0.0
+        xgot = round(self.keeper_xgot.get(name, 0.0), 3)
+        s["xgot_faced"] = xgot
+        s["goals_prevented"] = round(xgot - k_conceded, 3)
+
+    def _accumulate_keeper_facing(self):
+        """xGOT faced and goals conceded, per KEEPER — and per team for the
+        team-level `team_xgot` the rest of the file still needs.
+
+        Opta/StatsBomb definition: Goals Prevented = xGOT_faced - Goals
+        Conceded. xGOT = sum of xG for all shots ON TARGET the keeper faces
+        (saves + goals conceded + woodwork hits + penalties faced).
+
+        ── PER KEEPER, NOT PER TEAM (2026-10-17) ──────────────────────────
+        This used to be a TEAM total stamped onto every player whose
+        `position == "GK"`, which credited a bench keeper who never came on
+        with the whole team's xGOT and goals conceded -- and therefore with a
+        non-zero `goals_prevented` while `saves` was correctly 0, so his
+        `save_pct` read 0.0 and his rating was inflated. `goals_prevented` IS a
+        goalkeeper statistic: it belongs to whoever was between the sticks for
+        that shot.
+
+        Attribution cannot read `secondary_player`, because that field means
+        two different things on two event types (on a SHOT it is the keeper
+        who faced it; on a GOAL it is the ASSISTER), and `PENALTY_SCORED`
+        carries no keeper at all. So the keeper is resolved the way football
+        resolves it -- by who was IN GOAL at that instant -- from the starting
+        XI plus the substitution timeline. One concept, no dual path, and it
+        handles penalties and the scorer-vs-assister ambiguity without either.
+
+        RECONCILIATION IS AN INVARIANT, NOT A COMMENT: the sum of keeper xGOT
+        equals `team_xgot`, and the sum of keeper concessions equals the team's
+        goals conceded. `tests/test_keeper_attribution.py` asserts it, and it
+        earned its keep immediately — it caught an own goal being charged to
+        the wrong side.
+        """
+        config = self.result.config
+        self.team_xgot: Dict[str, float] = defaultdict(float)
+        self.keeper_xgot: Dict[str, float] = defaultdict(float)
+        self.keeper_conceded: Dict[str, float] = defaultdict(float)
+        _XGOT_TYPES = (
+            EventType.SHOT_ON_TARGET, EventType.HIT_WOODWORK,
+            EventType.PENALTY_SCORED, EventType.PENALTY_MISSED,
+        )
+        in_goal = self._in_goal_at()
+        for e in self.result.timeline:
+            if e.event_type in _XGOT_TYPES:
+                defending = (config.away_team if e.team == config.home_team
+                             else config.home_team)
+                xg = e.xg or 0.0
+                self.team_xgot[defending] += xg
+                k = in_goal(defending, e.minute)
+                if k:
+                    self.keeper_xgot[k] += xg
+            elif e.event_type in (EventType.GOAL, EventType.OWN_GOAL):
+                # `e.team` MEANS OPPOSITE THINGS on these two event types.
+                # A GOAL is built on the SCORING side (AttackChain passes
+                # `att_team`); an OWN_GOAL is built on the CONCEDING side —
+                # `make_event(..., OWN_GOAL, defending_team, defender.name)`
+                # — because `goal_team` is the beneficiary while the scorer is
+                # the defender who put it in his own net. The mirror rule
+                # applies to one and NOT the other. Second instance of the
+                # `secondary_player` trap in this file: one field, two
+                # frame-dependent meanings, and getting it wrong is silent.
+                defending = (
+                    e.team if e.event_type == EventType.OWN_GOAL
+                    else (config.away_team if e.team == config.home_team
+                          else config.home_team))
+                k = in_goal(defending, e.minute)
+                if k:
+                    self.keeper_conceded[k] += 1
+
+    def _in_goal_at(self):
+        """Return `(defending_team, minute) -> keeper_name`, the keeper who was
+        actually in goal at that instant.
+
+        Built from the starting XI plus the SUBSTITUTION timeline (`player` =
+        the man off, `secondary_player` = the man on). This is how football
+        itself resolves it, and it is the only attribution that works for every
+        event type -- `secondary_player` is the keeper on a SHOT but the
+        ASSISTER on a GOAL, and `PENALTY_SCORED` carries no keeper at all.
+
+        A swap is applied at the minute it is recorded, so a keeper subbed off
+        in the 70' is not charged for a goal in the 85'. A keeper who never
+        played is therefore never returned, and correctly owns nothing --
+        which is the whole point (see the xGOT block in `_build_stats`).
+        """
+        config = self.result.config
+        timeline = getattr(self.result, "timeline", []) or []
+        # minutes on which each team's keeper changed
+        swaps: Dict[str, List[Tuple[int, str]]] = defaultdict(list)
+        for e in timeline:
+            if getattr(e, "event_type", None) != EventType.SUBSTITUTION:
+                continue
+            on = getattr(e, "secondary_player", "") or ""
+            if on:
+                swaps[e.team].append((int(e.minute), on))
+        for lst in swaps.values():
+            lst.sort()
+
+        starting: Dict[str, str] = {}
+        for team in (config.home_team, config.away_team):
+            for p in self.players.get(team, {}).get("starters", []):
+                if getattr(p, "position", "") == "GK":
+                    starting[team] = p.name
+                    break
+
+        def resolve(team: str, minute: int) -> str:
+            name = starting.get(team, "")
+            for m, on in swaps.get(team, ()):  # ascending
+                if m <= minute:
+                    name = on
+                else:
+                    break
+            return name
+
+        return resolve
 
     def _blank_stat(self, p: PlayerProfile, team: str) -> Dict:
         return {
@@ -1706,17 +1828,20 @@ class StatAccumulator:
 
             # Clean sheet
             goals_conceded = ag if team == config.home_team else hg
+            # A keeper's clean sheet is HIS: goals conceded while he was in
+            # goal, not the team's total. A substitute who came on with the
+            # team already two up has not kept a clean sheet.
+            if s["position"] == "GK":
+                goals_conceded = int(self.keeper_conceded.get(name, 0))
             s["clean_sheet"] = (goals_conceded == 0) and (s["minutes_played"] >= 60)
 
-            # GK goals conceded
+            # GK goals conceded / xGOT faced / goals prevented. Extracted into
+            # `_apply_keeper_stats` because the CONSUMER is where the original
+            # defect lived, and a guard written only against the accumulator
+            # cannot see it -- which is exactly how M1 of the negative control
+            # shipped MISSED the first time round.
             if s["position"] == "GK":
-                s["goals_conceded"] = goals_conceded
-                shots_faced = s["saves"] + goals_conceded
-                s["save_pct"] = round(s["saves"] / shots_faced * 100, 1) if shots_faced > 0 else 0.0
-                xgot = round(self.team_xgot.get(team, 0.0), 3)
-                s["xgot_faced"] = xgot
-                prevented = round(xgot - goals_conceded, 3)
-                s["goals_prevented"] = prevented
+                self._apply_keeper_stats(name, s)
 
             # Pass accuracy — DERIVED from the simulated events only.
             att = s["passes_attempted"]
@@ -2163,14 +2288,19 @@ class StatAccumulator:
         r -= min(s["fouls_committed"] * 0.06, 0.35)
         r -= min(s["big_chances_missed"] * 0.1, 0.4)
 
-        # GK special
+        # GK special -- reads the KEEPER'S OWN figures (`s["goals_conceded"]` is now
+        # keeper-scoped, and `goals_prevented` is his xGOT faced less his own
+        # concessions). The team-level `goals_conceded` local stays correct for
+        # the defender branch below, which is a team defensive figure.
         if pos == "GK":
             r += min(s["saves"] * 0.12, 1.2)
             if s.get("save_pct", 0) > 0:
                 r += min(s["save_pct"] / 100 * 0.6, 0.6)
-            r -= min(goals_conceded * 0.45, 1.2)
+            r -= min(s["goals_conceded"] * 0.45, 1.2)
             gp = s.get("goals_prevented", 0)
-            r += min(gp * 0.25, 0.75)
+            # A keeper who never played has prevented nothing; without this the
+            # flat +0.75 cap below was reachable on a team total.
+            r += min(max(gp, 0.0) * 0.25, 0.75)
             if s["saves"] < 2: r -= 0.4
             if s["clean_sheet"] and s["saves"] >= 3: r += 0.5
 

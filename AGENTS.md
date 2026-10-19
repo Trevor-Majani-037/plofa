@@ -3439,6 +3439,521 @@ and the chart could not, ever. They were right, and the cause was total.
   **NOT gated by the 26/27 regression** (per the standing no-hour-regression
   instruction).
 
+## DISTANCE COVERED — 20 km was a 4.7x PHYSICS INFLATION (2026-10-17, FIXED)
+
+Reported: *"players are covering 20km every match, something is making them
+cover this massive distances."* Confirmed, located, fixed. It was **not** the
+shape layer, **not** the integrator, and **not** the `record_touch` snap that
+*SHAPE ANCHOR* blames for over-credit — it was the **PossessionEpisode race
+trace booking the geometry of a linear interpolation as distance walked.**
+
+- **THE PUBLISHED NUMBER IS NOT A MEASUREMENT.** `distance_covered` is
+  assembled in `opta_analytics._compute_activity` as
+  `distances[name] += baseline_dist + physics_dist_additive`, per minute.
+  `baseline_dist` is a **DNA activity template** (`BASE_MINUTE_ACTIVITY` x
+  `work_rate`, converted through `SPEEDS`) — an authored per-minute budget,
+  not observed movement. `physics_dist_additive` is `physics_dist * 0.45`.
+- **THERE ARE THREE WRITERS INTO `physics_distance_m`**, found by attributing
+  every `record_physics_distance` call to its **call site** (the
+  `_diag_touch_sites.py` frame join), not by inferring intent:
+
+  | call site | what it is | one match |
+  |---|---|---|
+  | `match_engine.py:2732` `_record_offball_distance` | the real 10 Hz integrator | 73.7 km |
+  | `event_chain.py:551` `_accumulate_physics_stats` | PossessionEpisode trace | **405.3 km** |
+  | `position_engine.py:1076` `advance_to_slots` | set-piece run-in | 1.6 km |
+
+  **The middle one was 5.5x the integrator that actually watched those players
+  walk.** I instrumented only two writers on the first pass and the
+  decomposition would not close — which is how the third was found. A derived
+  residual that moves when a source changes is a measurement of your own
+  subtraction, not of the code.
+- **THE MECHANISM.** `possession_physics.resolve_ground_pass` /
+  `resolve_dribble` place a defender by **geometric interpolation toward a
+  MOVING target**:
+  `pos = start + (ball_now - start) * dr`, `dr = ts / arrival`. His per-tick
+  displacement therefore scales with the **ball's** speed, not his own, and
+  `calculate_distance_stats` was booking `math.hypot(dx, dy)` from it.
+  Measured on a real match (`_diag_trace_overcount.py`):
+
+  | | |
+  |---|---|
+  | mean implied speed | **33.2 m/s (120 km/h)** |
+  | metres above 8.5 m/s (30.6 km/h) | **70.1%** |
+  | metres above 12 m/s (43.2 km/h) | **64.8%** (260 km) |
+  | from the race notes | **98.2%** (intercept_race 53.5, pursuit 22.4, contact 22.3) |
+  | geometry / the same segments x the engine's own speed label | **4.70x** |
+
+- **⛔ THE SOURCE ALREADY KNEW, AND FIXED THE WRONG HALF.** The comment above
+  the band classification read: *"the coarse per-tick interpolation makes
+  receivers/defenders jump 1-2+ m per 0.1 s tick (an implied 10-20 m/s), which
+  a real GPS would never see"* — then applied the fix to **sprint COUNT**,
+  which reads the speed label, and left **DISTANCE** reading the geometry,
+  under the line *"Distance accumulated remains geometry-real (seg_dist)."*
+  **The label was always the honest quantity.** The comment also *understated*
+  it: the real figure is 33 m/s mean, not 10-20.
+- **MY FIRST HYPOTHESIS WAS DEAD ON ARRIVAL.** "Sparse trace rows / cross-action
+  position gaps are booked as distance" is a real defect class in this repo and
+  the code comment says so explicitly — but measured, those gaps are **1%** of
+  writer (b). The 99% sits in **consecutive** ticks. A plausible mechanism that
+  measures 1% is not the mechanism.
+- **THE FIX** (`possession_physics.calculate_distance_stats`, 1 functional
+  change): book `seg_dist = min(geometry, dt * speed_label)` under the
+  consecutive-tick guard, and book **0** for a position gap. Speed, sprint and
+  HSR banding already read the label, so **DISTANCE now reads the same
+  quantity SPEED does**. The gap branch still zeroes `speed` so an open sprint
+  run is closed — same rule and same precedent as `run_tracking.RunTracker`'s
+  jump filter.
+- **MEASURED, one match, seed 777, before -> after:**
+
+  | | before | after |
+  |---|---|---|
+  | writer (b) episode trace | 405.3 km | **74.2 km** (5.46x down) |
+  | exported total, 22 players | 364.5 km | **290.0 km** |
+  | outfielders min/mean/max | 14.4 / 17.9 / **20.9** km | **10.7 / 14.2 / 16.5** km |
+  | in the 10.0-13.5 km band | 0/20 | **8/20** |
+  | match events / score | 3726, 3-1 | 3726, 3-1 (**identical**) |
+
+  The decomposition now closes to **+0.014 km out of 290** (was unclosable).
+- **THE FIX CANNOT CHANGE A MATCH.** `player_distance_stats` reaches exactly one
+  consumer: `match_engine.py:6323` `self.gps.ingest_episode_stats`, and only
+  when `enable_virtual_gps()` was called. Stamina is **not** driven by
+  distance. Confirmed empirically — identical event count and scoreline. So
+  this needed no 26/27 regression.
+- **GUARD: `tests/test_distance_accounting.py` (10 tests), new file.** The
+  existing suite is green *about* this and silent on it:
+  `test_opta_analytics_runs_sprints.py` asserts per-minute values **accumulate**
+  across a match and never that the magnitude is physical, and
+  `calibrate_gps.py` — which carries the correct real band (10.5-13.0 km) — is a
+  **print-only script** reading a CSV **last written 2026-09-02**, fed by
+  `tools/diag/_gps_verify.py`, which does `import _repro as R` and so cannot
+  run from the repo root. **Nothing ever compared `distance_covered` to a
+  benchmark.** The file carries two AST guards (distance may only accumulate
+  *under* the tick guard; the ceiling must exist) that assert **non-vacuity
+  first**, plus a behavioural non-vacuity case proving physical geometry is
+  still booked in full.
+- **NEGATIVE CONTROL `_diag_distance_guard.py`: 3/3 caught**, file restored
+  byte-identically, baseline green. **It earned its keep twice.** M2 was first
+  written as a one-line edit that "passed" as a **collection error** — rc != 0,
+  printed CAUGHT, and proved nothing about which assertion pins the defect, so
+  it was rebuilt as a two-edit reconstruction of the actual pre-fix shape with
+  a gate that the mutant must still **import**. And `test_virtual_gps` was
+  bisected rather than assumed (`_diag_gps_bisect.py`): it fails at HEAD too
+  (mean drift 118.0 m pre-fix vs 116.2 m post-fix, threshold 25 m), so it is
+  **pre-existing** and the ceiling slightly improved it.
+- **⚠️ WHY `test_gps_matches_engine_physics` COULD NEVER HAVE CAUGHT THIS.** The
+  test's premise is that the GPS is an *independent* pass. It is not: GPS
+  ingests the same `player_distance_stats` the engine just wrote, so both
+  instruments carried the identical 4.7x defect and agreed with each other.
+  **An oracle that shares the subject's defect is not an oracle.** The residual
+  116 m disagreement is therefore a genuinely open question about the off-ball
+  sampler path, and is *not* evidence about the trace.
+- **THE RESIDUAL IS REAL, MEASURED, AND NOT A BUG IN THE FIX.** Outfielders now
+  sit at 14.2 km mean against 10.0-13.5, max excess **+2.96 km**. It is
+  entirely the flat additive, and the template is fine:
+  - `template alone` (outfielders) **8.89 / 11.69 / 13.55 km** min/mean/max —
+    already inside the band, and inside this module's own documented 9-14 km
+  - `0.45 x physics` adds a **flat +2.53 km to every player**, unconditionally
+  - **A STRUCTURAL INCONSISTENCY, measured not argued:** the
+    `if real_dist > baseline_dist * 1.15: excess = real_dist - baseline_dist`
+    logic **exists and is DEAD** — it lives in the `else` of
+    `if physics_dist > 0`, so for any player with *any* physics trace (i.e. all
+    of them) it never runs. The live branch adds a flat fraction of a
+    full re-measurement instead of the *excess* the code's own comment says it
+    is adding: *"adds high-intensity distance that the baseline undercounts."*
+  - **CALIBRATION, NOT DEFECT — and deliberately NOT touched.** Making the
+    additive excess-based changes every distance number in the project and in
+    the warehouse, and needs a multi-seed sweep (~10 matches) against the
+    Opta benchmark. Same rule as *SHAPE ANCHOR*'s `COMPACTION`: it is a
+    refinement, it is a decision, and it does not touch the defect fixed here.
+- **⚠️ SEPARATE PRE-EXISTING FINDING, same table, untouched:** published
+  `top_speed` is **22.4-26.3 km/h** against `calibrate_gps`' own 28.8-34.6
+  km/h band — every player ~25% low. The ceiling did not touch it (`top_speed`
+  reads the label, which I did not change). Root cause is that the label peaks
+  at `RACE_EFFORT(0.85) x top_speed`, so a published top speed can never exceed
+  85% of the player's real maximum.
+- **ALSO: keepers read 2.82-2.84 km against a real ~4-6.** `BASE_MINUTE_ACTIVITY`
+  gives a GK `(0.80, 0.18, 0.02, 0.00, 0.00)` = 2.8 km. Same table, same
+  pass — **do not fix it in this pass.**
+- **PROBES** (all one match each, `PYTHONHASHSEED=0`):
+  `_diag_distance_audit.py` (decomposition + G2/G3 gates), `_diag_trace_overcount.py`
+  (implied-speed bands, trace-seconds, distance by `_snap` note),
+  `_diag_distance_writers.py` (three writers by call site + independent
+  template recomposition — the one that CLOSED the decomposition),
+  `_diag_distance_final.py` (export-facing table vs `calibrate_gps` bands),
+  `_diag_gps_bisect.py` (pre-existing-failure bisect), `_diag_distance_guard.py`
+  (negative control).
+- **THREE PROBE ERRORS OF MINE, all the documented class, recorded because each
+  produced a clean wrong answer:**
+  1. **`_snap` timestamps from `self.elapsed`, NOT from a `tick` argument.** A
+     test helper that appears to pass the tick through writes every row at
+     t=0.0; the consecutive-tick guard then discards all of them and **every
+     distance assertion returns 0.0 and looks like a code defect.** Cost two
+     debugging cycles inside the new test file.
+  2. **I derived the "template" column by subtraction** (`raw − 0.45 x phys`)
+     and it MOVED when the fix landed (6.77 -> 10.16 km/player). `baseline_dist`
+     is computed before any physics term and cannot depend on it. A derived
+     residual that moves when a source changes is measuring your own
+     subtraction. Fixed by recomputing the template independently from
+     `BASE_MINUTE_ACTIVITY` + `SPEEDS` — which is what closed the books.
+  3. **The negative control counted a syntax error as a caught mutation.** See
+     above.
+
+## GOALKEEPING OWNERSHIP + GK WORK RATE + THE EXCESS ADDITIVE (2026-10-17)
+
+Four items from the same session as *DISTANCE COVERED*, three of them code
+changes. All measured on real matches, all guarded, all with a negative control.
+
+### 1. GOALS PREVENTED WAS A TEAM TOTAL ON EVERY `position == "GK"` — FIXED
+
+*"a bench gk who didn't play or entered as a sub gets the same goals
+prevented."* Correct, and the cause was one line in `exporter.py`:
+
+    s["xgot_faced"]      = self.team_xgot.get(team, 0.0)      # TEAM
+    s["goals_prevented"] = xgot - goals_conceded               # TEAM
+
+`saves` was already correctly per-player (SAVE events name the keeper), so the
+pre-fix row for a bench keeper read **saves 0, save_pct 0.0%, and a non-zero
+Goals Prevented** — and the rating block collected `min(gp*0.25, 0.75)` off it.
+A substitute who came on at 70' inherited the 12' goal the same way.
+
+- **ATTRIBUTION IS "WHO WAS IN GOAL AT THAT INSTANT", NOT `secondary_player`.**
+  That field cannot be used: it is the keeper on a SHOT but the **ASSISTER** on
+  a GOAL, and `PENALTY_SCORED` carries no keeper at all. New
+  `StatAccumulator._in_goal_at()` resolves it from the starting XI plus the
+  SUBSTITUTION timeline (`player` = off, `secondary_player` = on). One concept,
+  no dual path, and it handles penalties and the scorer/assister ambiguity
+  without either.
+- **⛔ `e.team` MEANS OPPOSITE THINGS ON `GOAL` AND `OWN_GOAL`.** A GOAL is
+  built on the **scoring** side (`AttackChain` passes `att_team`); an OWN_GOAL is
+  built on the **conceding** side —
+  `make_event(..., OWN_GOAL, defending_team, defender.name)` — because
+  `goal_team` is the beneficiary while the scorer is the defender who put it in
+  his own net. So the mirror rule applies to one and NOT the other. **My first
+  version applied it to both and the reconciliation gate caught it** (Thornfield
+  conceded 2, keepers accounted for 1). Second instance of the
+  `secondary_player` trap in this file: one field, two frame-dependent
+  meanings, and it fails *silently*.
+- **RECONCILIATION IS AN INVARIANT, NOT A COMMENT:** Σ keeper xGOT ==
+  `team_xgot`, and Σ keeper concessions == team goals conceded. Measured on a
+  real match: **0.841 = 0.514 + 0.327**, conceded 1 = 1, both teams OK.
+- **MEASURED, forced keeper swap at 70'** (the live match produced ZERO
+  substitutions, so the swap branch was never exercised — a vacuum, and the
+  keeper-who-came-on case is precisely what was broken):
+
+  | | minutes | saves | conceded | xGOT faced | goals prevented |
+  |---|---|---|---|---|---|
+  | Keano Walsh (OFF at 70') | 0–70 | 4 | 1 | 0.514 | −0.486 |
+  | Rafi Sandoval (ON at 70') | 70–90 | 0 | 0 | **0.327** | **0.327** |
+  | a keeper who never played | — | 0 | 0 | **0.000** | **0.000** |
+
+- `goals_conceded` and `clean_sheet` are now keeper-scoped too (they were
+  team-scoped, so a substitute who came on with the team 2-0 up was credited
+  with a clean sheet), and the GK rating branch reads the keeper's own figures.
+  For every **non**-GK, `goals_conceded` stays team-level — it is a defensive
+  figure there.
+- **GUARD `tests/test_keeper_attribution.py` (14 tests) + `_diag_keeper_guard.py`
+  (4/4 caught, files byte-identical).**
+  > **⚠️ THE FIRST NEGATIVE CONTROL RUN WAS 3/4 AND THE MISS WAS THE HEADLINE
+  > BUG.** M1 re-stamped the team total onto every goalkeeper and the suite
+  > stayed GREEN — because every other test inspected `keeper_xgot` /
+  > `keeper_conceded` (the *accumulator*) and none ran the *consumer* that
+  > writes the stat row. So the accumulator was guarded and the defect's actual
+  > location was not. **A guard written only against the producer cannot see the
+  > consumer.** Fixed by extracting `_apply_keeper_stats` and adding
+  > `KeeperStatRowTests`, which drives the row — plus a non-vacuity case that
+  > asserts the team figure *is* available and *is* different, so the test
+  > cannot pass because the team total happens to be zero. This is the
+  > `_diag_cross_guard.py` lesson recurring verbatim: I had named the first file
+  > as covering "the cross receiver" when it only covered the helper.
+
+### 2. ARE THE ACTIVITY SECONDS MEASURED? — **NO. THEY ARE HEURISTIC.**
+
+`standing_seconds` / `walking_seconds` / `jogging_seconds` / `running_seconds`
+/ `sprinting_seconds` come from `opta_analytics._compute_activity`:
+
+1. **the backbone is a table**, `BASE_MINUTE_ACTIVITY[position]`, scaled by
+   `effort = 0.80 + 0.40 x work_rate/100` (jog/run/sprint only);
+2. **telemetry then perturbs it** — touches, `peak_touch_jump`, physics sprint
+   counts — moving time between bands;
+3. **the result is renormalised to exactly 60 s per minute**, by draining
+   `diff` out of standing→walking→jogging first and then out of running. So the
+   five bands always sum to 60 by construction, and "the sum is 60" is not
+   evidence of anything.
+
+Measured, template vs published (seconds, whole match):
+
+| player | pos | band | template | published | Δ |
+|---|---|---|---|---|---|
+| Percy | RW | standing | 941 | 675 | −266 |
+| Percy | RW | running | 647 | 868 | +221 |
+| Percy | RW | sprinting | 59 | 218 | +159 |
+| Nils Werner | CM | standing | 1058 | 822 | −236 |
+| Nils Werner | CM | running | 470 | 885 | +415 |
+| Leo Mbeki | LW | sprinting | 59 | 290 | +231 |
+
+**So: a heuristic shape, telemetry-shaped.** Telemetry consistently pulls time
+*out of standing* and *into running/sprinting* — i.e. it makes everyone look
+busier — by 200–400 s per player per match. The published **distance** is
+correspondingly ~80–90% template. The genuinely **measured** quantities are
+the `physics_*` fields and `distance_covered`'s trace term; the five
+`*_seconds` are not among them. **Do not present the seconds as telemetry.**
+
+### 3. KEEPERS COVERED 2.82 km — FIXED, BENCHMARKED FIRST
+
+*"GKs in real life don't cover 2.88 km, they usually cover more, ~4, 5 or 6."*
+Correct. Two independent GPS studies, both from the literature this project
+already cites for its speed bands (`calibrate_gps.py`):
+
+- **Di Salvo et al. 2008**, elite goalkeepers, GPS: **5,611 ± 613 m**
+- **Kubayi et al. 2020**, Olympic goalkeepers: **4,819 m** (range 4,036–6,640)
+
+`BASE_MINUTE_ACTIVITY["GK"]` was `(0.80, 0.18, 0.02, 0.00, 0.00)` = 29.2 m/min
+= 2.80 km — about **half** of real. Now `(0.66, 0.17, 0.15, 0.02, 0.00)` =
+54.2 m/min at effort 1.0, spanning **4.61–5.80 km** across the work-rate range,
+inside both studies. **Measured on a real match: 5.27 and 5.50 km.**
+
+> A goalkeeper's distance is **100% template** — `_offball_move_player` returns
+> early for `position == "GK"`, so the integrator and the trace contribute
+> ~0.04 km. Nothing about the GK number is measured, which is worth knowing
+> before anyone treats it as evidence.
+
+### 4. THE DEAD `excess` LOGIC IS NOW LIVE — MEASURED, AND THE RESIDUAL IS NAMED
+
+The flat `physics_dist * 0.45` added a fraction of a **full re-measurement** on
+top of a template that already represented the whole match. It now adds only the
+**excess** over the template's budget for the seconds the trace actually covers:
+
+    covered_frac = min(1.0, traced_s / 60.0)      # traced_s from the SAME row
+    budgeted     = baseline_dist * covered_frac
+    physics_dist_additive = max(0.0, physics_dist - budgeted) * 0.45
+
+`traced_s` = `physics_walk_time_s + physics_jog_time_s + physics_sprint_time_s`,
+already on the `position_log` row, so **no new field and no match-engine
+change**. The dead `if real_dist > baseline_dist * 1.15` logic this replaces
+lived in the `else` of `if physics_dist > 0` and had never run for anyone.
+
+**MEASURED, outfielders who played (n=20):**
+
+| | mean | max | in 10.0–13.5 |
+|---|---|---|---|
+| before the excess change | 14.22 | 16.46 | 8/20 (0 under) |
+| **after** | **12.45** | **14.26** | 9/20 (**8 over, 3 under**) |
+
+**The mean is now inside the band, but the spread is ±2.4 km and it straddles
+BOTH edges.** That is the honest result, and the per-position table says why —
+the residual is a clean positional bias **in the template**, not noise:
+
+| pos | template | published | real (PL/90) | verdict |
+|---|---|---|---|---|
+| CB | 8.90 | 9.81 | ~10.5–11.0 | **~1 km LOW** |
+| CDM | 10.21 | 11.41 | ~10.5–11.0 | good |
+| ST | 10.51 | 11.77 | ~10.5–11.0 | good |
+| CAM | 11.02 | 12.10 | ~11.5–12.0 | good |
+| LB | 11.78 | 13.38 | ~11.0–12.0 | +1.4 over |
+| RB | 11.78 | 13.30 | ~11.0–12.0 | +1.3 over |
+| LW | 13.17 | 13.87 | ~11.5–12.5 | **+1.4 over** |
+| RW | 13.17 | 14.12 | ~11.5–12.5 | **+1.6 over** |
+| CM | 12.21 | 13.97 | ~11.5–12.5 | **+1.5 over** |
+
+(GK shows 3.49/3.59 in that table only because the probe's injected substitute
+has zero `position_log` frames; the two real keepers are 5.27 and 5.50.)
+
+> **CALIBRATION, NOT A DEFECT — and deliberately NOT done here.** `CB` wants
+> ~+0.9 km and `CM/LW/RW` ~−1.5 km. Per-position table edits are a **fit**, and
+> per this file's own standing rules (`COMPACTION`, *SHAPE ANCHOR*) a fit needs
+> a **multi-seed sweep** against the benchmark — ~10 matches, ~20 min — and is a
+> deliberate decision because it moves every distance figure in the project and
+> in the warehouse. The per-position evidence is above so that decision is one
+> step away, not a fresh investigation. **One match, one seed, one roster.**
+
+- **GUARDS:** `tests/test_keeper_attribution.py` carries the GK work-rate band
+  (with a non-vacuity case proving the *old* template really is out of range, so
+  the test cannot pass by accident if the table is reverted), a case pinning
+  that a keeper still stands more than a CM, and two structural guards on the
+  excess form — including `assertNotIn("physics_dist_additive = physics_dist *")`
+  so the flat multiplicative form cannot come back unnoticed.
+- **PROBE `tools/diag/_diag_keeper_distance_verify.py`** covers all of §1–§4 in
+  one match, with the reconciliation invariant as a hard gate and a
+  forced-keeper-swap scenario because the live match produced zero subs.
+- **SUITES:** the two new files + `test_opta_analytics_runs_sprints` +
+  `test_movement_and_body` + `test_plofa_export` + `test_chance_creation` +
+  `test_alltime_db` → **99 passed, 2 strict xfailed, 0 failed** (5m26s).
+  `tests/test_virtual_gps.py::test_gps_matches_engine_physics` remains the
+  documented **pre-existing** failure (bisected in the section above).
+
+## MEASURED ACTIVITY — the seconds were authored because standing time was UNMEASURABLE (2026-10-17)
+
+The user asked to *"fix the activity seconds to come truly from raw match data
+and also the multi seed sweep if it will bring true realsim not not handcoded
+values"*. Both halves were done, and the second one's answer is **NO**.
+
+### ⛔ THE MULTI-SEED SWEEP DOES NOT SATISFY THE STATED CONDITION
+
+The sweep fits `BASE_MINUTE_ACTIVITY` — **a hand-authored per-position table** —
+to the Opta benchmark. It makes a handcoded number *closer to real*; it cannot
+make it **true**. The user's condition was "not handcoded values", so the sweep
+is the **wrong tool for the goal they stated**. It is not refused as
+unnecessary: it is wrong by construction.
+
+And it is now nearly moot anyway, because the measurement change demotes the
+table to a **residue**: it supplies the shape of the ~31% of seconds the
+integrator did not watch, worth **~9% of the published distance**. Tuning a
+table that carries 9% of a number is not a route to realism. **The instrument
+the user actually wanted was the measurement, and that is what shipped.**
+
+### TWO REFUTED HYPOTHESES, recorded so they are not re-derived
+
+1. **"The engine simulates less time than 90'."** WRONG.
+   `tools/diag/_diag_match_clock_budget.py`: **5,782 s simulated against 5,760 s
+   nominal (100.4%)**, and the two integrators budget **5,570 s = 96.3% of the
+   clock** (`_offball_run` 1,633 s live + `_continuous_offball_phase` 3,938 s
+   dead). **The clock is fine.**
+2. **"The gap is the `if moved <= 0: return` in the writer."** Initially
+   *unmeasurable*, and my first probe of it was itself wrong — it counted calls
+   to `_record_offball_distance` in a wrapper placed **before** the method's own
+   early return, so the gate could never fire and reported "premise is wrong,
+   stop" out of a broken instrument. **A gate that cannot fail is worse than no
+   gate.** Rewritten to wrap the ACCUMULATOR (`record_physics_distance`, the
+   only thing that proves a measurement was booked), it is confirmed below.
+
+### THE HEADLINE DEFECT
+
+`MatchEngine._record_offball_distance` opened with
+
+    if moved <= 0:
+        return
+
+`_offball_move_player` has an `arrive = 2.0 m` dead band, so a player settled AT
+his shape target moves 0 m on the tick — **and his time was discarded before any
+measurement.** Measured (`_diag_standing_gap.py`, one real match):
+
+| | ticks |
+|---|---|
+| integrator stepped | 666,476 |
+| booked to the accumulator | 364,160 |
+| **dropped by `moved == 0`** | **306,504 (46.0%)** |
+
+**≈1,533 s per player — 26.6% of a nominal match — thrown away.** That is not a
+cosmetic gap: it is *why* the table had to invent a **16–83% standing share**. The
+largest single band had no data, so it was authored.
+
+Separately measured: the on-ball exclusion (`_on_ball_this_minute`, a sticky
+per-minute set) removes **447,544 ticks (42.8%)** — the other structural hole,
+and a **simulation** question, not an accounting one (see the residual below).
+
+### WHAT SHIPPED
+
+- **`moved == 0` now books its time.** The sprint-segment state machine is
+  deliberately NOT touched — it only ever ran on `moved > 0` and still does, so
+  sprint counts and cooldowns are byte-identical.
+- **Five measured band accumulators** on `PlayerSpatialState`
+  (`physics_{standing,walk,jog,running,sprint}_time_s`) + the `position_log` row,
+  banded **once, at the writer**, from the integrator's own per-tick speed.
+- **The band edges are Di Salvo's published GPS thresholds** — the literature
+  `calibrate_gps.py` already cites — so the buckets mean something outside this
+  repo rather than being tuned to make a total come out right:
+  `standing < 0.5`, `walking 0.5–2.0`, `jogging 2.0–4.2`, `running 4.2–7.0`,
+  `sprinting ≥ 7.0 m/s` (`>25.2 km/h`). `position_engine.ACTIVITY_BAND_EDGES`.
+- **Measured first, template only for the gap.** For every second the integrator
+  watched, the published band seconds and the published metres ARE the
+  measurement. The table supplies the shape of the `uncovered_s` seconds only,
+  scaled by `work_rate`, and telemetry may shape **that part only** — a measured
+  second is a fact and is never overwritten.
+- **`distance_covered = physics_dist + template_dist`** — measured metres plus a
+  template budget for the unwatched seconds. This **retires the flat/excess
+  `physics_dist_additive` entirely** (yesterday's excess form is superseded, not
+  merely tuned): the trace is no longer an *addition* to a full-match template,
+  it is that template's **replacement** on the seconds it covers.
+- **`activity_measured_pct` + `activity_source` are published per player**, so a
+  blended figure can never be mistaken for an observation. Nothing is
+  mislabelled.
+
+### MEASURED, one real match, seed 777 (`_diag_measured_activity_verify.py`)
+
+| | before | after |
+|---|---|---|
+| outfield measured coverage | 42.1% | **68.9%** (min 44.3, max 88.5) |
+| `standing` seconds measured | 0% (no such measurement existed) | **100%** |
+| `walking` measured | — | **100%** |
+| `jogging` / `running` measured | — | **96–99% / 92–97%** |
+| template share of published distance | effectively 100% | **~9%** |
+
+### ⛔ THE HONEST RESIDUAL — IT IS NOW *TRUE* AND NOT YET *REALISTIC*
+
+Publishing the measurement **lowered** `distance_covered` to **~6.6–8.1 km**
+against the real 10.5–13.0 km band, because the measured movement really is
+6.1–7.6 km. **Two independent gaps, both measured, neither an accounting
+artefact:**
+
+1. **COVERAGE 69%** — the 31% unwatched is dominated by the per-minute sticky
+   on-ball exclusion. Closing it changes positions on the pitch, so it needs its
+   own gate and is **not** done here.
+2. **SPEED.** While watched, players move at **≈1.56 m/s average**, against a
+   real ≈2.13 m/s (11.5 km / 5,400 s). Even at 100% coverage and 1.56 m/s the
+   total is ~9.0 km, still short of 11.5. The cause is the shape-holding jog
+   (`_JOG_SPEED` 1.75–1.90 m/s) plus the measured **standing share of 20–32%**
+   (real football is ~10–15%): the integrator's players **arrive and stop**.
+
+**So the deliverable is a measurement, and the measurement says the engine's
+locomotion is about 61% of a real player's. Publishing 12 km would have been
+fiction; publishing 7 km is the truth about the simulation.** Closing that gap
+is a *pitch* change (integrator coverage and speeds), not an analytics one, and
+it is the next workstream — not another table edit.
+
+### GUARDS
+
+- **`tests/test_measured_activity.py` (13, new file).** `test_opta_analytics_
+  runs_sprints` is green *about* `distance_covered` and **silent on what it is
+  made of** — it asserts per-minute values ACCUMULATE, never that the magnitude
+  is a measurement. A suite green and silent about a feature is not evidence
+  about it. The new file pins the band edges, that time lands in exactly one
+  band, that a stationary tick is booked rather than dropped, that **full
+  coverage publishes the measured seconds and metres exactly** (no template left
+  to hide behind), that partial coverage adds only the unwatched residue, and
+  that `activity_measured_pct`/`activity_source` are published. The
+  bare-early-return pin is a **structural** scan because a behavioural test
+  cannot see a re-introduced discard.
+- **THE TESTS CAUGHT A REAL BUG IN MY OWN IMPLEMENTATION ON THE FIRST RUN:
+  `tpl_s` lost its ×60** (`prof[b] / 60.0 * uncovered_s` → `prof[b] /
+  60.0 * 60.0` = a *fraction*, not seconds). At zero coverage the published
+  bands summed to **1.0 s instead of 60**. Fixed to `prof[b] * uncovered_s`.
+  That test was the only thing standing between the user and a silently broken
+  fallback path.
+- **NEGATIVE CONTROL `tools/diag/_diag_activity_guard.py`: 4/4 caught**, files
+  restored byte-identically, baseline green. M1 re-discards `moved == 0` (the
+  headline defect), M2 publishes the table for every minute, M3 reverts to
+  `template_distance + fraction_of_trace`, M4 drops the standing band. Each
+  mutant is required to **still import** — a syntax error counted as a caught
+  mutation proves nothing about which assertion pins the defect.
+- **A GUARD HAD TO BE REPOINTED, NOT DELETED.** `test_keeper_attribution.
+  PhysicsAdditiveIsAnExcessTests` (added yesterday) pinned the *excess* form
+  that today's blend supersedes. Left alone it would have gone **RED on a
+  strictly better implementation**, which is how a guard trains people to delete
+  it instead of reading it. It now asserts the superseding invariant
+  (`baseline_dist == physics_dist + template_dist`, the residue scoped to
+  `uncovered_s`, and no flat/excess additive) — and it is an **AST** check,
+  because the comment explaining the retirement *quotes* `physics_dist_additive`
+  and a substring scan matches the prose. **A name inside a comment is not a
+  call site** — the sixth recorded instance of that shape in this file.
+- **PROBES:** `_diag_activity_coverage.py` (coverage %), `_diag_match_clock_budget.py`
+  (refuted the clock hypothesis), `_diag_standing_gap.py` (the 46% drop),
+  `_diag_measured_activity_verify.py` (all three post-change gates:
+  coverage > 42.1%, published == measured, distance = measured + residue).
+
+### GATES
+
+`test_measured_activity` (13) + `test_keeper_attribution` (15) +
+`test_distance_accounting` + `test_opta_analytics_runs_sprints` +
+`test_movement_and_body` + `test_plofa_export` + `test_chance_creation` +
+`test_alltime_db` + `test_positional_play` → **113 passed, 2 strict xfailed,
+0 failed** (1m31s). Both negative controls **4/4**.
+
+**Not gated by the 26/27 regression** (standing no-hour-regression
+instruction). **One match, one seed, one roster** — every percentage above is a
+single sample; the *mechanism* is what is established, and none of the distance
+figures should be quoted as calibrated.
+
 ## Next Move
 **NEW 2026-10-15 — from the SHAPE ANCHOR work, three items in priority order
 before anything spatial is tuned further:**
