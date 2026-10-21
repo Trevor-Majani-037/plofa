@@ -161,6 +161,23 @@ class FootballBrain:
 
     # ── Forward pass ────────────────────────────────────────────
 
+    def forward_logits(self, sensors: np.ndarray) -> np.ndarray:
+        """The pre-softmax OUTPUTS, shape (N, 10).
+
+        Split out from `forward` so that a TRAINER can back-propagate: the
+        cross-entropy gradient is written in terms of the logits, and
+        re-deriving them from the probabilities loses the information the
+        softmax destroyed.  `forward` is this plus the softmax, so the two
+        cannot drift.
+        """
+        single = sensors.ndim == 1
+        x = np.asarray(sensors, dtype=np.float64)
+        if single:
+            x = x[None, :]
+        h = _relu(x @ self.w1 + self.b1)
+        h = _relu(h @ self.w2 + self.b2)
+        return h @ self.w3 + self.b3
+
     def forward(self, sensors: np.ndarray) -> np.ndarray:
         """Run the vision vector(s) through the network.
 
@@ -177,12 +194,7 @@ class FootballBrain:
             Softmax probability distribution(s) over the 10 intents.
         """
         single = sensors.ndim == 1
-        x = np.asarray(sensors, dtype=np.float64)
-        if single:
-            x = x[None, :]
-        h = _relu(x @ self.w1 + self.b1)
-        h = _relu(h @ self.w2 + self.b2)
-        logits = h @ self.w3 + self.b3
+        logits = self.forward_logits(sensors)
         probs = _softmax(logits)
         return probs[0] if single else probs
 

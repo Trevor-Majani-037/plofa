@@ -1,0 +1,32 @@
+{
+  "surrogate": "brains/surrogate_pos_v6.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.0,
+  "role_features": true,
+  "tactics_context": false,
+  "perception": true,
+  "perception_roles": true,
+  "status": "REJECTED BY THE CENSUS — every position collapsed",
+  "census": {
+    "GK": {"intents": 3, "max_share": 0.593, "top": "SWITCH"},
+    "CB": {"intents": 1, "max_share": 1.0, "top": "PROGRESSIVE_PASS"},
+    "LB": {"intents": 3, "max_share": 0.95, "top": "PROGRESSIVE_PASS"},
+    "RB": {"intents": 3, "max_share": 0.824, "top": "RECYCLE"},
+    "CDM": {"intents": 2, "max_share": 0.816, "top": "SAFE_PASS"},
+    "CM": {"intents": 2, "max_share": 0.925, "top": "CARRY"},
+    "CAM": {"intents": 1, "max_share": 1.0, "top": "SAFE_PASS"},
+    "LW": {"intents": 2, "max_share": 0.778, "top": "SWITCH"},
+    "RW": {"intents": 2, "max_share": 0.997, "top": "RECYCLE"},
+    "ST": {"intents": 3, "max_share": 0.615, "top": "PROTECT_POSSESSION"},
+    "CF": {"intents": 3, "max_share": 0.614, "top": "CARRY"}
+  },
+  "notes": [
+    "REFERENCE-ONLY. The shipped T1 set stays.",
+    "The parallel runner's own _manifest_all.json was lost when the server restarted mid-run; the three wave-3 workers finished as orphans and wrote their brains. This file records the configuration and the census.",
+    "The census instrument: _diag_intent_mix_all.py brains_v6",
+    "Why it collapsed: AGENTS.md, THE CEILING — WHY THE v6 RETRAIN COLLAPSES ANYWAY."
+  ]
+}

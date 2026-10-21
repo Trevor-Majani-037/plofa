@@ -27,7 +27,8 @@ ALL_POSITIONS = ["GK", "CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST", "
 
 def _run_position(args_tuple):
     pos, surrogate, states, generations, population, seed, out, goal_bias, \
-        role_features, tactics_context, perception, perception_roles = args_tuple
+        role_features, tactics_context, perception, perception_roles, \
+        distill, mutation_strength = args_tuple
     cmd = [
         sys.executable, "evolve_brains.py",
         "--position", pos,
@@ -47,6 +48,10 @@ def _run_position(args_tuple):
         cmd.append("--perception")
     if perception_roles:
         cmd.append("--perception-roles")
+    if distill:
+        cmd.append("--distill")
+    if mutation_strength is not None:
+        cmd += ["--mutation-strength", str(mutation_strength)]
     start = time.time()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
@@ -93,6 +98,17 @@ def main():
     p.add_argument("--positions", type=str, default=None,
                    help="Comma-separated subset; default all 11.")
     p.add_argument("--out", default="brains")
+    p.add_argument("--distill", action="store_true",
+                   help="DISTIL each position's brain to the surrogate's own "
+                        "policy first, then refine it with the genetic "
+                        "algorithm from that start.  The blind search reached "
+                        "the best CONSTANT and stopped; the distillation "
+                        "lands on the broad, shooting policy the census "
+                        "wants, and the GA can only improve on it.")
+    p.add_argument("--mutation-strength", type=float, default=None,
+                   help="Override the mutation strength (a refinement wants a "
+                        "small one: 0.05 is a hill climb, 0.3 is a random "
+                        "walk).")
     args = p.parse_args()
 
     if not os.path.exists(args.surrogate):
@@ -107,7 +123,8 @@ def main():
     tasks = [(pos, args.surrogate, args.states, args.generations, args.population,
               args.seed, args.out, args.goal_bias,
               args.role_features, args.tactics_context,
-              args.perception, args.perception_roles)
+              args.perception, args.perception_roles,
+              args.distill, args.mutation_strength)
              for pos in positions]
 
     results = {}
@@ -135,6 +152,8 @@ def main():
             "tactics_context": args.tactics_context,
             "perception": args.perception,
             "perception_roles": args.perception_roles,
+            "distill": args.distill,
+            "mutation_strength": args.mutation_strength,
             "total_elapsed_s": round(elapsed, 1), "results": results,
         }, f, indent=2)
     print(f"\nDone in {elapsed/60:.1f} min. Manifest: {manifest}")

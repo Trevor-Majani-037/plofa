@@ -1,0 +1,94 @@
+{
+  "surrogate": "brains\\surrogate_pos_v7merged.json",
+  "states": 300,
+  "generations": 80,
+  "population": 32,
+  "seed": 123,
+  "goal_bias": 0.0,
+  "role_features": true,
+  "tactics_context": false,
+  "perception": true,
+  "perception_roles": true,
+  "distill": true,
+  "mutation_strength": 0.05,
+  "total_elapsed_s": 153.8,
+  "results": {
+    "CB": {
+      "pos": "CB",
+      "ok": true,
+      "elapsed_s": 50.3,
+      "summary": "CB: fitness=0.8810 (48.9s) -> brains_v7\\CB.json",
+      "err": ""
+    },
+    "LB": {
+      "pos": "LB",
+      "ok": true,
+      "elapsed_s": 50.5,
+      "summary": "LB: fitness=0.9849 (49.2s) -> brains_v7\\LB.json",
+      "err": ""
+    },
+    "RB": {
+      "pos": "RB",
+      "ok": true,
+      "elapsed_s": 51.3,
+      "summary": "RB: fitness=0.9646 (50.0s) -> brains_v7\\RB.json",
+      "err": ""
+    },
+    "GK": {
+      "pos": "GK",
+      "ok": true,
+      "elapsed_s": 60.8,
+      "summary": "GK: fitness=1.0000 (59.2s) -> brains_v7\\GK.json",
+      "err": ""
+    },
+    "CAM": {
+      "pos": "CAM",
+      "ok": true,
+      "elapsed_s": 59.4,
+      "summary": "CAM: fitness=0.9281 (58.1s) -> brains_v7\\CAM.json",
+      "err": ""
+    },
+    "CDM": {
+      "pos": "CDM",
+      "ok": true,
+      "elapsed_s": 66.5,
+      "summary": "CDM: fitness=0.8786 (65.1s) -> brains_v7\\CDM.json",
+      "err": ""
+    },
+    "LW": {
+      "pos": "LW",
+      "ok": true,
+      "elapsed_s": 56.7,
+      "summary": "LW: fitness=0.9002 (49.8s) -> brains_v7\\LW.json",
+      "err": ""
+    },
+    "CM": {
+      "pos": "CM",
+      "ok": true,
+      "elapsed_s": 67.3,
+      "summary": "CM: fitness=0.9440 (65.9s) -> brains_v7\\CM.json",
+      "err": ""
+    },
+    "RW": {
+      "pos": "RW",
+      "ok": true,
+      "elapsed_s": 39.2,
+      "summary": "RW: fitness=1.0000 (38.0s) -> brains_v7\\RW.json",
+      "err": ""
+    },
+    "ST": {
+      "pos": "ST",
+      "ok": true,
+      "elapsed_s": 35.4,
+      "summary": "ST: fitness=1.0000 (34.1s) -> brains_v7\\ST.json",
+      "err": ""
+    },
+    "CF": {
+      "pos": "CF",
+      "ok": true,
+      "elapsed_s": 35.6,
+      "summary": "CF: fitness=1.0000 (34.5s) -> brains_v7\\CF.json",
+      "err": ""
+    }
+  }
+}

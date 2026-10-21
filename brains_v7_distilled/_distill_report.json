@@ -1,0 +1,343 @@
+{
+  "GK": {
+    "position": "GK",
+    "width": 31,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.5622707273170717,
+    "loss_last": 0.03695619384351543,
+    "agreement_first": 0.124,
+    "agreement": 0.988,
+    "mix": {
+      "CARRY": 0.246,
+      "DRIBBLE": 0.0325,
+      "PROTECT_POSSESSION": 0.101,
+      "RECYCLE": 0.179,
+      "SAFE_PASS": 0.084,
+      "SWITCH": 0.1965,
+      "THROUGH_BALL": 0.161
+    },
+    "target_mix": {
+      "CARRY": 0.248,
+      "DRIBBLE": 0.029,
+      "PROTECT_POSSESSION": 0.1005,
+      "RECYCLE": 0.18,
+      "SAFE_PASS": 0.0835,
+      "SWITCH": 0.193,
+      "THROUGH_BALL": 0.166
+    }
+  },
+  "CB": {
+    "position": "CB",
+    "width": 33,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.5018890773011746,
+    "loss_last": 0.03430561218160618,
+    "agreement_first": 0.0895,
+    "agreement": 0.991,
+    "mix": {
+      "CARRY": 0.1215,
+      "PROGRESSIVE_PASS": 0.268,
+      "PROTECT_POSSESSION": 0.1695,
+      "RECYCLE": 0.216,
+      "SAFE_PASS": 0.054,
+      "SWITCH": 0.029,
+      "THROUGH_BALL": 0.142
+    },
+    "target_mix": {
+      "CARRY": 0.1225,
+      "PROGRESSIVE_PASS": 0.2695,
+      "PROTECT_POSSESSION": 0.1685,
+      "RECYCLE": 0.214,
+      "SAFE_PASS": 0.0545,
+      "SWITCH": 0.029,
+      "THROUGH_BALL": 0.142
+    }
+  },
+  "LB": {
+    "position": "LB",
+    "width": 32,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.685196687706699,
+    "loss_last": 0.058381038684034985,
+    "agreement_first": 0.0455,
+    "agreement": 0.9785,
+    "mix": {
+      "CARRY": 0.023,
+      "CROSS": 0.0575,
+      "PROGRESSIVE_PASS": 0.229,
+      "PROTECT_POSSESSION": 0.116,
+      "RECYCLE": 0.1025,
+      "SAFE_PASS": 0.323,
+      "SWITCH": 0.0415,
+      "THROUGH_BALL": 0.1075
+    },
+    "target_mix": {
+      "CARRY": 0.025,
+      "CROSS": 0.057,
+      "PROGRESSIVE_PASS": 0.225,
+      "PROTECT_POSSESSION": 0.116,
+      "RECYCLE": 0.104,
+      "SAFE_PASS": 0.325,
+      "SWITCH": 0.041,
+      "THROUGH_BALL": 0.107
+    }
+  },
+  "RB": {
+    "position": "RB",
+    "width": 32,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.7409748522389545,
+    "loss_last": 0.07185668709000785,
+    "agreement_first": 0.0585,
+    "agreement": 0.974,
+    "mix": {
+      "CARRY": 0.086,
+      "CROSS": 0.073,
+      "DRIBBLE": 0.1525,
+      "PROGRESSIVE_PASS": 0.068,
+      "PROTECT_POSSESSION": 0.1005,
+      "RECYCLE": 0.081,
+      "SAFE_PASS": 0.2375,
+      "SWITCH": 0.038,
+      "THROUGH_BALL": 0.1635
+    },
+    "target_mix": {
+      "CARRY": 0.085,
+      "CROSS": 0.0725,
+      "DRIBBLE": 0.151,
+      "PROGRESSIVE_PASS": 0.07,
+      "PROTECT_POSSESSION": 0.099,
+      "RECYCLE": 0.0815,
+      "SAFE_PASS": 0.238,
+      "SWITCH": 0.0405,
+      "THROUGH_BALL": 0.1625
+    }
+  },
+  "CDM": {
+    "position": "CDM",
+    "width": 31,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.541209506722984,
+    "loss_last": 0.03991912056437413,
+    "agreement_first": 0.1165,
+    "agreement": 0.987,
+    "mix": {
+      "CARRY": 0.1685,
+      "DRIBBLE": 0.024,
+      "PROGRESSIVE_PASS": 0.197,
+      "PROTECT_POSSESSION": 0.157,
+      "RECYCLE": 0.316,
+      "SAFE_PASS": 0.0905,
+      "SWITCH": 0.0005,
+      "THROUGH_BALL": 0.0465
+    },
+    "target_mix": {
+      "CARRY": 0.1695,
+      "DRIBBLE": 0.0235,
+      "PROGRESSIVE_PASS": 0.1985,
+      "PROTECT_POSSESSION": 0.1565,
+      "RECYCLE": 0.3165,
+      "SAFE_PASS": 0.088,
+      "SWITCH": 0.001,
+      "THROUGH_BALL": 0.0465
+    }
+  },
+  "CM": {
+    "position": "CM",
+    "width": 31,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.3990440855644883,
+    "loss_last": 0.04388816796188909,
+    "agreement_first": 0.1845,
+    "agreement": 0.984,
+    "mix": {
+      "CARRY": 0.127,
+      "DRIBBLE": 0.0815,
+      "PROGRESSIVE_PASS": 0.216,
+      "PROTECT_POSSESSION": 0.04,
+      "RECYCLE": 0.2795,
+      "SAFE_PASS": 0.123,
+      "SWITCH": 0.0645,
+      "THROUGH_BALL": 0.0685
+    },
+    "target_mix": {
+      "CARRY": 0.1265,
+      "DRIBBLE": 0.0835,
+      "PROGRESSIVE_PASS": 0.212,
+      "PROTECT_POSSESSION": 0.038,
+      "RECYCLE": 0.2785,
+      "SAFE_PASS": 0.124,
+      "SWITCH": 0.0645,
+      "THROUGH_BALL": 0.073
+    }
+  },
+  "CAM": {
+    "position": "CAM",
+    "width": 32,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.9606222072815997,
+    "loss_last": 0.06860578105961239,
+    "agreement_first": 0.05,
+    "agreement": 0.981,
+    "mix": {
+      "CARRY": 0.2525,
+      "PROGRESSIVE_PASS": 0.275,
+      "PROTECT_POSSESSION": 0.0895,
+      "RECYCLE": 0.1735,
+      "SAFE_PASS": 0.097,
+      "SHOOT": 0.0545,
+      "SWITCH": 0.0245,
+      "THROUGH_BALL": 0.0335
+    },
+    "target_mix": {
+      "CARRY": 0.253,
+      "PROGRESSIVE_PASS": 0.2755,
+      "PROTECT_POSSESSION": 0.0905,
+      "RECYCLE": 0.1745,
+      "SAFE_PASS": 0.0945,
+      "SHOOT": 0.0535,
+      "SWITCH": 0.024,
+      "THROUGH_BALL": 0.0345
+    }
+  },
+  "LW": {
+    "position": "LW",
+    "width": 33,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.2530796390865118,
+    "loss_last": 0.05433729812756495,
+    "agreement_first": 0.1075,
+    "agreement": 0.985,
+    "mix": {
+      "CARRY": 0.236,
+      "CROSS": 0.1025,
+      "PROGRESSIVE_PASS": 0.073,
+      "PROTECT_POSSESSION": 0.0095,
+      "RECYCLE": 0.2055,
+      "SAFE_PASS": 0.112,
+      "SHOOT": 0.1105,
+      "SWITCH": 0.151
+    },
+    "target_mix": {
+      "CARRY": 0.2375,
+      "CROSS": 0.1035,
+      "PROGRESSIVE_PASS": 0.0775,
+      "PROTECT_POSSESSION": 0.0095,
+      "RECYCLE": 0.2025,
+      "SAFE_PASS": 0.1095,
+      "SHOOT": 0.1095,
+      "SWITCH": 0.1505
+    }
+  },
+  "RW": {
+    "position": "RW",
+    "width": 33,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.1505280782996716,
+    "loss_last": 0.03215153132161787,
+    "agreement_first": 0.2095,
+    "agreement": 0.99,
+    "mix": {
+      "CARRY": 0.083,
+      "CROSS": 0.1205,
+      "DRIBBLE": 0.0365,
+      "PROGRESSIVE_PASS": 0.148,
+      "PROTECT_POSSESSION": 0.1115,
+      "RECYCLE": 0.2665,
+      "SAFE_PASS": 0.0495,
+      "SHOOT": 0.1845
+    },
+    "target_mix": {
+      "CARRY": 0.0835,
+      "CROSS": 0.1205,
+      "DRIBBLE": 0.0355,
+      "PROGRESSIVE_PASS": 0.149,
+      "PROTECT_POSSESSION": 0.1125,
+      "RECYCLE": 0.2655,
+      "SAFE_PASS": 0.051,
+      "SHOOT": 0.1825
+    }
+  },
+  "ST": {
+    "position": "ST",
+    "width": 32,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.3875792824299142,
+    "loss_last": 0.03812065943681485,
+    "agreement_first": 0.1175,
+    "agreement": 0.989,
+    "mix": {
+      "CARRY": 0.228,
+      "DRIBBLE": 0.0835,
+      "PROGRESSIVE_PASS": 0.0625,
+      "PROTECT_POSSESSION": 0.223,
+      "RECYCLE": 0.1595,
+      "SAFE_PASS": 0.05,
+      "SHOOT": 0.112,
+      "SWITCH": 0.05,
+      "THROUGH_BALL": 0.0315
+    },
+    "target_mix": {
+      "CARRY": 0.228,
+      "DRIBBLE": 0.0845,
+      "PROGRESSIVE_PASS": 0.0655,
+      "PROTECT_POSSESSION": 0.221,
+      "RECYCLE": 0.1575,
+      "SAFE_PASS": 0.0505,
+      "SHOOT": 0.112,
+      "SWITCH": 0.0505,
+      "THROUGH_BALL": 0.0305
+    }
+  },
+  "CF": {
+    "position": "CF",
+    "width": 32,
+    "states": 2000,
+    "epochs": 120,
+    "seed": 123,
+    "loss_first": 2.3829049171043333,
+    "loss_last": 0.02879174211935353,
+    "agreement_first": 0.1325,
+    "agreement": 0.9895,
+    "mix": {
+      "CARRY": 0.23,
+      "PROGRESSIVE_PASS": 0.0805,
+      "PROTECT_POSSESSION": 0.203,
+      "RECYCLE": 0.1475,
+      "SAFE_PASS": 0.174,
+      "SHOOT": 0.089,
+      "SWITCH": 0.0515,
+      "THROUGH_BALL": 0.0245
+    },
+    "target_mix": {
+      "CARRY": 0.231,
+      "PROGRESSIVE_PASS": 0.08,
+      "PROTECT_POSSESSION": 0.2,
+      "RECYCLE": 0.148,
+      "SAFE_PASS": 0.1755,
+      "SHOOT": 0.089,
+      "SWITCH": 0.052,
+      "THROUGH_BALL": 0.0245
+    }
+  }
+}

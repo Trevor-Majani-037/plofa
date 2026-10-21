@@ -94,6 +94,30 @@ def parse_args():
     p.add_argument("--perception-roles", action="store_true",
                    help="With --perception, also enable per-role perception "
                         "profiles (relevance top-k etc.) during training.")
+    p.add_argument("--mutation-strength", type=float, default=0.3,
+                   help="How far a mutated weight moves, as a fraction of its "
+                        "own magnitude.  0.3 (the default) is a RANDOM WALK: "
+                        "it finds the best CONSTANT intent and never refines "
+                        "past it.  A small value (0.05) turns the same "
+                        "search into a local refinement.")
+    p.add_argument("--per-brain-corpus", action="store_true",
+                   help="Evaluate each brain on its OWN corpus (the "
+                        "pre-2026-10-21 behaviour).  It is a SELECTION "
+                        "CONFOUND: the fitnesses are compared across "
+                        "different samples, and the corpus-to-corpus noise is "
+                        "the same order as the differences the search has to "
+                        "resolve.  The default is one corpus per generation, "
+                        "shared by the whole population.")
+    p.add_argument("--distill", action="store_true",
+                   help="DISTIL first, then refine.  The brain is fitted to "
+                        "the surrogate's OWN policy (its per-bucket argmax) "
+                        "by cross-entropy — seconds, not the GA's minutes — "
+                        "and the genetic algorithm then REFINES it against "
+                        "the full fitness.  The blind search reached the "
+                        "best CONSTANT and stopped; the distillation lands on "
+                        "the broad, shooting policy the census wants.")
+    p.add_argument("--distill-states", type=int, default=2000)
+    p.add_argument("--distill-epochs", type=int, default=120)
     return p.parse_args()
 
 
@@ -225,6 +249,20 @@ def main():
 
         print(f"\n=== Evolving {pos} brain {'(role D=' + str(input_size-INPUT_SIZE) + ')' if input_size != INPUT_SIZE else ''} ===")
         start = time.time()
+
+        # The WARM START: the distilled policy, if the caller asked for it.
+        init_brain = None
+        if args.distill:
+            from brain_distill import distill_brain
+            init_brain, dreport = distill_brain(
+                pos, surrogate, n_states=args.distill_states, seed=args.seed,
+                epochs=args.distill_epochs, input_size=input_size,
+                perception_config=perception_cfg)
+            print(f"  distilled: agreement {dreport['agreement']:.3f}, "
+                  f"mix " + ", ".join(f"{k} {v:.0%}" for k, v in
+                                      sorted(dreport["mix"].items(),
+                                             key=lambda kv: -kv[1])[:4]))
+
         res = evolve(
             position=pos,
             population_size=args.population,
@@ -236,6 +274,9 @@ def main():
             goal_bias=args.goal_bias,
             input_size=input_size,
             perception_config=perception_cfg,
+            mutation_strength=args.mutation_strength,
+            shared_corpus=not args.per_brain_corpus,
+            init_brain=init_brain,
         )
         elapsed = time.time() - start
 

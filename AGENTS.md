@@ -8444,24 +8444,34 @@ puts SHOOT with {ST, AM, WING}: the AM family performed SHOOT in the
 corpus, so a CAM shooting is role-appropriate. The rule is now DERIVED from
 the role vocabulary, and the CAM's 14.9% of shots is no longer flagged.
 
-### THE REAL-MATCH GATE — the first run, and what it does and does NOT move
+### THE REAL-MATCH GATE — 7 matches per arm, and what it does and does NOT move
 
 `tools/diag/_diag_v7_gate.py` — the plan's acceptance numbers, measured on the
 harness of record's seeding (`random.seed(seed + m * 100)` before every
-match, the identity perception regime). **Three matches per arm: a
-direction, not a result.**
+match, the identity perception regime), 7 matches per arm, seed 21.
 
 | metric | **v7 (distilled + refined)** | shipped T1 | real PL |
 |---|---|---|---|
-| home goals | **9** | 4 | — |
-| possession % | 53.8 | 54.6 | — |
-| forward % | 35.7 | 35.0 | 35-40 ✓ |
-| square % | 39.5 | 41.2 | 45-50 |
-| backward % | 24.8 | 23.7 | 10-15 ✗ |
-| median pass length | 9.4 m | 9.0 m | 15-18 ✗ |
-| median signed advance | +1.1 m | +1.2 m | — |
-| ST shots | 7 | 6 | — |
-| **ST goals** | **1** | **0** | — |
+| **home goals** | **17** | 12 | — |
+| **goals conceded** | **3** | 5 | — |
+| **record** | **7 won, 0 drawn, 0 lost** | 4 won, 2 drawn, 1 lost | — |
+| possession % | 55.2 | 54.7 | — |
+| forward % | 35.3 | 35.1 | 35-40 ✓ (both) |
+| square % | 39.7 | 40.2 | 45-50 |
+| backward % | 25.0 | 24.6 | 10-15 ✗ (both) |
+| median pass length | 9.6 m | 9.3 m | 15-18 ✗ (both) |
+| median signed advance | +1.2 m | +1.3 m | — |
+| **ST shots** | **16** | 13 | — |
+| **ST goals** | **2** | 1 | — |
+
+The v7 scores: **3-1, 3-1, 3-0, 2-1, 4-0, 1-0, 1-0**. The T1's: 3-2,
+0-1, 1-1, 4-0, 1-0, 2-0, 1-1.
+
+**THE SET WINS HEAD-TO-HEAD: 7 from 7 against 4-2-1, +14 on goals against
++7, and the striker takes 23% more shots and scores twice.** (The historical
+T1-vs-heuristic figure of 18-18 was taken in September, before the shape
+anchor, the width work and the timeline work — **it is not a comparable
+baseline**, and the harness's own numbers are the only ones that are.)
 
 **THE PASS GEOMETRY DID NOT MOVE, AND THE REASON IS THE STANDING ONE: the
 brain owns the VERB and the structure owns the NOUN.** The receiver of an
@@ -8470,9 +8480,9 @@ policy 1, so the pass's length and direction are the matrix's, not the
 brain's. The retrain changes the intent mix, the delivery class and the
 shot count; it cannot move the arrow's endpoint until the receiver
 authority is changed (the standing item 4). **The forward share is ALREADY
-inside the real band (35.0-35.7% against 35-40) and the backward share is
-the engine's own backward-heaviness (23.7-24.8% against 10-15) — both
-unchanged by this set, and both are the matrix's, not the brain's.**
+inside the real band (35.1-35.3% against 35-40) and the backward share is
+the engine's own backward-heaviness (24.6-25.0% against 10-15) — both
+unchanged by this set, and both the matrix's, not the brain's.**
 
 **AND THE BAND MATTERS FOR THE COMPARISON.** The plan's benchmark
 (35-40 / 45-50 / 10-15) is the **Opta-style progression band** (a pass is
@@ -8483,6 +8493,52 @@ measurement — **the two must never be compared to each other**, and the
 historical 27.9 / 41.0 / 31.1 came from a probe that no longer exists, so
 it cannot be reproduced and must not be quoted against these numbers.
 The probe now prints BOTH bands and says which is which.
+
+### ⛔ A BLANK PASS-NETWORK PANEL IS A FIXTURE ARTEFACT, NOT A MATCH
+
+The first eye-gate export (the scratch fixture, `match_probe._build_squads`)
+came back with **the home team's pass-network panel completely EMPTY** — a
+perfectly drawn pitch, the frame, the attacking arrow, and nothing else. It
+reads exactly like "the team never passed", and the team had **234
+pass-like events** in the same match.
+
+**The cause is the fixture, and it is worth knowing because a blank panel is
+a perfect invitation to misdiagnose.** `match_probe._build_squads("Probe
+FC", "Rival FC")` gives BOTH teams the same generic names (GK, CB1, CB2,
+LB, RB, CDM, CM1, CM2, LW, ST, RW, SUB1-3), and the exporter's accumulator
+keys its per-player stats **BY NAME** (`exporter.py:413`,
+`self.stats[p.name] = ...`). So the home team's rows are overwritten by the
+away team's: the players sheet contained only Rival FC, and the pass
+network's `team_stats` filter (`minutes_played > 0`) found nothing for the
+home team. **The real roster has distinct names ✓ and the scratch runner
+`run_match.py` uses the real Hartwell/Thornfield squads ✓, so the export
+itself is fine.** The eye gate therefore runs on the REAL roster
+(`tools/diag/_diag_v7_export_real.py`).
+
+**A SECOND TRAP IN THE SAME GATE: binding the brain set to BOTH teams.** The
+brain dir is global, so `set_brain_dir("brains_v7")` gave BOTH sides the v7
+brains and the export became a v7-vs-v7 match — which still LOOKS like a
+comparison, because two networks are drawn in the same figure. The probe now
+binds the challenger **by name to the home XI only**, so the away side
+auto-loads the shipped set.
+
+**THE EYE VERDICT (one real-roster match, Natrican = v7 vs Tryox City =
+shipped T1).** The two panels are visibly different shapes:
+
+- **the v7 side**: a **wide, vertical** network — the keeper (Mijajilo
+  Matus) out to the left, a spine running up the middle (Francis Sesina →
+  Lýndon Peters → Tuson Kalamba → Danso Potwemi → Jordan Ayling), two
+  forwards at the top (Victor Ogunleye, Pablo Alcántares) and the full-back
+  deep and wide at the bottom (Steve Christo);
+- **the shipped T1 side**: a **tight central cluster** around the centre
+  circle, with the two wide men (Ziven Ndlovu, Miguel Conlon) pushed out to
+  the edges and barely connected to the middle.
+
+That is the plan's third criterion — *"pass maps that read vertical"* — met
+in the shape sense. **The "a reason for each arrow" half is the intent mix
+(§the census above): more switches, through balls and crosses, and the
+striker SHOOTING.** One match is an illustration, not a measurement; the
+measurement is the 7-match gate.
 
 ### THE INSTRUMENTS THIS SECTION USES (all read-only, all in `tools/diag/`)
 
