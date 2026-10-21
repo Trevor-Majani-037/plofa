@@ -68,15 +68,22 @@ def register_full_xi(brains_dir: str, starters: List[Any]) -> int:
     return bound
 
 
-def _run_neural(brains_dir: str, seed: int, home_style: str, away_style: str):
+def _run_neural(brains_dir: str, seed: int, home_style: str, away_style: str,
+                perception: bool = False):
     # Production default is perception ON (true football), but the
     # gate-of-record compares brain SETS at identical seeds and the
     # heuristic arm has NO perception layer — running neural-with-degraded-
     # vision vs heuristic-with-omniscient-vision would be unfair AND would
     # silently drift every recorded gate number.  Pin the identity regime
     # here; future gates wanting the perception world must add a flag.
+    #
+    # `perception=True` is that flag: it leaves the production configuration
+    # alone (the engine seeds the perception per match), so the brain is
+    # scored in the condition it actually plays in.  The default is False, so
+    # the gate of record is byte-identical to what it always was.
     saved_cfg = get_perception_config()
-    set_perception(PerceptionConfig(enabled=False))
+    if not perception:
+        set_perception(PerceptionConfig(enabled=False))
     try:
         home_squad, away_squad = match_probe._build_squads("Probe FC", "Rival FC")
         n_bound = register_full_xi(brains_dir, home_squad["starters"])

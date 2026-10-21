@@ -8525,11 +8525,11 @@ auto-loads the shipped set.
 **THE EYE VERDICT (one real-roster match, Natrican = v7 vs Tryox City =
 shipped T1).** The two panels are visibly different shapes:
 
-- **the v7 side**: a **wide, vertical** network — the keeper (Mijajilo
-  Matus) out to the left, a spine running up the middle (Francis Sesina →
-  Lýndon Peters → Tuson Kalamba → Danso Potwemi → Jordan Ayling), two
-  forwards at the top (Victor Ogunleye, Pablo Alcántares) and the full-back
-  deep and wide at the bottom (Steve Christo);
+- **the v7 side**: a **vertical** network — the keeper (Mijajilo Matus) out
+  to the left, a spine running up the middle (Francis Sesina → Lýndon Peters
+  → Tuson Kalamba → Danso Potwemi → Jordan Ayling), two forwards at the top
+  (Victor Ogunleye, Pablo Alcántares) and the full-back deep and wide at
+  the bottom (Steve Christo);
 - **the shipped T1 side**: a **tight central cluster** around the centre
   circle, with the two wide men (Ziven Ndlovu, Miguel Conlon) pushed out to
   the edges and barely connected to the middle.
@@ -8538,7 +8538,130 @@ That is the plan's third criterion — *"pass maps that read vertical"* — met
 in the shape sense. **The "a reason for each arrow" half is the intent mix
 (§the census above): more switches, through balls and crosses, and the
 striker SHOOTING.** One match is an illustration, not a measurement; the
-measurement is the 7-match gate.
+measurement is the 7-match gate — **and the measurement corrected this
+reading: the "wide" half of it is wrong (see *THE SHAPE, MEASURED OVER SEVEN
+MATCHES* below).** That is what the eye gate is for: it pointed at a
+difference, and the measurement said which half of the difference was real.
+
+### THE SHAPE, MEASURED OVER SEVEN MATCHES — and the eye gate was HALF WRONG
+
+The eye gate read ONE real-roster match's pass-network panel and said the
+v7 side was "wide and vertical". Measured over all seven matches, **the
+"wide" half is wrong.** The v7 team plays **higher up the pitch and more
+compactly**, and its width is unchanged.
+
+| the shape (mean over the 7 matches) | **v7** | shipped T1 |
+|---|---|---|
+| the play's depth (the median event x) | **76.4** | 74.2 |
+| the play's depth (p25 / p75) | 54.5 / 82.6 | 54.1 / 82.2 |
+| **the play in the final third %** | **59.0** | 55.7 |
+| **the play in the own third %** | **8.9** | 10.1 |
+| the play's width (the y interquartile range) | **14.1** | 15.6 |
+| the TEAM's width (the players' average y spread) | ⛔ 15.1 | ⛔ 15.2 |
+| the TEAM's depth (the players' average x spread) | ⛔ 20.1 | ⛔ 22.5 |
+
+**SO: HIGHER, AND NARROWER.** The v7 side spends 3.3 points more of its
+play in the final third and 1.2 points less in its own third, its play
+happens 2.2 m further up the pitch, its play is 1.5 m NARROWER, and its
+front-to-back spread is 2.4 m tighter. **The "wide" reading came from one
+match's panel; the measurement says the width did not move — it went the
+other way.**
+
+⛔ **THE TWO ROWS MARKED WITH A BLOCK ARE AN ARTEFACT AND ARE NOT TO BE
+QUOTED.** The per-player rows were computed with the players keyed by NAME
+ALONE, and **the scratch fixture gives both teams the same generic names**
+(GK, CB1, LB, …) — so the home's and the away's players were merged into
+one bucket, and because their frames run in opposite directions their
+averages CANCEL. That is why the "team's width" came out at 15 m. (It is
+the same merged-name artefact that empties the pass-network panel.) The
+probe now keys by `(team, player)` and the corrected numbers come from the
+next run; **the play-level rows above are unaffected** (they pool the home
+team's events, filtered by `e.team` ✓) and they are the ones to quote.
+
+⚠️ **THE PLAY'S WIDTH IS NOT THE HISTORICAL BAND, EITHER.** The AGENTS.md's
+width work measures the **flank-to-flank** separation (LW to RW, 37.8 m
+against the real 45-55 m); the play's y IQR is the **ball's** width (the
+ball is in one place at a time, so the events cluster centrally), and it is
+a different quantity again. **The two arms are comparable with each other;
+neither is comparable with that band**, and the two must never be put side
+by side.
+
+**AND THE FRAME QUESTION IS ANSWERED IN ONE DIRECTION.** The shape numbers
+read the raw x, so they needed the export's open question settled ("either
+the raw coordinates are in a per-attacking-direction frame after all, or the
+half-time flip double-counts a swap"). `tools/diag/_diag_frame_half.py`:
+one match, the median event x per half per team —
+
+| team | 1st half | 2nd half | beyond the halfway line |
+|---|---|---|---|
+| Probe FC (home) | 79.8 | 73.1 | 82.2% / 72.2% |
+| Rival FC (away) | 74.2 | 69.1 | 70.3% / 71.1% |
+
+**The frame does NOT flip at half time** (the medians do not mirror about
+52.5: the sums are ~153 and ~143, not ~105). And **both** teams' events sit
+at high x — which in a SHARED frame would mean both teams were in the same
+half at the same time, which is impossible. **So the raw coordinates are in
+a PER-ATTACKING-DIRECTION frame: each team's x runs toward the goal it
+attacks.** That is the first of the export frame note's two options, and it
+is now measured rather than argued. (It also means the engine's teams
+genuinely camp high — the same 70-80 m the SHAPE ANCHOR work measured for
+the striker and the winger ✓ — which is consistent with 2.4 goals a match.)
+
+### ⛔ THE PRODUCTION-CONDITION GATE — the honest football verdict (2026-10-21)
+
+The gate of record pins the perception **OFF** (the heuristic arm has no
+perception layer, so degrading the neural arm's vision would be unfair).
+**So the 7-from-7 was measured in the identity regime, which is NOT how the
+brain plays in a real matchday.** The production condition leaves the
+perception on: a 150-degree cone, a range limit, positional noise — and
+reading the situation is exactly what the v7 set claims to be good at.
+
+`_run_neural` grew a `perception=True` keyword (the default is False, so the
+gate of record is byte-identical to what it always was) and the gate probe
+grew `--perception on`. The same seven seeds, the same pair:
+
+| | **v7** | shipped T1 |
+|---|---|---|
+| home goals | **14** | 13 |
+| record | **6 won, 0 drawn, 1 lost** | 4 won, 1 drawn, 2 lost |
+| possession % | 52.0 | 54.2 |
+| **ST shots** | **21** | 12 |
+| **ST goals** | **3** | 2 |
+| the team's total shots | 102 | 100 |
+| **the ST's share of the team's shots** | **21%** | **12%** |
+| forward % | 35.2 | 34.5 |
+| median pass length | 9.8 m | 8.9 m |
+| the play's depth (median x) | **74.2** | 71.3 |
+| the play in the final third % | **56.3** | 52.5 |
+| the play's width (y IQR) | **13.6** | 16.8 |
+
+**THE VERDICT, IN THE CONDITION THAT MATTERS:**
+
+- **THE HEAD-TO-HEAD HOLDS BUT NARROWS.** 6-1-0 with 14 goals against 4-1-2
+  with 13 — where the identity regime gave 7-0-0 with 17-3 against 4-2-1
+  with 12-5. **The v7 set's scoring advantage is real and it is THINNER in
+  production than the identity regime suggested.**
+- **BUT THE STRIKER'S GAME CHANGED THE MOST, AND IN THE RIGHT DIRECTION.**
+  He takes **21 shots to the shipped striker's 12** (21% of the team's shots
+  against 12%), and the teams take the SAME number of shots overall (102 v
+  100) — so the difference is not volume, it is **who shoots**. The v7 team
+  has a finisher; the shipped set's shots come from the centre-backs and
+  the midfielders.
+- **AND THE SHAPE DIFFERENCE GREW**: higher (74.2 v 71.3) and narrower
+  (13.6 v 16.8) than in the identity regime (74.2/71.3 v the identity's
+  76.4/74.2 and 14.1/15.6) — the v7 side plays higher and tighter, and
+  more so when it has to see the game through a cone.
+- **THE ONE THAT WENT THE OTHER WAY: the possession.** 52.0% against 54.2%
+  (the identity regime had it at 55.2% against 54.7%). **With the
+  perception on, the v7 side sees less of the ball.**
+- **THE PASS GEOMETRY IS UNCHANGED AGAIN** (35.2 v 34.5 forward, 9.8 v 8.9
+  m) — the matrix's, as always.
+
+**SO: A BETTER STRIKER AND A HIGHER, NARROWER TEAM — AND A THINNER
+SCORELINE ADVANTAGE THAN THE IDENTITY REGIME PROMISED.** The honest
+summary for the season's brain set is that the v7 set makes the team's
+finisher its finisher, and that is worth having; it is not the 7-from-7
+that the identity regime showed.
 
 ### THE INSTRUMENTS THIS SECTION USES (all read-only, all in `tools/diag/`)
 
