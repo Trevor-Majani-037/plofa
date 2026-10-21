@@ -106,8 +106,20 @@ def check(name, cond):
 check("TACTICS_CONTEXT_D == 12", TACTICS_CONTEXT_D == 12)
 check("V3_INPUT_D == V2_INPUT_D + 12 for every family",
       all(V3_INPUT_D[f] == V2_INPUT_D[f] + TACTICS_CONTEXT_D for f in V2_INPUT_D))
-check("V3 widths are 43 / 44 only", sorted(set(V3_INPUT_D.values())) == [43, 44])
+check("V3 widths are 43 / 44 / 45 only",
+      sorted(set(V3_INPUT_D.values())) == [43, 44, 45])
 check("ST -> 44-d", V3_INPUT_D["ST"] == 44)
+
+# The width set is a SNAPSHOT of the menus and must be re-derived whenever a
+# role feature is added -- it is not an invariant, and pinning it as one makes
+# a legitimate schema growth look like a regression.  It has already been both:
+# CB grew to 9 features on 2026-10-05 (-> 45) and this line was left asserting
+# [43, 44], so it failed for fifteen days unnoticed; FB and WING gained
+# `pass_lane_open` on 2026-10-20 (-> 44 and 45).  The INVARIANT is the line
+# above it (V3 = V2 + 12, for every family) plus the derivation check below.
+check("every V3 width is one of the widths V2 actually produces",
+      set(V3_INPUT_D.values())
+      == {V2_INPUT_D[f] + TACTICS_CONTEXT_D for f in V2_INPUT_D})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -237,7 +249,16 @@ meta_ok = validate(_v3_brain_dict(44))
 check("schema validates 44-d v3", meta_ok.sensor_schema == "v3_tactics_context")
 validate(_v3_brain_dict(43))
 check("schema validates 43-d v3", True)
-for bad_in in (24, 31, 32, 35, 40, 45):
+# DERIVED, not typed.  A hand-written list of "invalid" widths goes stale the
+# moment the schema grows -- 45 became a legitimate width when the CB menu
+# reached 9 features (2026-10-05) and this loop then failed on the very width
+# the schema was right to accept.  Neighbours of the real widths are wrong by
+# exactly one, which is the failure mode that actually matters (an off-by-one
+# role block), plus a few far-out ones.
+_V3_VALID = set(V3_INPUT_D.values())
+_bad_widths = sorted({w + d for w in _V3_VALID for d in (-2, -1, 1, 2)}
+                     - _V3_VALID | {24, 35, 40})
+for bad_in in _bad_widths:
     try:
         validate(_v3_brain_dict(bad_in))
         check(f"schema rejects {bad_in}-d v3", False)

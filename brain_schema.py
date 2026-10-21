@@ -55,6 +55,11 @@ TRAINING_METHODS = (
     "ga_offball",     # evolved against OffBallSurrogate (off-ball conscience)
     "ga_team_press",  # evolved against TeamPressSurrogate (XI press controller)
     "ga_defensive",   # evolved against DefensiveActionSurrogate (which-act)
+    # DISTILLED against a FitnessSurrogate: fitted to the surrogate's own
+    # policy (its per-bucket argmax) by cross-entropy rather than searched
+    # for by the genetic algorithm.  Same table, same corpus, same reward —
+    # a different way to reach the optimum the objective already defines.
+    "distilled_surrogate",
     "unknown",        # legacy / unspecified
 )
 BRAIN_KINDS = (
@@ -98,6 +103,13 @@ class BrainMeta:
     seed: Optional[int] = None
     created: Optional[str] = None
     role_family: Optional[str] = None  # e.g. "ST" / "WING" / "FB" for v2_role_features
+    # The role-feature NAMES this brain was trained on, in the order it reads
+    # them.  This — not the input width — is what makes a schema change safe:
+    # `role_features.align_role_tail` selects these features by name, so adding
+    # a feature is invisible to an old brain instead of silently shifting or
+    # truncating its inputs.  Absent on legacy files, which fall back to the
+    # historical width-based truncation (with a one-time warning).
+    role_features: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}

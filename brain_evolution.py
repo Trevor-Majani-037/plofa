@@ -51,9 +51,12 @@ from football_brain import FootballBrain, INPUT_SIZE, OUTPUT_SIZE
 from decision_brain import PlayerIntent
 from brain_sensors import extract_sensors
 from perception import perceive, PerceptionConfig
-from role_features import V2_INPUT_D, _role_family, build_v2_vector, role_block
+from role_features import (
+    V2_INPUT_D, V2_SHARED_D, MENU_NAMES, _role_family,
+    build_v2_vector, role_block,
+)
 from tactics_context import (
-    V3_INPUT_D, build_v3_vector, random_tactics_context,
+    V3_INPUT_D, TACTICS_CONTEXT_D, build_v3_vector, random_tactics_context,
 )
 
 
@@ -479,6 +482,7 @@ def synthetic_fitness(
     goal_bias: float = 0.0,
     input_size: int = INPUT_SIZE,
     perception_config: Optional[PerceptionConfig] = None,
+    collapse_penalties: bool = False,
 ) -> float:
     """Score a brain over a batch of sensor states.
 
@@ -490,13 +494,31 @@ def synthetic_fitness(
 
     Per-state reward is either the position reward table (hand-made) or
     — when a ``surrogate`` (a ``FitnessSurrogate``) is supplied — the
-    surrogate's learned expected-success for the chosen intent given the
-    sensor state.
+    surrogate's learned expected THREAT RETURN for the chosen intent given
+    the sensor state.
 
     Fitness = mean reward of chosen intents, weighted by the network's
-    own confidence, minus penalties for indecision / single-intent or
-    two-intent collapse (anti-collapse stabilisers), then scaled by a
-    behavioural-entropy bonus.  Returns a scalar in roughly [0, 1].
+    own confidence, minus penalties for indecision, then scaled by a
+    behavioural-entropy bonus.  Returns a scalar in [0, 1].
+
+    THE REWARD IS NOW SIGNED, AND THAT IS WHY THIS FUNCTION RE-BASES IT.
+    ``threat_reward`` returns roughly [-0.6, +1.0] (a backward pass is
+    negative, a loss in a dangerous area is very negative).  Multiplying a
+    mean of +0.02 by ``(0.5 + 0.5 * conf)`` gives 0.02, and a mean of -0.01
+    would CLAMP to 0 — i.e. the confidence weighting would erase exactly the
+    gradient the new objective exists to provide.  So a surrogate reward is
+    mapped through ``0.5 + 0.5 * clip(mean, -1, 1)`` first.  That is a monotone
+    transform: it changes no ordering, it just puts the values on the
+    non-negative scale the rest of this function assumes.  The hand-made
+    reward table is untouched.
+
+    ``collapse_penalties`` (default **OFF**) restores the anti-dominance /
+    effective-usage terms.  They are off because they were measured to be
+    harmful: with a THREAT reward a brain that always plays the progressive
+    pass is doing the right thing, and taxing its share of the argmax pushed
+    every position back to safe lateral spread — the T2G160 failure, where
+    the fitness number rose and the pass maps became indistinguishable from
+    the heuristic.  Turn them on only to reproduce that experiment.
 
     ``input_size`` / ``perception_config`` forward to the corpus builder
     (schema-v2 role-features width and train-through-imperfect-perception).
@@ -540,24 +562,68 @@ def synthetic_fitness(
 
     mean_reward = float(rewards.mean())
     mean_conf = float(confidences.mean())
-    fitness = mean_reward * (0.5 + 0.5 * mean_conf) - penalties / n_states
-
     intent_probs = intent_counts / intent_counts.sum()
     intent_probs = intent_probs[intent_probs > 0]
     entropy = -float(np.sum(intent_probs * np.log(intent_probs + 1e-12)))
     max_entropy = math.log(OUTPUT_SIZE)
     bdiv = entropy / max_entropy
 
-    max_share = float(intent_counts.max() / intent_counts.sum())
-    dom_pen = max(0.0, max_share - 0.50) * 1.5
-    if intent_counts.sum() > 0:
+    if surrogate is not None:
+        # Signed reward -> non-negative, monotone.  See the docstring: without
+        # this, a negative mean clamps to zero and the confidence weighting
+        # erases the gradient the threat objective exists to provide.
+        base = 0.5 + 0.5 * max(-1.0, min(1.0, mean_reward))
+        # **THE REWARD IS THE OBJECTIVE.  THE CONFIDENCE AND THE DIVERSITY
+        # TERM ARE GUARDS, AND THEY MUST NOT OUTWEIGH THE FOOTBALL.**
+        #
+        # The old formula was `base * (0.5 + 0.5*mean_conf)`, then a further
+        # `(1 + bdiv)` multiplier.  Both are factors of ~2 on the whole
+        # fitness, while the threat reward's within-position spread is about
+        # 0.01 -- because a forward pass is worth ~+0.008 and the OLD
+        # reward (engine success: 2.0 / 1.0 / 0.0) had a spread of ~1.0.
+        # So the balance inverted by ~50x when the objective was replaced,
+        # and the GA duly optimised PEAKEDNESS instead of football:
+        #
+        #     GK    mean_conf 0.453 (shipped 0.194)  mean_reward -0.253
+        #     CB    mean_conf 0.625 (shipped 0.247)  mean_reward -0.361
+        #     LB    mean_conf 0.960 (shipped 0.212)  TWO intents, 82% RECYCLE
+        #     CDM   mean_conf 0.966 (shipped 0.230)  TWO intents, 61% DRIBBLE
+        #     CM    mean_conf 0.889 (shipped 0.227)  TWO intents, 67% SAFE_PASS
+        #     LW    mean_conf 0.887 (shipped 0.380)  TWO intents, 61% CARRY
+        #
+        # A keeper whose reward is -0.25 WON, because it was more confident.
+        # And a peaked network IS a collapsed intent mix, so the retrain
+        # produced a goalkeeper who crossed 14% of the time and a centre-back
+        # who shot 44%.  Every fitness number was unremarkable (0.60-0.67).
+        #
+        # So both guards are demoted to small ADDITIVE terms: they can break
+        # a tie, and they can veto a collapse, but they cannot decide.
+        fitness = (base
+                   + CONFIDENCE_GUARD_W * (mean_conf - 0.5)
+                   + DIVERSITY_GUARD_W * bdiv)
+        fitness -= penalties / n_states
+        scale = 1.0
+    else:
+        # The legacy (engine-success) reward has a spread of ~1.0, so its
+        # confidence weighting is in balance and is left alone.
+        fitness = mean_reward * (0.5 + 0.5 * mean_conf) - penalties / n_states
+        scale = 1.5
+
+    # Anti-collapse terms, OFF by default and opt-in with evidence.  Measured
+    # harm: they push a brain away from whatever it is good at, and under a
+    # threat reward that is a brain playing the right pass too often.  T2G160
+    # is the recorded failure (see AGENTS.md).
+    dom_pen = 0.0
+    if collapse_penalties and intent_counts.sum() > 0:
+        max_share = float(intent_counts.max() / intent_counts.sum())
+        dom_pen = max(0.0, max_share - 0.50) * 1.5
         shares = intent_counts / intent_counts.sum()
         n_effective = int(np.sum(shares > 0.05))
         if n_effective < 6:
             shortfall = (6 - n_effective) / 6.0
             dom_pen += shortfall * 0.75
 
-    scaled = (fitness - dom_pen) * (1.0 + 1.0 * bdiv) / 1.5
+    scaled = (fitness - dom_pen) / scale
     return max(0.0, min(1.0, scaled))
 
 
@@ -566,6 +632,19 @@ def synthetic_fitness(
 from football_brain import INTENT_LABELS  # noqa: E402
 from decision_brain import PlayerIntent as _PI  # noqa: E402
 _INTENT_BY_IDX = [_PI(label) for label in INTENT_LABELS]
+
+#: The CONFIDENCE term's weight in the surrogate fitness.  It is a GUARD,
+#: not the objective: the threat reward's within-position spread is ~0.01
+#: (a forward pass is worth ~+0.008), so a confidence weight that can move
+#: the fitness by 0.45 lets the GA optimise PEAKEDNESS instead of football —
+#: which is a collapsed intent mix, and was measured doing exactly that
+#: (LB: two intents, 82% RECYCLE; a keeper whose reward was -0.25 and who
+#: still won).  See `synthetic_fitness` and AGENTS.md.
+CONFIDENCE_GUARD_W = 0.05
+
+#: The DIVERSITY term's weight (the normalised entropy of the intent mix).
+#: Also a guard, not the objective: it can veto a collapse, not create one.
+DIVERSITY_GUARD_W = 0.05
 
 
 # ─────────────────────────────────────────────────────────────
@@ -589,6 +668,9 @@ def evolve(
     crossover_top: float = 0.5,
     base_mutate_rate: float = 0.15,
     mutate_decay: float = 0.97,
+    mutation_strength: float = 0.3,
+    shared_corpus: bool = True,
+    init_brain: Optional[FootballBrain] = None,
     seed: int = 0,
     verbose: bool = True,
     surrogate: Optional[Any] = None,
@@ -619,6 +701,33 @@ def evolve(
         Initial mutation rate (fraction of weights perturbed).
     mutate_decay : float
         Per-generation multiplier on mutation rate (annealing).
+    mutation_strength : float
+        How far a mutated weight moves, as a fraction of its own magnitude.
+        **0.3 (the default, unchanged) is a RANDOM WALK**, not a hill climb:
+        perturbing 15% of the weights by 30% of their own size randomises the
+        net's behaviour, which is how the genetic algorithm finds the BEST
+        CONSTANT intent (a bias tweak) and then never refines past it.  A
+        small strength turns the same search into a local refinement, which
+        is what the state-dependent solution needs — measured, see AGENTS.md
+        *THE CEILING*.
+    shared_corpus : bool
+        Whether the whole population is evaluated on ONE corpus per
+        generation (the default) or each brain on its own.  The old
+        per-brain corpus was a selection confound: the fitnesses were
+        compared across DIFFERENT samples, and the corpus-to-corpus noise
+        (~+-0.02 of fitness) is the same order as the differences the search
+        has to resolve between two near-tied candidates.  The corpus is
+        re-drawn every generation either way, so no brain can overfit one
+        sample.
+    init_brain : FootballBrain, optional
+        A WARM START.  When given, the population is this brain plus small
+        mutations of it, so the search is a local refinement of a policy
+        that is already good rather than a blind walk from random weights.
+        This is how the distillation feeds the genetic algorithm: the
+        distilled brain is the table's own policy, and the GA refines it
+        against the FULL fitness (the reward plus the guards), which is
+        where it can beat the table's coarse bucket lookup by using the
+        role block and the perceived scene.
     seed : int
         RNG seed for reproducibility.
     verbose : bool
@@ -653,8 +762,21 @@ def evolve(
     EvolutionResult with best brain + history.
     """
     rng = random.Random(seed)
-    pop = [FootballBrain.random(seed=i, input_size=input_size)
-           for i in range(population_size)]
+    if init_brain is not None:
+        # A WARM START: the population is the given brain plus small
+        # mutations of it, so the search is a LOCAL REFINEMENT of a policy
+        # that is already good (the distilled surrogate policy) rather than
+        # a blind walk from random weights.  This is the whole point: the
+        # blind search reached the best CONSTANT and stopped, because the
+        # useful state-dependence is a specific function that a random
+        # initialisation does not contain.
+        pop = [init_brain] + [
+            init_brain.mutate(rate=base_mutate_rate, strength=mutation_strength)
+            for _ in range(population_size - 1)
+        ]
+    else:
+        pop = [FootballBrain.random(seed=i, input_size=input_size)
+               for i in range(population_size)]
 
     best_overall: Optional[FootballBrain] = None
     best_fitness_overall = -1.0
@@ -669,16 +791,35 @@ def evolve(
         # population diversity (anti-collapse bonus), normalised by init
         pop_div = _compute_pop_diversity(pop) / init_pop_div
 
-        # PRE-GENERATE STATE CORPUS (vectorised forward + identical RNG
-        # sequence per brain: seed + gen * 1000 + i) UNLESS an external
-        # fitness_fn owns the signal.
+        # PRE-GENERATE THE STATE CORPUS UNLESS an external fitness_fn owns the
+        # signal.
+        #
+        # ONE CORPUS PER GENERATION, SHARED BY THE WHOLE POPULATION.  It used
+        # to be one corpus PER BRAIN (seed + gen * 1000 + i), which is a
+        # selection confound: the fitness of brain i was measured on
+        # brain i's corpus and compared against brain j's fitness measured on
+        # brain j's corpus, so every comparison carried the corpus-to-corpus
+        # noise.  Measured on the GA's own corpora that noise is ~+-0.02 of
+        # fitness — and the differences the search has to resolve between two
+        # near-tied candidates are of the same order.  The corpus is still
+        # re-drawn EVERY generation, so a brain cannot overfit one sample:
+        # it has to be good on fresh states every round.
         if fitness_fn is None:
-            corpus_sensors = [
-                generate_state_corpus(position, n_states, seed + gen * 1000 + i,
-                                      goal_bias=goal_bias, input_size=input_size,
-                                      perception_config=perception_config)
-                for i in range(population_size)
-            ]
+            if shared_corpus:
+                corpus_sensors = [
+                    generate_state_corpus(position, n_states,
+                                          seed + gen * 1000,
+                                          goal_bias=goal_bias,
+                                          input_size=input_size,
+                                          perception_config=perception_config)
+                ] * population_size
+            else:
+                corpus_sensors = [
+                    generate_state_corpus(position, n_states, seed + gen * 1000 + i,
+                                          goal_bias=goal_bias, input_size=input_size,
+                                          perception_config=perception_config)
+                    for i in range(population_size)
+                ]
 
         # evaluate
         fitnesses = []
@@ -726,7 +867,7 @@ def evolve(
             p2 = rng.choice(parents)
             child = p1.crossover(p2)
             # mutation with annealed rate
-            child = child.mutate(rate=mutate_rate, strength=0.3)
+            child = child.mutate(rate=mutate_rate, strength=mutation_strength)
             next_pop.append(child)
 
         pop = next_pop
@@ -741,10 +882,20 @@ def evolve(
             sensor_schema = "v3_tactics_context"
         else:
             sensor_schema = "v2_role_features"
+        fam = role_family or _role_family(position)
+        fam_names = list(MENU_NAMES.get(fam or "", ()))
+        tail_width = input_size - V2_SHARED_D
+        if sensor_schema == "v3_tactics_context":
+            tail_width -= TACTICS_CONTEXT_D
         best.meta = brain_meta_dict(
             training_method="ga_surrogate",
             sensor_schema=sensor_schema,
-            role_family=role_family or _role_family(position),
+            role_family=fam,
+            # Declare WHICH role features this net's tail is made of, by name.
+            # Without this a loader can only compare widths, which is how the
+            # two CB build-up sensors silently became dead inputs: the file
+            # said "31 inputs" and 31 was satisfied by the wrong seven.
+            role_features=(fam_names[:max(0, tail_width)] or None),
         )
     return EvolutionResult(
         best_brain=best,

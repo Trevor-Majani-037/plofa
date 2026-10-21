@@ -116,6 +116,46 @@ def _enums() -> Dict[str, Any]:
             "the project is role_fallback — it is the on-ball actions the "
             "trained policy did not make."
         ),
+        "target_authority": [
+            "matrix", "phase", "wide_combo", "gk_distribution",
+            "policy", "policy_deference", "heuristic", "soul", "unknown",
+        ],
+        "target_authority_meaning": {
+            "matrix": "AttackingMatrix named the receiver (the normal path)",
+            "phase": "a TacticalPhase order named it - a team order, not a "
+                     "preference",
+            "wide_combo": "the wide-combination role rule named it",
+            "gk_distribution": "the keeper's distribution picker named it",
+            "policy": "the evolved on-ball policy's own target was used "
+                      "(the fallback case, plus every through ball)",
+            "policy_deference": "the policy's target was used because the "
+                                "matrix was nearly indifferent - the "
+                                "POLICY_TARGET_DEFERENCE experiment",
+            "heuristic": "the geometric receiver picker named it",
+            "soul": "the player's soul scenario named it",
+            "unknown": "no source was recorded (a defensive label - an "
+                       "ordinary pass should always name one)",
+        },
+        "target_authority_note": (
+            "SEPARATE FROM decision_authority, and the distinction is the "
+            "point: decision_authority answers 'who chose the ACTION' and has "
+            "always read player_policy on an ordinary pass, while the RECEIVER "
+            "on that same pass is named by the structure ~98% of the time "
+            "(measured ownership: matrix 1178 / phase 296 / wide-combo 225 / "
+            "heuristic 13 / policy 1). Before this field the export could not "
+            "express the difference at all."
+        ),
+        "target_deference_note": (
+            "On an event carrying target_deference (only when the "
+            "POLICY_TARGET_DEFERENCE experiment is on): `gap_frac` is the "
+            "policy's relative shortfall against the option the matrix CHOSE, "
+            "`matrix_silent` is True when that option scored <= 0 (so no "
+            "relative margin was applied at all), and `matrix_reason` records "
+            "which branch of the matrix produced the choice. gap_frac == 0.0 "
+            "therefore has TWO meanings and they are NOT interchangeable - "
+            "index.target_deference reports the two modes separately for that "
+            "reason."
+        ),
         "third": ["defensive_third", "middle_third", "final_third"],
         "note": (
             "Coordinates are in ONE frame, not per-possession. A provider "
@@ -195,6 +235,15 @@ def _decision(md: Dict[str, Any]) -> Dict[str, Any]:
     auth = md.get("decision_authority")
     if auth:
         d["authority"] = auth
+    tgt = md.get("target_authority")
+    if tgt:
+        d["target_authority"] = tgt
+    defer = md.get("target_deference")
+    if isinstance(defer, dict) and defer:
+        d["target_deference"] = {
+            k: (round(v, 4) if isinstance(v, float) else v)
+            for k, v in defer.items() if v is not None
+        }
     brain = md.get("active_brain")
     if isinstance(brain, dict):
         for k in ("action", "intent", "confidence", "reason",
@@ -256,11 +305,21 @@ def convert_event(e, half: int, attacking_right: Dict[str, bool],
     clock_s = getattr(e, "match_clock_s", None)
     if clock_s is None:
         clock_s = (minute * 60) + second
+    else:
+        # The TRUE second within the minute (2026-10-20).  `e.second` is a
+        # placeholder — a random 0-59 draw — so the exported timeline did not
+        # flow.  The clock is the truth; the second now follows it, using
+        # the SAME convention as the engine's own chronology (including its
+        # `min(..., 59.9)` clamp) so the two never disagree.
+        second = round(min(float(clock_s) % 60.0, 59.9), 1)
 
     out: Dict[str, Any] = {
         "seq": index,
         "clock": f"{int(clock_s)//60:02d}:{clock_s%60:06.3f}",
-        "clock_s": round(float(clock_s), 3),
+        "clock_s": round(float(clock_s), 2),
+        # StatsBomb's `timestamp` is MILLISECONDS within the period; this
+        # file now carries the same unit so the two can be compared directly.
+        "timestamp": int(round(float(clock_s) * 1000)),
         "half": half,
         "minute": minute,
         "second": second,
@@ -491,18 +550,84 @@ def _index(events) -> Dict[str, Any]:
     c = Counter(e["type"] for e in events)
     auth = Counter()
     intents = Counter()
+    tgt_auth = Counter()
+    gaps: list[float] = []
+    silent_gaps: list[float] = []
+    comparable_gaps: list[float] = []
+    fired = applied = 0
+    n_silent = n_comparable = 0
     for e in events:
         d = e.get("decision") or {}
         if d.get("authority"):
             auth[d["authority"]] += 1
         if d.get("intent"):
             intents[str(d["intent"])] += 1
-    return {
+        if d.get("target_authority"):
+            tgt_auth[d["target_authority"]] += 1
+        td = d.get("target_deference")
+        if isinstance(td, dict):
+            fired += 1 if td.get("fired") else 0
+            applied += 1 if td.get("applied") else 0
+            if td.get("matrix_silent"):
+                n_silent += 1
+            else:
+                n_comparable += 1
+            g = td.get("gap_frac")
+            if isinstance(g, (int, float)):
+                # ⛔ SPLIT, not pooled. `gap_frac == 0.0` means "the matrix's
+                # chosen option scored nothing, so the margin was NOT applied"
+                # on one branch and "a genuine near-tie" on the other. MEASURED
+                # 2026-10-19: the pooled `fired` set was dominated by the silent
+                # mode, so a pooled percentile describes neither. The margin
+                # only governs the comparable set.
+                if td.get("matrix_silent"):
+                    silent_gaps.append(float(g))
+                else:
+                    comparable_gaps.append(float(g))
+                gaps.append(float(g))
+    out: Dict[str, Any] = {
         "n_events": len(events),
         "by_type": dict(c.most_common()),
         "decision_authority": dict(auth.most_common()),
         "on_ball_intent": dict(intents.most_common()),
     }
+    if tgt_auth:
+        out["target_authority"] = dict(tgt_auth.most_common())
+    if gaps:
+        # The distribution the deference margin should have been set from.
+        # Present only when the experiment was on, so its absence is a fact
+        # rather than a zero.
+        gaps.sort()
+
+        def _pcts(v):
+            if not v:
+                return {}
+            v = sorted(v)
+            n = len(v)
+            return {
+                "n": n,
+                "p10": round(v[int(0.1 * (n - 1))], 4),
+                "p50": round(v[n // 2], 4),
+                "p90": round(v[int(0.9 * (n - 1))], 4),
+            }
+
+        n = len(gaps)
+        out["target_deference"] = {
+            "n_inspected": n,
+            "n_fired": fired,
+            "n_applied": applied,
+            # The margin governs ONLY `comparable`; `matrix_silent` fires
+            # unconditionally by construction. Reporting the two together is
+            # how the first live run read a margin that was not binding.
+            "n_matrix_silent": n_silent,
+            "n_comparable": n_comparable,
+            "silent": _pcts(silent_gaps),
+            "comparable": _pcts(comparable_gaps),
+            "gap_frac_p10": round(gaps[int(0.1 * (n - 1))], 4),
+            "gap_frac_p50": round(gaps[n // 2], 4),
+            "gap_frac_p90": round(gaps[int(0.9 * (n - 1))], 4),
+        }
+    return out
 
 
 # ── validation ────────────────────────────────────────────────────────────

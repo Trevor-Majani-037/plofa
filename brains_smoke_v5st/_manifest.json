@@ -1,0 +1,23 @@
+{
+  "positions": [
+    "ST"
+  ],
+  "generations": 20,
+  "population": 32,
+  "states": 300,
+  "role_features": true,
+  "tactics_context": false,
+  "perception": true,
+  "perception_roles": true,
+  "results": {
+    "ST": {
+      "best_fitness": 0.5251,
+      "generations": 20,
+      "seed": 123,
+      "elapsed_s": 70.7,
+      "saved_to": "brains_smoke_v5st\\ST.json",
+      "input_size": 32,
+      "sensor_schema": "v2_role_features"
+    }
+  }
+}

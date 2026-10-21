@@ -29,7 +29,10 @@ from typing import Any, Dict, List, Optional
 from football_brain import FootballBrain, INTENT_LABELS
 from brain_sensors import extract_sensors, _get_attr, _fatigue_estimate, _clamp
 from perception import perceive, get_perception_config, set_perception
-from role_features import role_block, build_v2_vector
+from role_features import (
+    role_block, build_v2_vector, align_role_tail, _role_family,
+    MENU_NAMES, V2_SHARED_D, V2_ROLE_D, RoleSchemaError,
+)
 from tactics_context import (
     V3_INPUT_D, build_v3_vector, tactics_context_block,
 )
@@ -450,6 +453,30 @@ def _score_diff_of(game_state: Any) -> int:
     return score_diff
 
 
+def _brain_label(brain: FootballBrain) -> str:
+    """A short identifier for schema error messages."""
+    meta = getattr(brain, "meta", None) or {}
+    fam = meta.get("role_family") if isinstance(meta, dict) else None
+    return f"brain[{fam or '?'} in={getattr(brain, 'w1').shape[0]}]"
+
+
+def _aligned_tail(brain: FootballBrain, player: Any,
+                  role: Optional[List[float]], tail_width: int) -> np.ndarray:
+    """Role tail for this brain, selected BY NAME when it declares names.
+
+    See ``role_features.align_role_tail``.  This is the fix for the silent
+    truncation that made two trained CB sensors inert: a brain that declares
+    its feature names receives exactly those features, in its own order, and
+    a name this build can no longer produce RAISES instead of being dropped.
+    """
+    meta = getattr(brain, "meta", None) or {}
+    want = meta.get("role_features") if isinstance(meta, dict) else None
+    return align_role_tail(
+        _role_family(getattr(player, "position", "")),
+        role, tail_width, want_names=want, brain_label=_brain_label(brain),
+    )
+
+
 def build_sensors(
     brain: FootballBrain,
     player: Any, x: float, y: float,
@@ -498,12 +525,19 @@ def build_sensors(
             scene["position_engine"], attacks_right,
         )
         tactics = tactics_context_block(team_profile)
-        sensors = build_v3_vector(base_vec, role, tactics)
+        role_tail = _aligned_tail(
+            brain, player, role, n_in - V2_SHARED_D - len(tactics))
+        sensors = np.concatenate([
+            np.asarray(base_vec, dtype=np.float64),
+            role_tail,
+            np.asarray(tactics, dtype=np.float64),
+        ])
         if sensors.shape[0] != n_in:
-            padded = np.zeros(n_in, dtype=np.float64)
-            padded[:min(sensors.shape[0], n_in)] = sensors[:n_in]
-            sensors = padded
-    elif n_in > 24:
+            raise RoleSchemaError(
+                f"{_brain_label(brain)}: built a {sensors.shape[0]}-wide "
+                f"v3 vector but the network expects {n_in}."
+            )
+    elif n_in > V2_SHARED_D:
         # Schema-v2 role-features brain: the shared 24-d block comes
         # from the SAME perceived scene as the role tail, so the net
         # reads one coherent (imperfect) world.  Unknown-role players
@@ -520,11 +554,10 @@ def build_sensors(
             scene["teammates"], scene["defenders"],
             scene["position_engine"], attacks_right,
         )
-        sensors = build_v2_vector(base_vec, role)
-        if sensors.shape[0] != n_in:
-            padded = np.zeros(n_in, dtype=np.float64)
-            padded[:min(sensors.shape[0], n_in)] = sensors[:n_in]
-            sensors = padded
+        role_tail = _aligned_tail(brain, player, role, n_in - V2_SHARED_D)
+        sensors = np.concatenate([
+            np.asarray(base_vec, dtype=np.float64), role_tail,
+        ])
     else:
         sensors = perceive(
             player, x, y, teammates, defenders, position_engine,

@@ -2537,6 +2537,21 @@ class PositionEngine:
         """
         if not has_ball or ball_x is None or ball_y is None:
             return {}
+        # CHECKPOINT 38 amend (2026-10-20) — THE SPLIT IS A BUILD-UP PATTERN,
+        # NOT A FIRST-DEFENDER PATTERN.  The spread exists so a CARRIER in the
+        # middle has two escape lanes (a short one to the dropping CB, a long
+        # one to the deep CB).  But when one of our own CENTRE-BACKS is the
+        # carrier, the ball-side CB is the football's FIRST DEFENDER, and his
+        # partner is the SECOND — who must be ~6 m away, inside the presser.
+        # Splitting them sends the cover the wrong way: measured, the pair's
+        # x-gap was 18.9 m and the cover 26 m away, and no target steer walks
+        # 20 m in the seconds a press lasts.  So the spread does not fire at
+        # all when a centre-back holds the ball.
+        _carrier, _presser = self._carrier_and_presser(team_name, ball_x, ball_y)
+        if (self.BACKLINE_SPLIT_SKIPS_CB_CARRIER and _carrier is not None):
+            _cst = self.states.get(_carrier)
+            if _cst is not None and getattr(_cst, "position", "") == "CB":
+                return {}
         own_goal_x = 0.0 if attacks_right else 105.0
         nx = ball_x if attacks_right else 105.0 - ball_x
         if nx < self.BACKLINE_SPREAD_MIN_NX or nx > self.BACKLINE_SPREAD_MAX_NX:
@@ -2684,6 +2699,212 @@ class PositionEngine:
         return ahead[0][1]
 
     REST_DEFENCE_GAP_M: float = 12.0   # metres behind the ball he is pinned
+
+    # ── THE COVER AND THE SCREEN (first / second / third defender) ──────
+    #
+    # The football's canonical frame for this moment is the first / second /
+    # third defender: the first defender is the one on the ball, the second
+    # "provides immediate support for the first defender... a typical
+    # distance between the second and first defender is about six metres",
+    # and the third is the deeper cover.  And the first defender "may also
+    # indicate to the rest of the team whether to stay high or back off from
+    # pressure" — which is the communication this engine has no channel for.
+    #
+    # MEASURED (2026-10-20, one real match, the case the user reported by
+    # watching: our CB has the ball and an opponent is pressing him):
+    #
+    #     the other CB within 6 m of the pressed CB    15.4%   (the football:
+    #                                                        ~always)
+    #     the other CB level in x (within 3 m)           15.4%   (the user's
+    #                                                        observation)
+    #     the CB pair's x-gap                       median 7.3 m
+    #     the CB line to the CDM                  median 10.2 m   (the
+    #                                                        football: ~16 m)
+    #
+    # The cause is CK38: "spread the pitch under pressure" pushes every
+    # back-line player's y AWAY from the ball and the far-side CB DEEPER
+    # (24-30 m), so the cover goes the opposite way from coming across.  In
+    # the build-up that split is right (two escape lanes), but when the ball
+    # is with one of the CBs, the ball-side CB is the FIRST DEFENDER and his
+    # partner must be the SECOND — immediately next to him, not 30 m away.
+    #
+    # So the cover is a CONSTRAINT, applied after every preference (the
+    # rest-defence precedent): it is not something a rule averages into.
+
+    COVER_ENABLED: bool = True
+    #: The CK38 amend: the two-escape-lane split does not fire when one of
+    #: our own centre-backs is the carrier (it is a build-up pattern).  A
+    #: switch of its own, so the amend can be isolated from the cover.
+    BACKLINE_SPLIT_SKIPS_CB_CARRIER: bool = True
+    #: the football's second-defender distance
+    COVER_DIST_M: float = 6.0
+    #: how far goal-side of the first defender the second sits
+    COVER_GOALSIDE_M: float = 2.5
+    #: how far toward the centre the second comes (he comes ACROSS)
+    COVER_ACROSS_M: float = 5.5
+    #: the presser's proximity to the carrier that makes the cover live
+    COVER_PRESS_M: float = 8.0
+    #: how close the ball must be to the carrier's feet for him to be the carrier
+    COVER_CARRIER_M: float = 2.5
+    #: A COVER IS AN EMERGENCY, NOT A SHAPE.  The generic ladder is a shape
+    #: integrator: it trots at the role's jog speed (1.8 m/s for a CB), so a
+    #: target 22 m away is never reached — measured, the cover sat a median
+    #: 22.6 m from the very socket the constraint gave him.  The same reason
+    #: the low-block recovery and the set-piece approach raise the speed
+    #: ("the generic ladder is a shape integrator, so it trots at 0.54-0.71 m/s
+    #: and never arrives").  A real cover arriving to support a pressed
+    #: team-mate SPRINTS: 0.75 of top speed is 5.5 m/s.
+    COVER_APPROACH_TOP_FRAC: float = 0.75
+    COVER_APPROACH_GAIN: float = 1.1
+    #: the CB-line-to-midfield-line distance the football gives as ~16 m; the
+    #: floor is relaxed from that so the build-up support (which legitimately
+    #: pulls a midfielder closer) is not outlawed
+    SCREEN_LINE_GAP_MIN_M: float = 12.0
+    SCREEN_ENABLED: bool = True
+
+    def _carrier_and_presser(
+        self, team_name: str, ball_x: float, ball_y: float,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Our ball carrier and the opponent pressing him, or (None, None).
+
+        The engine tracks the ball but not who holds it, so the carrier is the
+        team-mate nearest the ball — the ball is at his feet.  The presser is
+        the opponent nearest the carrier.
+        """
+        ours: Dict[str, Tuple[float, float]] = {}
+        for n in self.team_rosters.get(team_name, []):
+            st = self.states.get(n)
+            if st is None or getattr(st, "position", "") == "GK":
+                continue
+            if st.current_x is None or st.current_y is None:
+                continue
+            ours[n] = (st.current_x, st.current_y)
+        if not ours:
+            return None, None
+        carrier = min(
+            ours,
+            key=lambda n: (ours[n][0] - ball_x) ** 2 + (ours[n][1] - ball_y) ** 2,
+        )
+        cdist = math.hypot(ours[carrier][0] - ball_x, ours[carrier][1] - ball_y)
+        if cdist > self.COVER_CARRIER_M:
+            return None, None
+        other = next((t for t in self.team_rosters if t != team_name), None)
+        if other is None:
+            return None, None
+        best_d = None
+        presser = None
+        cx, cy = ours[carrier]
+        for n in self.team_rosters.get(other, []):
+            st = self.states.get(n)
+            if st is None or getattr(st, "position", "") == "GK":
+                continue
+            if st.current_x is None or st.current_y is None:
+                continue
+            d = math.hypot(st.current_x - cx, st.current_y - cy)
+            if best_d is None or d < best_d:
+                best_d, presser = d, n
+        if presser is None or best_d is None or best_d > self.COVER_PRESS_M:
+            return carrier, None
+        return carrier, presser
+
+    def cover_target(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Dict[str, Tuple[float, float]]:
+        """The SECOND DEFENDER's socket: ~6 m from the pressed first defender.
+
+        Returns ``{name: (tx, ty)}`` or {} when the situation is not on.
+        Fires only when OUR centre-back is the ball carrier and an opponent is
+        pressing him — in the build-up (a midfielder has the ball) CK38's
+        two-escape-lane split is correct and this must not touch it.
+
+        The socket is the football's: goal-side of the carrier by
+        ``COVER_GOALSIDE_M`` and toward the centre by ``COVER_ACROSS_M``, so the
+        second defender arrives at ~``COVER_DIST_M``, INSIDE the presser, and
+        takes over the marking if the carrier is beaten.
+        """
+        if not self.COVER_ENABLED or not has_ball:
+            return {}
+        if ball_x is None or ball_y is None:
+            return {}
+        carrier, presser = self._carrier_and_presser(team_name, ball_x, ball_y)
+        if carrier is None or presser is None:
+            return {}
+        cst = self.states.get(carrier)
+        if cst is None or getattr(cst, "position", "") != "CB":
+            return {}
+        covers = [n for n in self.team_rosters.get(team_name, [])
+                  if (s := self.states.get(n)) is not None
+                  and getattr(s, "position", "") == "CB" and n != carrier]
+        if not covers:
+            return {}
+        # the cover is the one furthest from the ball: the other CB is the
+        # one who would be the first defender if the carrier is beaten
+        cover = max(covers, key=lambda n: math.hypot(
+            self.states[n].current_x - ball_x,
+            self.states[n].current_y - ball_y))
+        own_goal_x = 0.0 if attacks_right else PITCH_X
+        goal_dir = 1.0 if attacks_right else -1.0
+        cx, cy = cst.current_x, cst.current_y
+        tx = cx - goal_dir * self.COVER_GOALSIDE_M      # goal-side
+        toward_centre = 1.0 if cy <= 34.0 else -1.0
+        ty = cy + toward_centre * self.COVER_ACROSS_M   # across, inside
+        tx = max(0.0, min(PITCH_X, tx))
+        ty = max(1.0, min(67.0, ty))
+        return {cover: (tx, ty)}
+
+    def screen_target(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Dict[str, Tuple[float, float]]:
+        """The MIDFIELD LINE's floor: the CDM may not collapse onto the back
+        line while a centre-back is trying to play out.
+
+        The football gives the distance between the defensive and midfield
+        lines as about 16 m ("a good rule of thumb"), and measured here it is
+        10.2 m when our CB is pressed and 6.2 m in the build-up.  A pivot
+        level with the centre-backs gives the presser its easiest target and
+        leaves the defence without its structure, so the gap is floored at
+        ``SCREEN_LINE_GAP_MIN_M``.
+
+        Returns ``{name: (tx, ty)}`` — the CDM's target, pushed UP the pitch
+        (away from his own goal) to hold the line.
+        """
+        if not self.SCREEN_ENABLED or not has_ball:
+            return {}
+        if ball_x is None or ball_y is None:
+            return {}
+        carrier, presser = self._carrier_and_presser(team_name, ball_x, ball_y)
+        if carrier is None:
+            return {}
+        cst = self.states.get(carrier)
+        if cst is None or getattr(cst, "position", "") != "CB":
+            return {}
+        cbs = [n for n in self.team_rosters.get(team_name, [])
+               if (s := self.states.get(n)) is not None
+               and getattr(s, "position", "") == "CB"]
+        cdms = [n for n in self.team_rosters.get(team_name, [])
+                if (s := self.states.get(n)) is not None
+                and getattr(s, "position", "") == "CDM"]
+        if len(cbs) < 2 or not cdms:
+            return {}
+        cdm = cdms[0]
+        dst = self.states[cdm]
+        if dst.current_x is None or dst.current_y is None:
+            return {}
+        line_x = sum(self.states[n].current_x for n in cbs) / len(cbs)
+        gap = abs(dst.current_x - line_x)
+        if gap >= self.SCREEN_LINE_GAP_MIN_M:
+            return {}       # the line already holds; nothing to do
+        # push him up the pitch, away from his own goal, to open the gap
+        own_goal_x = 0.0 if attacks_right else PITCH_X
+        goal_dir = 1.0 if attacks_right else -1.0
+        need = self.SCREEN_LINE_GAP_MIN_M
+        if attacks_right:
+            tx = min(PITCH_X, line_x + need)
+        else:
+            tx = max(0.0, line_x - need)
+        return {cdm: (tx, dst.current_y)}
 
     def rest_defence_clamp(
         self, tx: float, ty: float, ball_x: float, attacks_right: bool,

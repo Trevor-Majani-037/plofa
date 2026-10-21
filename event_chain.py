@@ -551,8 +551,10 @@ class BaseChain:
             position_engine.record_physics_distance(
                 player_name,
                 distance_m=s.get("distance_m", 0.0),
+                standing_time_s=s.get("standing_time_s", 0.0),
                 walk_time_s=s.get("walk_time_s", 0.0),
                 jog_time_s=s.get("jog_time_s", 0.0),
+                running_time_s=s.get("running_time_s", 0.0),
                 sprint_time_s=s.get("sprint_time_s", 0.0),
                 sprint_count=s.get("sprint_count", 0.0),
                 high_speed_sprint_count=s.get("high_speed_sprint_count", 0.0),
@@ -1315,6 +1317,132 @@ class PossessionChain(BaseChain):
     # guarantee deliveries and keeper involvement.
     POLICY_INTENT_AUTHORITY: bool = False
 
+    # ── POLICY TARGET DEFERENCE (2026-10-19) — EXPERIMENT, DEFAULT OFF ────
+    # The structure (AttackingMatrix) still names the receiver on ordinary
+    # circulation; that is a deliberate division of labour, not a gap: the
+    # carrier owns the VERB and the pass class, the structure owns the NOUN
+    # (and the policy owns both on a through ball, where the choice IS the
+    # skill). Measured ownership on the shipped path: matrix 1178 / phase
+    # 296 / wide-combo 225 / heuristic 13 / policy 1.
+    #
+    # What has therefore never been TESTED is whether the policy's own
+    # receiver is any good — it is computed every touch by _find_target and
+    # discarded. This flag is the cheap test: when the matrix is nearly
+    # INDIFFERENT between its choice and the policy's, prefer the policy's.
+    #
+    # Bounded, not authoritative. Running the policy alone is Checkpoint 32b,
+    # which collapsed GK receptions (37.7 -> 25.0) and the build-up. The
+    # margin only opens where the matrix's own score carries no information,
+    # so the structural claim is preserved wherever it has one.
+    POLICY_TARGET_DEFERENCE: bool = False
+    # Relative margin on the matrix's own option value. NOT FITTED — set so
+    # that "within 5% of the structure's choice, by the structure's own
+    # scoring" means near-indifference. The first measurement should read the
+    # `target_deference.gap_frac` distribution and set this from data.
+    POLICY_TARGET_DEFERENCE_MARGIN: float = 0.05
+
+    @classmethod
+    def _policy_target_deference(
+        cls,
+        forced_source: str,
+        forced_receiver,
+        matrix_decision,
+        active_decision,
+        players,
+    ):
+        """Does the on-ball policy get to overrule the matrix's receiver?
+
+        Returns `(apply: bool, meta: Optional[dict])`. Pure: reads three
+        objects, writes nothing, and draws NO random number -- the decision is
+        a comparison, so an off arm and an on arm differ only in the branch
+        taken, not in the RNG stream before it.
+
+        WHY BOUNDED. The matrix's target is a structural claim, and on the
+        shipped path it is the normal one (measured ownership on a live
+        match: matrix 1178 / phase 296 / wide-combo 225 / heuristic 13 /
+        policy 1). Running the policy alone is Checkpoint 32b, which collapsed
+        GK receptions 37.7 -> 25.0 and the build-up. So this asks only the
+        question the matrix cannot answer: where the structure is nearly
+        INDIFFERENT between its own choice and the policy's, is the policy's
+        pick any worse? The margin is relative to the matrix's OWN score for
+        the option it chose, not to the global maximum, because the cascade
+        deliberately consults subsets and the chosen option is the decision
+        that was actually made.
+
+        EXCLUSIONS, each of which is a non-preference and therefore not
+        something a preference rule may outvote:
+
+        * `forced_source != "matrix"` -- a TacticalPhase directive is a team
+          order ("even a genius obeys the reset"), the wide combination is a
+          role rule, and a policy override already applied is not re-decided.
+        * a keeper release (`back_to_keeper_*`) -- safety, not preference.
+          Those options are scored outside the candidate list, so `scores`
+          cannot compare them honestly either.
+        """
+        if not cls.POLICY_TARGET_DEFERENCE:
+            return False, None
+        if forced_source != "matrix" or matrix_decision is None:
+            return False, None
+        if active_decision is None or active_decision.target is None:
+            return False, None
+        scores = getattr(matrix_decision, "scores", None)
+        if not scores:
+            return False, None
+        if str(getattr(matrix_decision, "reason", "")).startswith("back_to_keeper"):
+            return False, None
+
+        pol_name = getattr(active_decision.target, "name", "")
+        pol_val = scores.get(pol_name)
+        mtx_val = float(getattr(matrix_decision, "value", 0.0) or 0.0)
+        if pol_val is None:
+            return False, None
+
+        margin = float(cls.POLICY_TARGET_DEFERENCE_MARGIN)
+        if mtx_val <= 0.0:
+            # The matrix has NO preference to preserve: every candidate it
+            # weighed scored zero (the "no clear option" branch). Returning
+            # early here would make the rule inert in exactly the case it
+            # exists for, and `gap_frac` would divide by zero. There is
+            # nothing to be indifferent between, so the policy may choose.
+            fired = True
+            gap_frac = 0.0
+        else:
+            fired = float(pol_val) >= mtx_val * (1.0 - margin)
+            gap_frac = (mtx_val - float(pol_val)) / mtx_val
+        applied = bool(
+            fired
+            and forced_receiver is not None
+            and pol_name != getattr(forced_receiver, "name", "")
+            and any(p.name == pol_name for p in players)
+        )
+        # Recorded on every pass the flag inspects, fired or not, so ONE match
+        # yields the gap distribution the margin should have been set from
+        # instead of the constant being fitted by eye.
+        meta = {
+            "fired": bool(fired),
+            "applied": applied,
+            "margin": margin,
+            "matrix_value": round(mtx_val, 4),
+            "policy_value": round(float(pol_val), 4),
+            "gap_frac": round(gap_frac, 4),
+            # MEASURED 2026-10-19 (seed 777, first live run of this rule): the
+            # `fired` set was DOMINATED by `gap_frac == 0.000` -- i.e. by the
+            # `mtx_val <= 0` branch above, where the margin does not apply at
+            # all because there is nothing to be relatively indifferent about.
+            # `matrix_silent` separates that mode from a genuine near-tie, and
+            # `matrix_reason` says WHICH branch produced the zero: the matrix's
+            # cascade can choose an option that scores 0.0 while better-scoring
+            # options exist, so "chosen value is 0.0" is not by itself evidence
+            # that the structure had no preference. Without these two fields the
+            # single number `gap_frac` conflates a comparison with its absence.
+            "matrix_silent": bool(mtx_val <= 0.0),
+            "matrix_reason": str(getattr(matrix_decision, "reason", "")),
+            "matrix_target": getattr(
+                getattr(matrix_decision, "target", None), "name", ""),
+            "policy_target": pol_name,
+        }
+        return applied, meta
+
     @classmethod
     def generate(
         cls,
@@ -1642,6 +1770,17 @@ class PossessionChain(BaseChain):
             forced_receiver = None
             forced_end = None
             matrix_meta = None
+            # Provenance of `forced_receiver`: "" | "phase" | "matrix" |
+            # "wide_combo" | "policy_deference". The name alone cannot say
+            # where a receiver came from, and both the deference rule and the
+            # export's `target_authority` need to know.
+            forced_source = ""
+            # Who actually named the receiver on the delivered pass. Stamped
+            # on the event so the question "how often does the policy choose
+            # the receiver?" is answerable from the export instead of from a
+            # probe that wraps internals.
+            receiver_authority = ""
+            deference_meta = None
             regression_mode = None    # None | "drop_to_gk" | "recycle" | "wing_switch" | "circulation"
             wide_combo_mode = False   # Checkpoint 24: wide combination pass
             phase_decision = None
@@ -1759,6 +1898,7 @@ class PossessionChain(BaseChain):
                 if target_player is not None and not cls.POLICY_INTENT_AUTHORITY:
                     tx, ty = position_engine.get_position(target_player.name)
                     forced_receiver = target_player
+                    forced_source = "phase"
                     forced_end = cls._pass_destination_to_target(tx, ty, attacks_right)
                     matrix_meta = {
                         "possession_phase": phase_decision.phase.value,
@@ -1836,6 +1976,7 @@ class PossessionChain(BaseChain):
                     if (not cls.POLICY_INTENT_AUTHORITY and matrix_decision is not None
                             and matrix_decision.is_pass and matrix_decision.target is not None):
                         forced_receiver = matrix_decision.target
+                        forced_source = "matrix"
                         forced_end = cls._pass_destination_to_target(
                             matrix_decision.target_x, matrix_decision.target_y,
                             attacks_right,
@@ -1875,6 +2016,7 @@ class PossessionChain(BaseChain):
                     )
                     if _combo_target is not None:
                         forced_receiver = _combo_target
+                        forced_source = "wide_combo"
                         _ctx, _cty = position_engine.get_position(_combo_target.name)
                         forced_end = cls._pass_destination_to_target(
                             _ctx, _cty, attacks_right)
@@ -1910,6 +2052,24 @@ class PossessionChain(BaseChain):
                 attacks_right, game_state, minute=minute,
                 coach_instructions=coach_instructions,
             )
+
+            # ── POLICY TARGET DEFERENCE (2026-10-19) — see the flag's note ──
+            # The rule itself lives in `_policy_target_deference` so it can be
+            # exercised directly: every exclusion below (a phase directive, the
+            # wide combination, a keeper release) is a case where the matrix is
+            # NOT expressing a preference, and a preference rule must not be
+            # able to outvote any of them.
+            _defer, deference_meta = cls._policy_target_deference(
+                forced_source, forced_receiver, matrix_decision,
+                active_decision, players,
+            )
+            if _defer:
+                forced_receiver = active_decision.target
+                forced_source = "policy_deference"
+                _pdx, _pdy = position_engine.get_position(forced_receiver.name)
+                forced_end = cls._pass_destination_to_target(
+                    _pdx, _pdy, attacks_right,
+                )
 
             # A policy-selected shot is permitted only from a real shooting
             # position.  This is deliberately a geometry feasibility check,
@@ -2132,6 +2292,7 @@ class PossessionChain(BaseChain):
             # ── PASS ──────────────────────────────────────────────
             else:
                 receiver = forced_receiver
+                receiver_authority = forced_source or "heuristic"
                 if receiver is None:
                     # ── CHECKPOINT 24: WIDE COMBINATION PASS ─────────
                     # A wide carrier in the final third who isn't crossing,
@@ -2151,6 +2312,7 @@ class PossessionChain(BaseChain):
                         )
                         if _combo_target is not None:
                             receiver = _combo_target
+                            receiver_authority = "wide_combo"
                             wide_combo_mode = True
                 if receiver is None:
                     if gk_distribution:
@@ -2159,6 +2321,7 @@ class PossessionChain(BaseChain):
                             position_engine=position_engine,
                             def_players=def_players, attacks_right=attacks_right,
                         )
+                        receiver_authority = "gk_distribution"
                         if receiver is None:
                             receiver = cls._pick_gk_distribution(
                                 last_player, players, x, y, team_profile,
@@ -2167,11 +2330,17 @@ class PossessionChain(BaseChain):
                                 att_style_key=att_style_key,
                             )
                     else:
-                        # The policy owns the intended receiver for every
-                        # pass-like intent.  _find_target already selects a
-                        # target appropriate to SAFE/RECYCLE/PROGRESSIVE/
-                        # THROUGH/SWITCH; the heuristic picker is only a
-                        # feasibility fallback when the policy has none.
+                        # The policy's receiver is the FALLBACK, not the
+                        # owner, on the shipped path.  `_find_target` runs
+                        # every touch and its target is consulted here only
+                        # when nothing above claimed the ball (the matrix
+                        # abstained, and no wide combination was on).  That
+                        # is measured, not aspirational: owner counts on a
+                        # live match are matrix 1178 / phase 296 / wide-combo
+                        # 225 / heuristic 13 / policy 1.  `target_authority`
+                        # on the pass event now says which one it was.
+                        # Through balls are the exception and are handled
+                        # separately (policy_through_target).
                         brain_target = active_decision.target
                         if (brain_target is not None
                                 and active_decision.intent in (
@@ -2180,14 +2349,16 @@ class PossessionChain(BaseChain):
                                     PlayerIntent.THROUGH_BALL, PlayerIntent.SWITCH)
                                 and any(p.name == brain_target.name for p in players)):
                             receiver = brain_target
+                            receiver_authority = "policy"
                         else:
                             receiver = cls._pick_receiver(
                                 players, last_player, x, team_profile,
                                 position_engine=position_engine, y=y,
                                 def_players=def_players, attacks_right=attacks_right,
                                 possession_phase=current_phase if phase_decision else None,
-                                match_state=state,  # Checkpoint 29 — feeds block navigation
+                                match_state=state,  # Checkpoint 29 - feeds block navigation
                             )
+                            receiver_authority = "heuristic"
                 if not receiver:
                     break
 
@@ -2219,6 +2390,7 @@ class PossessionChain(BaseChain):
                                     and top_target.name != receiver.name
                                     and top_scenario.get('score', 0.0) > 0.35):
                                 receiver = top_target
+                                receiver_authority = "soul"
 
                 # ── CHECKPOINT 42: INTENT AUTHORITY OVER THE DELIVERY CLASS ──
                 # `POLICY_INTENT_AUTHORITY` was wired to the FIVE receiver-
@@ -2764,7 +2936,17 @@ class PossessionChain(BaseChain):
                     end_x=end_px, end_y=end_py,
                     outcome=success,
                     metadata={
+                        # `decision_authority` answers "who chose the
+                        # ACTION" (this pass exists because the policy wanted
+                        # to pass rather than carry/shoot). It has never
+                        # answered "who chose the RECEIVER" — that is
+                        # `target_authority`, added 2026-10-19, because the
+                        # structure names the target on ~98% of ordinary
+                        # passes and no exported field said so.
                         "decision_authority": "player_policy",
+                        "target_authority": receiver_authority or "unknown",
+                        **({"target_deference": deference_meta}
+                           if deference_meta else {}),
                         "active_brain": {
                             "action": active_decision.action,
                             "intent": active_decision.intent.value,

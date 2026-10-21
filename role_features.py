@@ -41,7 +41,8 @@ naturally symmetric in-game positions (LB/RB both get the FB block, etc.).
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional
+import warnings
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -80,14 +81,38 @@ MENU_NAMES: Dict[str, List[str]] = {
                                 # (high = switch target wide open; network learns to switch
                                 #  when this is high and same_side is congested, WITHOUT a rule)
     ],
+    # ── 2026-10-20: `pass_lane_open` appended to FB and WING ────────────────
+    # The plan's item 2 was "add the two missing forward-option inputs".  The
+    # survey says the gap is narrower and more specific than that: `pass_lane_open`
+    # (openness of the best forward teammate) has always been in the DM/CM/AM
+    # menu, and `same_side_lane_open` covers the CB, so **FB and WING were the
+    # only two families that could not see whether a forward pass option was
+    # open at all.**  Measured on the menus: `overlap_option`, which reads as if
+    # it fills that gap, actually computes
+    # `clamp(distance_to_nearest_forward_teammate / 30)` -- a DISTANCE sensor,
+    # not an openness one.  Worse, it returns 0.0 both when NOBODY is ahead and
+    # when a teammate is standing on top of you: two opposite facts, one value.
+    # So a full-back or winger in the attacking third had no input telling him a
+    # forward option existed, which is precisely the blindness AGENTS.md item 5
+    # describes.
+    #
+    # APPENDED, not inserted: the width-only legacy path takes "the first N", so
+    # appending leaves every shipped brain's numbers untouched (it warns once
+    # that the new input is inert for it -- see `align_role_tail`).  Inserting
+    # would silently relabel every feature after the insertion point.
+    #
+    # ST is deliberately NOT given it: a striker's forward option is usually
+    # nobody, so the sensor would be near-constant 0.0 -- an input that costs
+    # training budget and carries no information.
     "FB": [
         "wide_marker_dist",     # nearest opp wide attacker ahead (the fullback's man)
         "one_v_one_space",      # openness vs that marker
         "inside_channel",       # lane openness of the diagonal-inside option
-        "overlap_option",       # teammate running beyond on the flank
+        "overlap_option",       # DISTANCE to the nearest forward teammate (misnamed; see above)
         "cross_zone",           # in the wide crossing corridor
         "own_line_height",      # our defensive line height (shared read)
         "short_cut",            # reset option out the back (nearest teammate)
+        "pass_lane_open",       # openness of the BEST forward teammate (see _forward_options)
     ],
     "DM": [
         "pressure",             # 1 - nearest defender dist (high = pressed)
@@ -121,11 +146,12 @@ MENU_NAMES: Dict[str, List[str]] = {
         "marker_dist",          # nearest opp defender on the flank corridor ahead
         "one_v_one",            # openness vs that fullback
         "inside_channel",       # lane openness of the cut-inside diagonal
-        "overlap_option",       # teammate beyond on the flank
+        "overlap_option",       # DISTANCE to the nearest forward teammate (misnamed; see FB note)
         "cross_zone",           # in the crossing corridor
         "cross_target_open",    # lane openness of the penalty-spot target zone
         "box_arrival",          # teammates arriving in the opponent box
         "cover_behind",         # 1 - proximity of cover behind (high = stranded)
+        "pass_lane_open",       # openness of the BEST forward teammate (see _forward_options)
     ],
     "ST": [
         "cb_room",              # room to the nearest CB (high = unmarked)
@@ -144,6 +170,88 @@ ROLE_FAMILY: Dict[str, str] = {
     "GK": "GK", "CB": "CB", "LB": "FB", "RB": "FB", "CDM": "DM",
     "CM": "CM", "CAM": "AM", "LW": "WING", "RW": "WING",
     "ST": "ST", "CF": "ST",
+}
+
+#: The ACTIONS each role performs — the on-ball vocabulary of a role.
+#:
+#: This is a hand-written FOOTBALL table, and it is hand-written on purpose.
+#: It sits next to `MENU_NAMES` (the per-role SENSOR vocabulary), which is
+#: the same kind of object: "what does this role perceive / do".
+#:
+#: WHY IT IS NEEDED, MEASURED (2026-10-20).  The surrogate's role-scoped
+#: pooling derives each family's vocabulary from the DATA, and that is the
+#: right default — but the data has a hole exactly where it matters:
+#:
+#:     * the CM family performed NO through-ball in 4,011 real decisions, and
+#:       neither the heuristic CM nor the shipped T1 CM brain ever chooses
+#:       THROUGH_BALL (0% over 2,000 synthetic states).  A data-derived
+#:       vocabulary therefore says a midfielder cannot play a through-ball —
+#:       which is T2's documented collapsed optimum ("CM abandons
+#:       through-balls") reproduced by a different route.
+#:     * the ST family performed SHOOT exactly ONCE, so its shooting value
+#:       rests on a single sample shrunk to a bucket mean, and the striker's
+#:       intent mix ends up decided by fourth-decimal differences.
+#:
+#: So the vocabulary has to say what a role CAN do, not only what it
+#: happened to do.  Where the data is solid this table AGREES with it, and
+#: where the data is silent it supplies the football truth the corpus is
+#: missing.  The two are compared in AGENTS.md.
+#:
+#: The table is also what the collector explores: an ε-exploration policy
+#: draws from it, so the corpus eventually covers every action the role can
+#: actually perform.
+ROLE_INTENTS: Dict[str, frozenset] = {
+    # a keeper distributes and carries; he does not cross or shoot
+    "GK": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "THROUGH_BALL"}),
+    # a centre-back plays out, breaks a line and can carry; he does not cross
+    "CB": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                     "THROUGH_BALL"}),
+    # a full-back crosses and plays the through ball; he does not shoot
+    "FB": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                     "CROSS", "THROUGH_BALL"}),
+    # a holding midfielder recycles, carries and plays the long ball
+    "DM": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                     "THROUGH_BALL"}),
+    # a central midfielder: the same, and the through ball is his signature
+    "CM": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                     "THROUGH_BALL"}),
+    # an attacking midfielder: the same, plus he shoots when he gets there
+    "AM": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                     "THROUGH_BALL", "SHOOT"}),
+    # a winger crosses and cuts inside to shoot
+    "WING": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                       "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                       "CROSS", "SHOOT"}),
+    # a striker shoots, runs the channel and plays the through ball
+    "ST": frozenset({"SAFE_PASS", "RECYCLE", "PROTECT_POSSESSION",
+                     "CARRY", "DRIBBLE", "SWITCH", "PROGRESSIVE_PASS",
+                     "THROUGH_BALL", "SHOOT"}),
+}
+
+#: Actions that belong to particular ROLES.  Everything else — a safe pass, a
+#: recycle, a carry, a switch, a through ball — is GENERIC, and any role may
+#: perform it.  Only two actions are role-specific, and they are the two the
+#: data showed being mis-credited:
+#:
+#:   * CROSS belongs to the wide roles.  The ST family performed it ZERO
+#:     times in 4,011 real decisions, so every crossing value the striker
+#:     could read was the WINGERS' — which is how the GA evolved a striker
+#:     who crossed 43% of the time and never shot.
+#:   * SHOOT belongs to the forward roles.  The CB and GK tables carry stray
+#:     SHOOT samples (the heuristic's noise), not a role truth.
+#:
+#: It is deliberately NOT a full per-role table: a table that forbade the
+#: keeper's progressive pass, for instance, would teach the keeper to hoard
+#: the ball, and a wrong table is worse than no table.
+ROLE_ONLY_INTENTS: Dict[str, frozenset] = {
+    "CROSS": frozenset({"WING", "FB"}),
+    "SHOOT": frozenset({"ST", "AM", "WING"}),
 }
 
 V2_ROLE_D: Dict[str, int] = {fam: len(names) for fam, names in MENU_NAMES.items()}
@@ -224,6 +332,33 @@ def _opp_line_x(defenders: List[Any], position_engine: Any,
     return sorted(_pos(position_engine, d.name, (x, y))[0]
                   for d in defenders or []
                   if getattr(d, "position", "") != "GK")
+
+
+def _forward_options(x: float, y: float, tms_n: List[Any], defs: List[Any],
+                     position_engine: Any, attacks_right: bool):
+    """Teammates ahead of the carrier, and the openness of the best one.
+
+    ONE definition, because `pass_lane_open` is now a feature of four families
+    (DM / CM / AM always had it; FB and WING gained it 2026-10-20) and a second
+    copy would drift the moment either side is edited.  A duplicated feature
+    definition is worse than a duplicated constant: the two copies look
+    identical, the brains trained on the old one keep working, and the
+    disagreement only shows up as an input nobody can explain.
+
+    "Ahead" is > 4 m of forward progress.  `_openness` is the shared lane
+    measure (distance to the nearest opponent, normalised the same way as the
+    v1 features 8/9), so this answers exactly "is a forward pass on?".
+
+    Returns ``(fwd_teammates, best_openness)``; ``0.0`` when nobody is ahead,
+    which is a fact ("no forward option") rather than a neutral 0.5.
+    """
+    fwd = [t for t in tms_n
+           if _prog(_pos(position_engine, t.name, (x, y))[0], x, attacks_right)
+           > 4.0]
+    if not fwd:
+        return fwd, 0.0
+    return fwd, max(_openness(*_pos(position_engine, t.name, (x, y)), defs,
+                              position_engine) for t in fwd)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -358,8 +493,10 @@ def _fb_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
     near_tm = _near_def(x, y, tms_n, pe)
     short_cut = _clamp(near_tm / 40.0) if near_tm is not None else 0.0
 
+    _, pass_lane_open = _forward_options(x, y, tms_n, defs, pe, ar)
+
     return [wide_marker_dist, one_v_one_space, inside_channel, overlap_option,
-            cross_zone, own_line_height, short_cut]
+            cross_zone, own_line_height, short_cut, pass_lane_open]
 
 
 def _dm_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
@@ -381,9 +518,7 @@ def _mid_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
     tms_n = _teammates(tms)
     pressure = _clamp(_defenders_within(x, y, defs, pe, 6.0) / 3.0)
 
-    fwd_tms = [t for t in tms_n if _prog(_pos(pe, t.name, (x, y))[0], x, ar) > 4.0]
-    opens = [_openness(*_pos(pe, t.name, (x, y)), defs, pe) for t in fwd_tms]
-    pass_lane_open = max(opens) if opens else 0.0
+    fwd_tms, pass_lane_open = _forward_options(x, y, tms_n, defs, pe, ar)
 
     prog_max = 0.0
     for t in fwd_tms:
@@ -487,8 +622,10 @@ def _wing_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
     cover_min = _near_def(x, y, behind, pe) if behind else None
     cover_behind = 1.0 - _clamp(cover_min / 15.0) if cover_min is not None else 1.0
 
+    _, pass_lane_open = _forward_options(x, y, tms_n, defs, pe, ar)
+
     return [marker_dist, one_v_one, inside_channel, overlap_option, cross_zone,
-            cross_target_open, box_arrival, cover_behind]
+            cross_target_open, box_arrival, cover_behind, pass_lane_open]
 
 
 def _st_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
@@ -561,3 +698,113 @@ def build_v2_vector(shared: Any, role: Optional[List[float]]) -> np.ndarray:
     if role is None:
         return base
     return np.concatenate([base, np.asarray(role, dtype=np.float64)])
+
+
+# ─────────────────────────────────────────────────────────────
+# SCHEMA-BY-NAME ALIGNMENT
+# ─────────────────────────────────────────────────────────────
+
+class RoleSchemaError(Exception):
+    """A trained brain cannot be fed the role features it declares.
+
+    Raised instead of silently truncating.  The failure mode this exists to
+    prevent is real and was live in this repo: ``brains/CB.json`` was trained
+    on 24 + 7 inputs while ``MENU_NAMES["CB"]`` had grown to 9 names.  The
+    loader quietly dropped the two new sensors, so two trained inputs were
+    inert and NOTHING anywhere reported it.  A schema change that invalidates
+    every trained brain must be loud.
+    """
+
+
+_ALIGN_WARNED: set = set()
+
+
+def reset_alignment_warnings() -> None:
+    """Clear the once-per-(family,width) legacy warning memo (tests)."""
+    _ALIGN_WARNED.clear()
+
+
+def align_role_tail(
+    family: Optional[str],
+    role: Optional[List[float]],
+    tail_width: int,
+    want_names: Optional[Sequence[str]] = None,
+    brain_label: str = "",
+) -> np.ndarray:
+    """Return the role tail laid out exactly as the BRAIN was trained on.
+
+    The role block is produced in ``MENU_NAMES[family]`` order, which is the
+    CURRENT schema.  A serialized brain was trained on whatever the schema was
+    on its training date.  Selecting by NAME — rather than by width — is what
+    makes adding a feature safe: a brain that never saw a feature simply does
+    not ask for it, instead of receiving it by accident or losing one it did
+    ask for.
+
+    ``want_names``
+        The names the brain declares (``meta.role_features``).  When given,
+        every name must still be emitted by this build or
+        :class:`RoleSchemaError` is raised; the values are returned in the
+        DECLARED order.  A declared list whose length disagrees with the
+        network's own input width is also an error.
+
+    ``want_names is None`` (legacy brains, no declaration)
+        Falls back to the historical width-only behaviour: the FIRST
+        ``tail_width`` values, zero-padded or truncated to fit.  This
+        reproduces the shipped ``brains/`` behaviour byte-for-byte, but it
+        warns ONCE per (family, width) so a silent schema drift cannot happen
+        again.  Re-save the brain with a name list to silence it.
+    """
+    if tail_width <= 0:
+        return np.zeros(0, dtype=np.float64)
+    cur = list(MENU_NAMES.get(family or "", ()))
+
+    if want_names is not None:
+        want = list(want_names)
+        if family is None or not cur:
+            raise RoleSchemaError(
+                f"{brain_label or 'brain'} declares role features "
+                f"{want[:3]}... but its position has no role family, so this "
+                "build cannot produce them."
+            )
+        if len(want) != tail_width:
+            raise RoleSchemaError(
+                f"{brain_label or 'brain'} declares {len(want)} role features "
+                f"but its architecture reserves {tail_width} inputs for them."
+            )
+        missing = [n for n in want if n not in cur]
+        if missing:
+            raise RoleSchemaError(
+                f"{brain_label or 'brain'} was trained on role feature(s) "
+                f"{missing} that {family} no longer emits. Known: {cur}. "
+                "Removing or renaming a role feature is a breaking schema "
+                "change; add the feature back, or retrain the brain."
+            )
+        idx = [cur.index(n) for n in want]
+        src = np.zeros(len(cur), dtype=np.float64) if role is None \
+            else np.asarray(role, dtype=np.float64)
+        return src[idx]
+
+    # Legacy: width-only.  Preserve today's numbers exactly, but say so.
+    if role is None:
+        return np.zeros(tail_width, dtype=np.float64)
+    src = np.asarray(role, dtype=np.float64)
+    if src.shape[0] == tail_width:
+        return src
+    key = (family, int(tail_width))
+    if key not in _ALIGN_WARNED:
+        _ALIGN_WARNED.add(key)
+        warnings.warn(
+            f"{brain_label or 'brain'} ({family}) has no declared role "
+            f"features and expects {tail_width}; the current {family} schema "
+            f"emits {src.shape[0]}. Falling back to the FIRST {tail_width} by "
+            "width, which is the legacy behaviour. "
+            + ("The extra features are INERT for this brain."
+               if src.shape[0] > tail_width else
+               "The missing inputs are zero-padded.")
+            + " Retrain (or re-save with meta.role_features) to fix.",
+            RuntimeWarning, stacklevel=2,
+        )
+    out = np.zeros(tail_width, dtype=np.float64)
+    n = min(src.shape[0], tail_width)
+    out[:n] = src[:n]
+    return out

@@ -29,6 +29,7 @@ from datetime import date
 
 from position_engine import PositionEngine
 from threat_engine import ThreatEngine
+import match_timeline
 from block_awareness import BlockShape, BlockDetector
 from virtual_gps import VirtualGPS
 from weather_physics import WeatherCondition, WeatherPhysics
@@ -606,7 +607,24 @@ class MatchEvent:
     body_part: str = "right_foot"       # foot/head/other
     phase: MatchPhase = MatchPhase.OPENING
     game_state: GameState = GameState.LEVEL
+    match_clock_s: Optional[float] = None   # TRUE seconds from kickoff
     metadata: Dict[str, Any] = field(default_factory=dict)  # Extra context
+    # ── ABOUT `second` AND `match_clock_s` (2026-10-20) ──────────────────
+    # `second` is a PLACEHOLDER: `event_chain.make_event` stamps
+    # `second=kwargs.pop("second", random.randint(0, 59))`, so an event's
+    # second is a random draw and the exported timeline does not flow (the
+    # user found this by eye: the first ten seconds "jump").
+    #
+    # `match_clock_s` is the TRUTH: seconds from kickoff on the engine's one
+    # continuous clock.  It is stamped by `MatchEngine.chronograph()` (for
+    # every chain event, spread across the window the chain actually
+    # occupied) and by `_emit_event` (for the events the engine emits
+    # directly).  Consumers should prefer it and fall back to
+    # `(minute * 60) + second` only when it is absent.
+    #
+    # It was already wanted: `plofa_export.convert_event` reads
+    # `getattr(e, "match_clock_s", None)` and fell back to the placeholder
+    # every time, because the field did not exist.
 
     def __post_init__(self):
         # The event chains stamp the foot/head used for passes, through balls
@@ -2577,6 +2595,27 @@ class MatchEngine:
             # Final fallback: chains whose events carry no usable coordinates
             # still advance the clock monotonically by event volume.
             dur = max(0.0, len(getattr(chain_result, "events", [])) * 1.1)
+        # THE DECISION TIME (2026-10-21).  The window above is the BALL's
+        # motion — the flight and the carry — and it does not contain the
+        # time the ball's carrier spends between receiving the ball and
+        # playing it.  Real football's possession is flight + control +
+        # decision + execution, and without the decision the exported
+        # timeline read as "26 actions in 7 seconds, then 50 seconds of
+        # nothing" (measured: 0.449 s per event inside a chain, a 46 s gap
+        # between possessions, and only 24.7% of the match live, against a
+        # real Premier League's ~60%).
+        #
+        # THE CLOCK FIXES ITSELF: the dead-time phase is
+        # `60.0 - (the clock's elapsed time in this minute)`, so the chains
+        # eating football-real time leaves proportionally less dead time —
+        # the match still totals 90 minutes plus the added time, and the
+        # silences become 10-20 second ones.
+        #
+        # The off-ball contests (the press, the duel) are NOT added: they
+        # happen ALONGSIDE an on-ball action, which is what real football
+        # does and why they do not extend the possession.
+        dur += match_timeline.chain_decision_seconds(
+            getattr(chain_result, "events", []) or [])
         self.state.match_clock_s += dur + prepend
         # Keep off-ball players jogging through this episode's live window so
         # their distance/sprints are physically measured during play too (not
@@ -2619,8 +2658,47 @@ class MatchEngine:
 
     # Base sustained jog speed (m/s) by outfield role, used so off-ball
     # players cover realistic ground instead of idling at their shape target.
+    #
+    # ── THE CENTRE-BACK ROW WAS AN OUTLIER, NOT A CALIBRATION (2026-10-20) ──
+    # Every other outfield role sat at 1.75-2.0; the CB pair sat at 1.5, i.e.
+    # inside the WALKING band (Di Salvo: walk 0.5-2.0, jog 2.0-4.2) and below
+    # every other outfielder in the table. Measured on a real match
+    # (`_diag_cb_pace.py`, seed 777), that produced the lowest outfield
+    # distance in the engine, 8.41 km, and the deficit was almost entirely
+    # pace-while-moving: the branch SHAPE is identical to a full-back's
+    # (to_target / block_recover / block_shuffle / orbit, same shares), only
+    # every branch slower (to_target 1.13 m/s vs LB 1.47, orbit 1.04 vs 1.32).
+    #
+    # THE BENCHMARK THIS WAS FITTED TO WAS WRONG. `AGENTS.md` carried
+    # "real CB 10.5-11.0 km" from memory; the published figures are lower.
+    # CIES Football Observatory Monthly Report n°68 (Oct 2021), 7,855 matches
+    # across 31 leagues, SkillCorner tracking, 5 position modalities:
+    #   centre backs    9.2 km per match  (the LEAST of any position)
+    #   midfielders    10.6 km per match  (the most)
+    #   wingers cover the most high-intensity (932 m) and sprinting (211 m);
+    #   centre backs the least in both.
+    # So the real deficit was ~0.8 km, not ~2.3 km, and correcting it is a
+    # small role-table edit rather than a new mechanism. This is the same
+    # lesson as *SHAPE ANCHOR*'s full-back band: check the benchmark's source
+    # and its aggregation before fitting anything to it.
+    #
+    # 1.9 is the FULL-BACK value, deliberately: a centre-back's target moves
+    # less ground per minute than a full-back's (his formation post is deeper
+    # and `COMPACTION` only shifts it 14% of the ball's travel), so equal pace
+    # still lands him ~0.3 km BELOW a full-back's total, which is the real
+    # ordering (CB 9.2 < FB ~10.3). The role ordering is preserved: this row
+    # is still the slowest defender's destination in the chain, it is simply
+    # no longer a walk. Measured after the change: 8.41 -> ~9.2 km
+    # (`_diag_cb_pace.py`), inside the CIES figure.
     _JOG_SPEED = {
-        "GK": 1.0, "CB": 1.5, "DC": 1.5, "LCB": 1.5, "RCB": 1.5, "DMC": 1.5,
+        # `DMC` is NOT emitted anywhere in the repo (grep: these two tables in
+        # this file are its only occurrences) -- the live defensive-midfield
+        # label is `CDM`, two lines down, at 2.0. It sat here at 1.5, in the
+        # centre-back row, so any future roster that started emitting it would
+        # have inherited a walking pace for a midfielder and nothing
+        # behavioural would have revealed it. Aligned to `CDM`; unreachable
+        # either way, so the change is zero-risk.
+        "GK": 1.0, "CB": 1.9, "DC": 1.9, "LCB": 1.9, "RCB": 1.9, "DMC": 2.0,
         "FB": 1.9, "LB": 1.9, "RB": 1.9,
         "CM": 2.0, "CDM": 2.0, "CAM": 2.0, "LM": 2.0, "RM": 2.0,
         "LW": 1.75, "RW": 1.75, "WF": 1.75,
@@ -2649,6 +2727,30 @@ class MatchEngine:
     _SET_PIECE_APPROACH_TOP_FRAC = 0.75
     _LB_RECOVER_GAIN = 1.1
     _LB_RECOVER_TOP_FRAC = 0.75
+
+    # ── DEAD-PHASE ON-BALL INTEGRATION (2026-10-19) ────────────────────
+    # The sticky per-minute `_on_ball_this_minute` flag exists because the
+    # LIVE window is already covered by the PossessionEpisode trace. The dead
+    # window is not, so excluding an on-ball player there freezes him for the
+    # rest of the minute. Measured: 27,773 of a CM's 36,561 excluded ticks
+    # were dead-phase. Kill switch; False reproduces the pre-fix engine.
+    _DEAD_TIME_ON_BALL = True
+
+    # ── BLOCK HOLD: THE LINE IS HELD, NOT FROZEN ───────────────────────
+    # A defender in a block shuffles along the line; he does not stand on one
+    # coordinate for half an hour. The slot's DEPTH and the line's spacing are
+    # untouched -- the shuffle is bounded to 1.0 m either side of the slot.
+    # The achieved pace is set by R_M and RATE, not by the jog fraction:
+    # a triangle of radius R over a half period pi/rate advances 2R in
+    # pi/rate seconds, i.e. 4*R*rate/(2*pi) = 0.637 m/s here -- Di Salvo
+    # WALKING, under the 2.0 m/s walking/jogging edge. FRAC x jog is the
+    # per-tick CAP and only binds for unusually slow roles.
+    # Before this, 98% of dead-phase block ticks were booked as standing
+    # (234,157 of 239,409) because `moved` was hard-zeroed after the step had
+    # been computed.
+    _BLOCK_SHUFFLE_R_M = 1.0
+    _BLOCK_SHUFFLE_RATE = 1.0      # rad/s
+    _BLOCK_SHUFFLE_FRAC = 0.55     # of jog -- per-tick cap, not the pace
 
     # Events that put a player ON the ball (so the off-ball integrator skips
     # them). Derived from events, not episode distance stats (which trace all
@@ -2759,9 +2861,42 @@ class MatchEngine:
             top_speed_mps=speed if speed > 0 else 0.0,
         )
 
+    @staticmethod
+    def _block_shuffle_target(cx: float, cy: float, tx: float, ty: float,
+                              phase: float, rate: float, radius: float,
+                              budget: float):
+        """One step of a block defender's along-the-line shuffle.
+
+        Returns ``(nx, ny, moved)``. A defender holding a line steps along it
+        and reverses at the ends; he does not stand on one coordinate. The
+        shuffle is BOUNDED to ``radius`` around the slot, and it deliberately
+        carries NO depth change beyond closing the remaining depth error with
+        whatever step budget is left.
+
+        Why a TRIANGLE wave and not a pursuit of a circling point: chasing a
+        point that orbits at 1 m/s while the step cap is 0.825 m/s makes the
+        man crawl whenever the point swings back toward him. Measured, that
+        alone booked 25% of a centre-back's block time at 0.1-0.5 m/s --
+        moving, but below the 0.5 m/s walking edge, i.e. published as
+        STANDING. A triangle wave holds a constant along-the-line pace and
+        reverses at the limits. The reversal tick is the only one that can
+        book slow, and it is one tick per half period.
+        """
+        ph = (phase / (2.0 * math.pi)) % 1.0
+        tri = 4.0 * abs(ph - 0.5) - 1.0                 # -1 .. +1
+        ny_want = ty + radius * tri
+        ny = cy + max(-budget, min(budget, ny_want - cy))
+        # Whatever is left of the step budget closes the DEPTH error.
+        rem = max(0.0, budget - abs(ny - cy))
+        dxs = tx - cx
+        nx = cx + (math.copysign(min(rem, abs(dxs)), dxs)
+                   if abs(dxs) > 1e-9 else 0.0)
+        return nx, ny, math.hypot(nx - cx, ny - cy)
+
     def _offball_move_player(self, pname: str, team: str, ball_x: float,
                               ball_y: float, has_ball: bool, danger_t: float,
-                              cross_team: str, DT: float) -> None:
+                              cross_team: str, DT: float,
+                              include_on_ball: bool = False) -> None:
         """One 10 Hz integration step for a single off-ball player.
 
         The player is pulled toward a live, ball-compacted shape target (home
@@ -2769,13 +2904,23 @@ class MatchEngine:
         attacking box-crash nudges). A sustained jog (with press-sprints when
         the ball is live and near while defending, and a small orbit once the
         shape is reached) means REAL ground is covered every tick — genuine
-        physics integration, not a once-per-minute net delta. On-ball players
-        are skipped by the caller.
+        physics integration, not a once-per-minute net delta.
+
+        ON-BALL PLAYERS are skipped during the LIVE window, because that same
+        window is covered by the PossessionEpisode trace (booked by
+        ``_accumulate_physics_stats``) and stepping them twice would double
+        count both seconds and metres. That reason does NOT hold for the dead
+        phase: no episode trace covers it, yet the sticky per-minute flag was
+        excluding them there too, so a player who touched the ball at second 5
+        was frozen for the remaining ~55 s (measured: 27,773 of a CM's 36,561
+        excluded ticks were dead-phase). The dead phase therefore passes
+        ``include_on_ball=True``; the live phase leaves it False. See
+        ``_continuous_offball_phase``.
         """
         st = self.position_engine.states.get(pname)
         if st is None or getattr(st, "position", "") == "GK":
             return
-        if pname in self._on_ball_this_minute:
+        if (not include_on_ball) and pname in self._on_ball_this_minute:
             return
         # ── SHAPE ANCHOR: WHAT DOES `ax` MEAN? ─────────────────────────
         # This is the root cause of "the left back plays like a winger", and
@@ -3048,6 +3193,8 @@ class MatchEngine:
         # man. Placed immediately before rest defence so it wins the way
         # an invariant wins, rather than blending as a preference would.
         _sp_slot = self.position_engine.setpiece_target(pname)
+        _cov = {}
+        _scr = {}
         if _sp_slot is not None:
             tx, ty = _sp_slot
         else:
@@ -3063,6 +3210,27 @@ class MatchEngine:
             if self._rest_defence_violator(team, ball_x, has_ball) == pname:
                 tx, ty = self.position_engine.rest_defence_clamp(
                     tx, ty, ball_x, _attacks_right)
+            # ── THE COVER AND THE SCREEN (first / second / third defender) ──
+            # Applied AFTER every preference above, for the same reason rest
+            # defence is: these are CONSTRAINTS, not preferences, and a blend
+            # would let CK38's "spread the pitch under pressure" outvote them.
+            # That conflict is the whole point — when our CB is the ball
+            # carrier and is pressed, CK38 sends his partner DEEPER AND WIDER
+            # (a 26 m lateral split), while the football says the second
+            # defender is ~6 m away, inside the presser.  The cover wins,
+            # because it is the invariant and CK38 is the preference.
+            # Open play only: a pending set-piece slot took the branch above
+            # and is deliberately exempt, like every other shape rule here.
+            cov = self.position_engine.cover_target(
+                team, ball_x, ball_y, has_ball, _attacks_right)
+            _cov = cov
+            if cov and pname in cov:
+                tx, ty = cov[pname]
+            scr = self.position_engine.screen_target(
+                team, ball_x, ball_y, has_ball, _attacks_right)
+            _scr = scr
+            if scr and pname in scr:
+                tx, ty = scr[pname]
         dx, dy = tx - cx, ty - cy
         dist = math.hypot(dx, dy)
         tgt = self._top_speed_cache.get(pname, 7.0)
@@ -3149,6 +3317,22 @@ class MatchEngine:
                        _slot_dist * self._SET_PIECE_APPROACH_GAIN)
             speed = max(speed, _run)
 
+        _is_cover = pname in _cov
+        _is_screen = pname in _scr
+        if (_is_cover or _is_screen) and dist > arrive:
+            # THE COVER AND THE SCREEN ARE EMERGENCIES, NOT SHAPES.  The
+            # generic ladder trots at the role's jog speed, so a socket 22 m
+            # away is never reached -- measured, the cover sat a median
+            # 22.6 m from the very socket the constraint gave him, so the
+            # constraint changed his TARGET and nothing else.  A real cover
+            # arriving to support a pressed team-mate sprints; the same
+            # reason the block recovery and the set-piece approach raise the
+            # speed.  0.75 of top speed is 5.5 m/s.
+            if dist > arrive:
+                _run = min(tgt * self.position_engine.COVER_APPROACH_TOP_FRAC,
+                           dist * self.position_engine.COVER_APPROACH_GAIN)
+                speed = max(speed, _run)
+
         if dist > arrive:
             step = min(speed * DT, dist)
             nx = cx + dx / dist * step
@@ -3158,19 +3342,42 @@ class MatchEngine:
             # Arrived at shape: patrol a small orbit so the player keeps jogging
             # (covering distance) instead of idling at his spot.
             #
-            # A low block does NOT do this, and the post is explicit about why:
-            # "positions are held, not players tracked, so movement does not
-            # break the shape." An orbit means every player is permanently out
-            # of position, so the block can never actually assemble — measured,
+            # A low block must not ORBIT ON THE WAY IN: "positions are held,
+            # not players tracked, so movement does not break the shape." An
+            # orbit from 40 m away means every player is permanently out of
+            # position, so the block can never actually assemble — measured,
             # the unit sat 53 m from its own goal when the block slot was 19 m,
             # not because the target was wrong but because nobody ever stopped
-            # moving to reach it.
+            # moving to reach it. That is why the block RECOVERY above runs
+            # before this branch and why it decays to zero at the slot.
+            #
+            # ONCE ARRIVED, HOWEVER, THE LINE IS HELD, NOT FROZEN. A defender
+            # shuffles along his line; he does not stand on one coordinate for
+            # half an hour. Measured before this change: 98% of dead-phase
+            # block ticks (234,157 of 239,409) were booked as standing because
+            # `moved` was hard-zeroed after `step` had already been computed.
+            # The shuffle is bounded to 1.0 m around the slot -- tighter than
+            # the 2.0 m arrival band, so the line's depth and spacing are
+            # untouched -- and runs at 0.55 x jog, i.e. Di Salvo WALKING.
             if _in_block:
-                # Hold the slot. A token drift keeps distance accounting alive
-                # without a player visibly wandering off his line.
-                step = 0.12 * jog * DT
-                nx, ny = cx, cy
-                moved = 0.0
+                key = "blk:" + pname
+                ang = self._patrol.get(key)
+                if ang is None:
+                    # Deterministic phase: no global-RNG draw (the project's
+                    # reproducibility rule), and stable across processes.
+                    ang = (sum(ord(c) for c in pname) % 628) / 100.0
+                ang += self._BLOCK_SHUFFLE_RATE * DT
+                self._patrol[key] = ang
+                # PACE comes from the ROLE, not from the ball-side gate. `jog`
+                # above can be 0.30 x role (= 0.25 m/s for a far-side CB),
+                # which is a SHAPE-HOLDING speed and measures as standing: a
+                # defender adjusting his line still takes steps when the ball
+                # is on the far side, so the gate must not silence him.
+                _base_jog = self._JOG_SPEED.get(pos, 1.5)
+                budget = _base_jog * self._BLOCK_SHUFFLE_FRAC * DT
+                nx, ny, moved = self._block_shuffle_target(
+                    cx, cy, tx, ty, ang,
+                    self._BLOCK_SHUFFLE_RATE, self._BLOCK_SHUFFLE_R_M, budget)
             else:
                 ang = self._patrol.get(pname, random.random() * 6.283)
                 ang += 0.6 * DT
@@ -3386,9 +3593,14 @@ class MatchEngine:
         home = self.config.home_team
         away = self.config.away_team
         cross_team = self.state.cross_team if self.state.cross_active else ""
-        # On-ball players are moved by episode traces (ingested separately);
-        # skip their end-of-chain position syncs here too (dead time has no
-        # such snaps, but the sync lands on the FIRST dead tick).
+        # GPS: on-ball players' distance is already booked by the episode
+        # trace, and their end-of-chain position sync lands on the FIRST dead
+        # tick, so the DELTA sampler must not re-derive that sync as movement.
+        # That is a GPS-only concern: `_offball_move_player` books its own
+        # STEP (not a position delta), so it is safe to integrate them here.
+        # The off-ball integrator must include them: no episode trace covers
+        # the dead phase, and excluding them froze a CM for ~55 s after a pass
+        # (27,773 of his 36,561 excluded ticks were dead-phase).
         skip = set(self._on_ball_this_minute) if self.gps is not None else None
 
         for ti in range(ticks):
@@ -3400,7 +3612,8 @@ class MatchEngine:
                 for pname in self.position_engine.team_rosters.get(team, []):
                     self._offball_move_player(
                         pname, team, ball_x, ball_y, has_ball,
-                        danger.get(team, 0.0), cross_team, DT)
+                        danger.get(team, 0.0), cross_team, DT,
+                        include_on_ball=self._DEAD_TIME_ON_BALL)
             # Checkpoint 39 — keep run segments alive through dead-time
             # possession too (the tracker's GAP_S guard bridges any break).
             self._sample_run_tracking(self.state.match_clock_s, home_has_ball)
@@ -4242,21 +4455,60 @@ class MatchEngine:
             if n == 0:
                 continue
             span = mark.end_clock - mark.start_clock
+            # THE PLACEMENT (2026-10-21).  The events used to be spread
+            # EVENLY across the chain's window, which put a possession's
+            # twenty-six actions inside seven seconds and then left the
+            # next fifty seconds empty.  They are now placed by the
+            # FOOTBALL's own weights — a long pass occupies more of the
+            # sequence than a short one, and a decision takes time — so the
+            # timeline reads like a possession rather than a burst.
+            #
+            # The first event still sits at the chain's start and the last
+            # still at its end, so the window is fully used and the clock
+            # stays monotonic.
+            weights = match_timeline.placement_weights(mark.events)
+            gap_total = sum(weights[:max(n - 1, 0)]) or 1.0
+            cum = 0.0
             for i, ev in enumerate(mark.events):
                 if n == 1:
                     at = mark.start_clock + span * 0.5
+                elif i < n - 1:
+                    at = mark.start_clock + span * (cum / gap_total)
+                    cum += weights[i]
                 else:
-                    at = mark.start_clock + span * i / (n - 1)
+                    at = mark.start_clock + span
                 if span > 0.0 and i < n - 1:
-                    nxt = mark.start_clock + span * (i + 1) / (n - 1)
+                    nxt = mark.start_clock + span * (cum / gap_total)
                     dur = nxt - at
                 else:
                     dur = 0.0
+                # WRITE THE TRUTH BACK ONTO THE EVENT (2026-10-20).  The
+                # chronology already knows each event's real time; stamping
+                # it here makes it available to EVERY consumer — the JSON
+                # timeline, the provider-style export (which already prefers
+                # `match_clock_s`), and the shot map (which sorts and
+                # positions shots by `minute * 60 + second`, i.e. it was
+                # placing them at random positions inside the minute).
+                # The event's `second` stays as it was — it is the minute
+                # bucket the chain was in — so nothing that reads it changes
+                # behaviour; the true time is ADDED, never substituted.
+                #
+                # ONE number, used for BOTH the event and the TimedEvent.
+                # The first version stamped `round(at, 3)` while the
+                # chronology carried `round(at, 2)`, so the two disagreed on
+                # 2,648 of 3,052 events — and on the events that sit on a
+                # minute boundary the disagreement moved the SECOND from
+                # 0.0 to 59.999, i.e. a floating-point hair decided which
+                # minute an event belonged to.  The stamp and the chronology
+                # must be the same value, or one of them is a second truth.
+                at = round(at, 2)
+                if getattr(ev, "match_clock_s", None) is None:
+                    ev.match_clock_s = at
                 ev_type = getattr(ev.event_type, "name", str(ev.event_type))
                 events.append(TimedEvent(
                     minute=mark.minute,
                     second=round(min(at % 60.0, 59.9), 1),
-                    match_clock_s=round(at, 2),
+                    match_clock_s=at,
                     duration=round(dur, 2),
                     event_type=ev_type,
                     team=ev.team,
@@ -4740,6 +4992,14 @@ class MatchEngine:
                 
                 self.timeline.append(MatchEvent(
                     minute=minute, second=0,
+                    # The TRUE clock (2026-10-20).  A kickoff is emitted by
+                    # the engine directly, so no chain mark covers it and
+                    # the chronology cannot stamp it.  Without this the
+                    # event had NO clock, the exporter fell back to
+                    # `minute * 60 + second` (= 60 s), and the exported
+                    # timeline went BACKWARDS at the first event — the
+                    # kickoff at "60 s" followed by a pass at 0.0 s.
+                    match_clock_s=round(float(self.state.match_clock_s), 2),
                     event_type=EventType.KICKOFF,
                     team=kickoff_team,
                     player=taker,
@@ -6224,6 +6484,7 @@ class MatchEngine:
                 cel_x, cel_y = self._goal_mouth(chain_result.goal_team)
                 self.timeline.append(MatchEvent(
                     minute=ce_min, second=ce_sec,
+                    match_clock_s=round(float(self.state.match_clock_s), 2),
                     event_type=EventType.GOAL_CELEBRATION,
                     team=chain_result.goal_team,
                     player=chain_result.goal_scorer,
@@ -6372,6 +6633,12 @@ class MatchEngine:
     def _emit_event(self, minute: int, event_type: EventType, team: str,
                     player: str, **kwargs) -> MatchEvent:
         """Create and record an event."""
+        # The TRUE clock (2026-10-20).  These events are emitted by the
+        # engine directly, so no chain mark covers them and the chronology
+        # cannot stamp them — this is where they get their real time.  The
+        # `second` placeholder is left alone (it is the minute bucket) and
+        # the truth is ADDED alongside it.
+        kwargs.setdefault('match_clock_s', round(float(self.state.match_clock_s), 2))
         event = MatchEvent(
             minute=minute,
             second=kwargs.pop('second', random.randint(0, 59)),

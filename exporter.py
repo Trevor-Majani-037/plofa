@@ -42,6 +42,8 @@ import seaborn as sns
 import matplotlib
 from openpyxl.styles import Font
 
+import attendance_model
+
 # Advanced valuation metrics
 from advanced_valuation import (
     get_valuation_engine,
@@ -163,9 +165,44 @@ class MatchFinancials:
         "low_interest":  28.00,   # Bottom-half vs bottom-half
     }
 
-    # Minimum and maximum attendance fill rates
-    MIN_FILL_RATE = 0.55   # Even the worst match has some fans
-    MAX_FILL_RATE = 0.985  # Sell-out
+    # Minimum and maximum attendance fill rates.  These are the MODEL's
+    # bounds, not a hand-tuned tier's: the floor is a shade below the
+    # benchmark's worst real club (Everton 74.3% — a new ground for a
+    # market that could not fill it) and the ceiling a shade below the
+    # benchmark's best (West Ham 99.9%), because a model that reaches
+    # 100.0% is a model pinned at its clamp — which is the defect this
+    # replaced (seven PLOFA clubs sat at exactly 98.5% every match).
+    MIN_FILL_RATE = attendance_model.OCCUPANCY_FLOOR
+    MAX_FILL_RATE = attendance_model.OCCUPANCY_CEILING
+
+    @staticmethod
+    def _form_score(form: str) -> float:
+        """Recent form as -1..+1 (wins minus losses, per game)."""
+        if not form:
+            return 0.0
+        f = form.strip()
+        if not f:
+            return 0.0
+        n = len(f)
+        return (f.count("W") - f.count("L")) / n
+
+    @staticmethod
+    def _season_score(standings: Dict[str, Dict[str, Any]], team: str):
+        """(league position score, form score) for a team.
+
+        Position 1 -> +1, bottom -> -1.  Absent standings -> (0, 0), i.e.
+        exactly neutral, which is what the zero-regression test pins.
+        """
+        info = (standings or {}).get(team)
+        if not info:
+            return 0.0, 0.0
+        played = info.get("played", 0) or 0
+        if info.get("position") is None or played == 0:
+            return 0.0, MatchFinancials._form_score(info.get("form", ""))
+        n_teams = max(len(standings), 2)
+        pos = info["position"]
+        pos_score = 1.0 - 2.0 * ((pos - 1) / (n_teams - 1))
+        return pos_score, MatchFinancials._form_score(info.get("form", ""))
 
     @classmethod
     def compute(
@@ -250,20 +287,25 @@ class MatchFinancials:
 
         # ── Attendance fill rate ─────────────────────────────────
         # Starting base depends on tier
-        fill_rate_map = {
-            "derby":         0.95,
-            "big6_vs_big6":  0.97,
-            "big6_home":     0.90,
-            "big6_away":     0.85,
-            "standard":      0.78,
-            "low_interest":  0.62,
-        }
-        base_fill = fill_rate_map.get(match_tier, 0.75)
-
-        # Squad quality modifier: better teams = more fans
-        avg_rating = (home_avg_rating + away_avg_rating) / 2.0
-        quality_modifier = (avg_rating - 65.0) / 100.0  # -0.15 to +0.35
-        base_fill += quality_modifier
+        # THE CROWD IS NOT A TIER TABLE (2026-10-21).  This was a hand-tuned
+        # table keyed on a "match tier" (derby 0.95, big6_vs_big6 0.97,
+        # big6_home 0.90, standard 0.78, low_interest 0.62), which put
+        # PLOFA's 26/27 season at a mean occupancy of 85.0% against the
+        # real Premier League's 96.8%, with seven clubs pinned at the
+        # 98.5% ceiling on every one of their home matches.
+        #
+        # It is now `attendance_model`, built on the real benchmark
+        # (Transfermarkt, Premier League 24/25: 15,380,351 over 380
+        # matches, 40,474 per match, 96.8% mean occupancy) and on the
+        # structure that benchmark reveals: **in a top-flight league the
+        # crowd IS the ground** — sixteen of the twenty clubs sit between
+        # 95.3% and 99.9% — and the exceptions are the grounds that
+        # outgrew their market (Everton 74.3%) or were built oversized
+        # (Manchester City 87.8%).
+        #
+        # So: the ground is the ceiling, the club's standing decides how
+        # close to it the club gets, and the match decides where in that
+        # range the crowd lands.
 
         # Checkpoint: Fixture-Time & Weather Physics on Attendance
         time_mult = 1.0
@@ -279,61 +321,47 @@ class MatchFinancials:
         except Exception:
             pass
 
-        base_fill *= (time_mult * weather_fill_mult)
-
         # ── Team season-performance modifier on attendance ─────────
         # Real football: fans pack the ground when the side is doing well
         # in the season (league position) and riding a hot/cold streak.
+        # The POSITION now lives in the market score (it is the club's
+        # standing, not a match-level effect); what is left here is the
+        # recent FORM, which IS match-level, plus the away side's
+        # travelling contingent.
         # Home team drives most of the gate; the away side contributes a
         # smaller traveling contingent. Absent standings data this stays
         # exactly 1.0 (zero regression).
-        perf_mult = 1.0
-        try:
-            standings = standings or {}
+        standings = standings or {}
+        h_pos, h_form = cls._season_score(standings, home_team)
+        a_pos, a_form = cls._season_score(standings, away_team)
 
-            def _form_score(form: str) -> float:
-                if not form:
-                    return 0.0
-                f = form.strip()
-                if not f:
-                    return 0.0
-                n = len(f)
-                return (f.count("W") - f.count("L")) / n  # -1..+1
+        # Squad quality + league position -> the club's market score.
+        home_score = attendance_model.market_score(home_avg_rating, h_pos)
+        away_score = attendance_model.market_score(away_avg_rating, a_pos)
 
-            def _season_score(team: str):
-                info = standings.get(team)
-                if not info:
-                    return 0.0, 0.0
-                played = info.get("played", 0) or 0
-                if info.get("position") is None or played == 0:
-                    return 0.0, _form_score(info.get("form", ""))
-                n_teams = max(len(standings), 2)
-                pos = info["position"]
-                # pos 1 (leader) -> +1, bottom -> -1
-                pos_score = 1.0 - 2.0 * ((pos - 1) / (n_teams - 1))
-                return pos_score, _form_score(info.get("form", ""))
+        perf_mult = (
+            1.0
+            + 0.05 * h_form    # home recent form
+            + 0.015 * a_form   # away recent form
+        )
+        perf_mult = max(0.94, min(1.06, perf_mult))
 
-            h_pos, h_form = _season_score(home_team)
-            a_pos, a_form = _season_score(away_team)
+        # Random match-day residual — now a small fraction of the CROWD.
+        # The old one was ±4-6% of the CAPACITY, i.e. ±4,200 on a
+        # 70,000-seat ground: not a residual but a second model.
+        random_factor = random.uniform(-attendance_model.RESIDUAL_SWING,
+                                       attendance_model.RESIDUAL_SWING)
 
-            perf_mult = (
-                1.0
-                + 0.10 * h_pos     # home league position (largest driver)
-                + 0.05 * h_form    # home recent form
-                + 0.03 * a_pos     # away league position (traveling fans)
-                + 0.015 * a_form   # away recent form
-            )
-            perf_mult = max(0.90, min(1.10, perf_mult))
-        except Exception:
-            perf_mult = 1.0
-
-        base_fill *= perf_mult
-
-        # Random match-day factor (weather, day of week, form, etc.)
-        random_factor = random.uniform(-0.04, 0.06)
-
-        fill_rate = max(cls.MIN_FILL_RATE, min(cls.MAX_FILL_RATE, base_fill + random_factor))
-        attendance = int(round(stadium_capacity * fill_rate))
+        crowd = attendance_model.attendance_for(
+            capacity=stadium_capacity,
+            home_score=home_score,
+            away_score=away_score,
+            is_derby=is_derby,
+            match_multiplier=(time_mult * weather_fill_mult * perf_mult),
+            residual=random_factor,
+        )
+        attendance = crowd["attendance"]
+        fill_rate = crowd["fill_rate"] / 100.0
 
         # ── Revenue ─────────────────────────────────────────────
         # Home team keeps all gate receipts (standard in most leagues)
@@ -3606,9 +3634,28 @@ class PLOFAExporter:
                 kind = "carry"
             elif e.event_type in DRIBBLE_KINDS:
                 kind = "dribble"
+            # THE TRUE TIME (2026-10-20).  `e.second` is a PLACEHOLDER — a
+            # random 0-59 draw from `event_chain.make_event` — so the
+            # exported timeline did not flow (the user found it by eye: the
+            # first ten seconds "jump").  `e.match_clock_s` is the real
+            # clock, stamped by the engine, and it is what the row now
+            # reports: the true second within the minute, the clock, and a
+            # StatsBomb-style MILLISECOND timestamp so this file can be
+            # compared with a provider file directly.
+            clock_s = getattr(e, "match_clock_s", None)
+            if clock_s is None:
+                clock_s = float((e.minute or 0) * 60 + (e.second or 0))
+            # The SAME convention the engine's own chronology uses for its
+            # `second` — including its `min(..., 59.9)` clamp, so an event
+            # sitting on a minute boundary cannot be reported as 59.999 s
+            # of one minute and 0.0 s of the next by two different rules.
+            true_second = round(min(float(clock_s) % 60.0, 59.9), 1)
             rows.append({
                 "minute": e.minute,
-                "second": e.second,
+                "second": true_second,
+                "clock": f"{int(clock_s)//60:02d}:{clock_s%60:06.3f}",
+                "clock_s": round(float(clock_s), 2),
+                "timestamp": int(round(float(clock_s) * 1000)),
                 "type": t,
                 "kind": kind,
                 "team": e.team,
@@ -4143,7 +4190,14 @@ class PLOFAExporter:
                                 EventType.PENALTY_MISSED):
                 shots.append(e)
 
-        shots.sort(key=lambda e: e.minute * 60 + e.second)
+        shots.sort(key=lambda e: (getattr(e, "match_clock_s", None)
+                                  if getattr(e, "match_clock_s", None) is not None
+                                  else e.minute * 60 + e.second))
+        # The ORDER is now the TRUE clock, so the cumulative-xG curve is built
+        # in the order the shots actually happened.  It used to be
+        # `minute * 60 + second` — and `second` is a RANDOM placeholder, so
+        # the shots inside a minute were plotted in an essentially random
+        # order.
 
         # Build cumulative xG arrays
         home_mins, home_xg = [0], [0.0]
@@ -4151,7 +4205,23 @@ class PLOFAExporter:
         # Track xG at each goal event for correct marker placement
         goal_xg_tracker = []  # (minute, cumulative_xg, team)
         for e in shots:
-            minute = e.minute + e.second / 60.0
+            # The TRUE position inside the minute (2026-10-20).  The shot's
+            # x-axis position used the PLACEHOLDER second, so every shot was
+            # plotted at a random position inside its minute.
+            #
+            # TWO CLOCKS, and the chart's axis is the MATCH minute:
+            # `e.minute` is the engine's match minute (1-90 + added time) and
+            # the axis is `0 .. 90 + added_time`, so the MINUTE is left
+            # alone — using the raw match clock here would push shots past
+            # the axis, because the clock also carries dead time and the
+            # 10-30 s goal celebrations (a match's clock reached 96.4 min).
+            # What is replaced is the random within-minute position, with
+            # the real one.
+            _cs = getattr(e, "match_clock_s", None)
+            if _cs is not None:
+                minute = e.minute + (min(float(_cs) % 60.0, 59.9) / 60.0)
+            else:
+                minute = e.minute + e.second / 60.0
             if e.team == home:
                 new_val = home_xg[-1] + e.xg
                 home_mins.append(minute)

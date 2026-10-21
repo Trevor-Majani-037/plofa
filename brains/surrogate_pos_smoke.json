@@ -1,0 +1,1603 @@
+{
+  "prior": 0.0,
+  "table": {
+    "CB": {
+      "P0FT0OH1S0C1G0": {
+        "CARRY": 0.0006791071428571425,
+        "RECYCLE": 0.001731285714285714,
+        "SAFE_PASS": 0.00887,
+        "SWITCH": -0.0002733333333333334,
+        "DRIBBLE": 0.0019891071428571427,
+        "PROGRESSIVE_PASS": 0.001323285714285714
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 0.00017,
+        "SAFE_PASS": 0.00021599999999999996,
+        "PROTECT_POSSESSION": 0.00017,
+        "PROGRESSIVE_PASS": 6.999999999999997e-05
+      },
+      "P1FT0OH1S0C1G0": {
+        "DRIBBLE": -0.0016356249999999997,
+        "PROGRESSIVE_PASS": -0.03938,
+        "RECYCLE": 0.009729375000000002,
+        "SAFE_PASS": 0.0117225,
+        "PROTECT_POSSESSION": -0.0012764999999999996,
+        "SWITCH": -0.0016506249999999997
+      },
+      "P0FT0OH0S0C1G0": {
+        "PROGRESSIVE_PASS": -0.00017477272727272724,
+        "SAFE_PASS": -0.00012800000000000002,
+        "SWITCH": -0.00043581818181818186,
+        "PROTECT_POSSESSION": -0.00010333333333333336,
+        "CARRY": -0.00021477272727272727,
+        "DRIBBLE": -0.000396,
+        "RECYCLE": -0.0004158181818181818
+      },
+      "P1FT0OH0S0C1G0": {
+        "SWITCH": 0.006012500000000002,
+        "RECYCLE": 0.017585000000000003,
+        "PROTECT_POSSESSION": 0.002483333333333333,
+        "DRIBBLE": -0.0006399999999999999,
+        "SAFE_PASS": 0.008736666666666669,
+        "PROGRESSIVE_PASS": 0.01727
+      },
+      "P1FT1OH0S0C1G0": {
+        "RECYCLE": 0.013840000000000002,
+        "DRIBBLE": 0.008175,
+        "SAFE_PASS": 0.012675,
+        "SWITCH": 0.008175
+      },
+      "P0FT1OH0S0C1G0": {
+        "DRIBBLE": -0.0021599999999999996,
+        "SAFE_PASS": -0.0014399999999999999,
+        "PROGRESSIVE_PASS": -0.0021599999999999996
+      },
+      "P0FT0OH0S0C0G0": {
+        "SAFE_PASS": -0.00015,
+        "SWITCH": -7.37142857142857e-05,
+        "DRIBBLE": -9.214285714285714e-05
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": -0.00436,
+        "PROTECT_POSSESSION": -0.0015149999999999999,
+        "PROGRESSIVE_PASS": -0.0018588461538461536,
+        "RECYCLE": -0.0018588461538461536,
+        "SWITCH": -0.0018588461538461536
+      },
+      "P1FT1OH0S0C1G1": {
+        "PROGRESSIVE_PASS": 0.025065999999999998,
+        "DRIBBLE": 0.022085,
+        "SWITCH": 0.029433333333333336,
+        "RECYCLE": 0.030846000000000002,
+        "PROTECT_POSSESSION": 0.0213575,
+        "CARRY": 0.0192825,
+        "SAFE_PASS": 0.03370666666666666
+      },
+      "P1FT0OH1S0C0G0": {
+        "RECYCLE": -0.0008699999999999999,
+        "PROTECT_POSSESSION": -0.0014759999999999999,
+        "PROGRESSIVE_PASS": -0.0011699999999999998,
+        "SWITCH": -0.0008699999999999999,
+        "SAFE_PASS": -0.0013349999999999998
+      },
+      "P1FT0OH0S0C0G0": {
+        "DRIBBLE": 7.999999999999999e-05,
+        "PROTECT_POSSESSION": 5.142857142857142e-05,
+        "PROGRESSIVE_PASS": 5.142857142857142e-05,
+        "SAFE_PASS": 0.00012642857142857144,
+        "CARRY": 3.6428571428571423e-05
+      },
+      "P0FT1OH0S0C0G0": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P1FT1OH0S0C0G0": {
+        "RECYCLE": -0.000405,
+        "PROTECT_POSSESSION": -0.000675
+      },
+      "P1FT0OH0S1C0G0": {
+        "CARRY": 0.014725,
+        "SWITCH": 0.0073,
+        "RECYCLE": 0.007175
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": -0.000718,
+        "RECYCLE": -0.0010275,
+        "SAFE_PASS": -0.0012274999999999999
+      },
+      "P1FT0OH1S1C0G0": {
+        "SAFE_PASS": 0.0
+      },
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": 0.0,
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P0FT0OH0S1C1G0": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P0FT0OH1S0C0G0": {
+        "SAFE_PASS": 0.0063159999999999996,
+        "PROGRESSIVE_PASS": 0.00698,
+        "PROTECT_POSSESSION": 0.009395,
+        "RECYCLE": 0.005005
+      },
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": -0.005600000000000001
+      },
+      "P0FT1OH0S0C0G1": {
+        "PROGRESSIVE_PASS": 0.0
+      }
+    },
+    "": {
+      "P0FT0OH1S0C1G0": {
+        "CARRY": 0.0015183414634146342,
+        "RECYCLE": 0.0005349999999999999,
+        "SAFE_PASS": 0.00859375,
+        "SWITCH": 0.0009066666666666667,
+        "DRIBBLE": 0.0024863414634146343,
+        "PROGRESSIVE_PASS": 0.00022500000000000005,
+        "PROTECT_POSSESSION": 0.002116666666666667,
+        "CROSS": 0.007372926829268293
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 0.0034560000000000007,
+        "SAFE_PASS": -0.00412,
+        "PROTECT_POSSESSION": 0.007540000000000001,
+        "PROGRESSIVE_PASS": -0.005012727272727273,
+        "DRIBBLE": -0.0020447272727272727,
+        "CARRY": -0.010673846153846155
+      },
+      "P1FT0OH1S0C1G0": {
+        "DRIBBLE": 0.000145,
+        "PROGRESSIVE_PASS": -0.017211428571428572,
+        "RECYCLE": 0.009760000000000001,
+        "SAFE_PASS": 0.004065833333333334,
+        "PROTECT_POSSESSION": 2.499999999999999e-05,
+        "SWITCH": -0.0003657142857142857
+      },
+      "P0FT0OH0S0C1G0": {
+        "PROGRESSIVE_PASS": -1.9999999999999988e-05,
+        "SAFE_PASS": -0.0001630769230769231,
+        "SWITCH": -0.002388,
+        "PROTECT_POSSESSION": -0.0001923076923076923,
+        "CARRY": 1.333333333333335e-05,
+        "DRIBBLE": -0.000355,
+        "RECYCLE": -0.00044
+      },
+      "P1FT0OH0S0C1G0": {
+        "SWITCH": -0.0007199999999999999,
+        "RECYCLE": 0.010872000000000001,
+        "PROTECT_POSSESSION": 0.006314285714285715,
+        "DRIBBLE": -0.0001866666666666666,
+        "SAFE_PASS": 0.011787,
+        "PROGRESSIVE_PASS": 0.014347142857142855,
+        "CARRY": 0.005238298507462685
+      },
+      "P1FT1OH0S0C1G0": {
+        "RECYCLE": 0.016700000000000003,
+        "DRIBBLE": 0.00885,
+        "SAFE_PASS": 0.01307142857142857,
+        "SWITCH": 0.00885
+      },
+      "P0FT1OH0S0C1G0": {
+        "DRIBBLE": -0.0054269999999999995,
+        "SAFE_PASS": -0.004706999999999999,
+        "PROGRESSIVE_PASS": -0.0054269999999999995,
+        "SWITCH": -0.008889600000000001
+      },
+      "P0FT0OH0S0C0G0": {
+        "SAFE_PASS": -0.00011999999999999999,
+        "SWITCH": -2e-05,
+        "DRIBBLE": -7.65e-05,
+        "PROTECT_POSSESSION": -8.65e-05
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": -0.002383636363636364,
+        "PROTECT_POSSESSION": -0.001212,
+        "PROGRESSIVE_PASS": 0.0,
+        "RECYCLE": -0.0008966666666666667,
+        "SWITCH": -0.0008966666666666667,
+        "DRIBBLE": 0.0
+      },
+      "P1FT1OH0S0C1G1": {
+        "PROGRESSIVE_PASS": 0.01962621052631579,
+        "DRIBBLE": 0.0130425,
+        "SWITCH": 0.0239,
+        "RECYCLE": 0.077325,
+        "PROTECT_POSSESSION": 0.043199999999999995,
+        "CARRY": -0.05986666666666667,
+        "SAFE_PASS": 0.008729090909090909,
+        "CROSS": 0.01100621052631579
+      },
+      "P1FT0OH1S0C0G0": {
+        "RECYCLE": 0.0003184615384615384,
+        "PROTECT_POSSESSION": -0.0002999999999999999,
+        "PROGRESSIVE_PASS": 1.4769230769230745e-05,
+        "SWITCH": 0.0003184615384615384,
+        "SAFE_PASS": -0.00062,
+        "DRIBBLE": 0.0031599999999999996
+      },
+      "P1FT0OH0S0C0G0": {
+        "DRIBBLE": 1.4999999999999999e-05,
+        "PROTECT_POSSESSION": 2.8125000000000003e-05,
+        "PROGRESSIVE_PASS": 2.8125000000000003e-05,
+        "SAFE_PASS": 0.00010312500000000001,
+        "CARRY": 1.3125000000000002e-05
+      },
+      "P0FT1OH0S0C0G0": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P1FT1OH0S0C0G0": {
+        "RECYCLE": -0.000405,
+        "PROTECT_POSSESSION": -0.000675
+      },
+      "P1FT0OH0S1C0G0": {
+        "CARRY": 0.009226285714285715,
+        "SWITCH": 0.0033578571428571433,
+        "RECYCLE": 0.002454285714285715,
+        "DRIBBLE": 0.003382857142857143,
+        "PROGRESSIVE_PASS": 0.0032828571428571434
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": -0.00017555555555555515,
+        "RECYCLE": -0.014066666666666667,
+        "PROGRESSIVE_PASS": 0.008084999999999998,
+        "CARRY": 0.0005649999999999999,
+        "SAFE_PASS": -0.001055,
+        "SWITCH": -0.000279
+      },
+      "P1FT0OH1S1C0G0": {
+        "SAFE_PASS": 0.0
+      },
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": -2.9999999999999997e-05,
+        "PROGRESSIVE_PASS": -0.000104,
+        "RECYCLE": 9.333333333333333e-05,
+        "CARRY": -0.00010499999999999999,
+        "PROTECT_POSSESSION": 0.00027885714285714287,
+        "DRIBBLE": 7.357142857142857e-05
+      },
+      "P0FT0OH0S1C1G0": {
+        "PROGRESSIVE_PASS": -0.00029723076923076925,
+        "PROTECT_POSSESSION": -0.00013153846153846153,
+        "RECYCLE": -8.666666666666668e-05,
+        "SAFE_PASS": -0.00026,
+        "SWITCH": -6.5384615384615535e-06
+      },
+      "P0FT0OH1S0C0G0": {
+        "SAFE_PASS": 0.0034666666666666665,
+        "PROGRESSIVE_PASS": 0.009306666666666666,
+        "SWITCH": 0.00396,
+        "PROTECT_POSSESSION": 0.010199999999999999,
+        "CARRY": 0.0025341176470588234,
+        "RECYCLE": 0.0020581176470588236
+      },
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": -0.001786666666666667,
+        "DRIBBLE": 0.0009049999999999999,
+        "CARRY": 0.0009600000000000001,
+        "CROSS": 0.0018049999999999997,
+        "PROGRESSIVE_PASS": 0.001255,
+        "SAFE_PASS": 0.0004049999999999999,
+        "PROTECT_POSSESSION": 0.0005549999999999999
+      },
+      "P0FT1OH0S0C0G1": {
+        "PROGRESSIVE_PASS": 0.0,
+        "SAFE_PASS": 0.0,
+        "PROTECT_POSSESSION": 0.0
+      },
+      "P1FT1OH0S1C1G1": {
+        "SWITCH": 0.015799999999999998,
+        "PROTECT_POSSESSION": 0.014490909090909089,
+        "SAFE_PASS": -0.01158,
+        "CARRY": -0.0036113043478260866,
+        "RECYCLE": -0.004250000000000003,
+        "DRIBBLE": 0.006787267605633804,
+        "CROSS": 0.0018000000000000002,
+        "SHOOT": 0.015809084507042253
+      },
+      "P0FT1OH0S1C1G1": {
+        "SAFE_PASS": -0.00529,
+        "RECYCLE": -0.0036040000000000004,
+        "PROGRESSIVE_PASS": -0.014342857142857142,
+        "PROTECT_POSSESSION": -0.002683333333333333,
+        "CARRY": 0.009115555555555556,
+        "SWITCH": -0.0023372727272727273
+      },
+      "P0FT1OH0S1C0G0": {
+        "SAFE_PASS": 6.25e-05,
+        "PROGRESSIVE_PASS": 3.7500000000000003e-05
+      },
+      "P0FT0OH0S1C0G0": {
+        "DRIBBLE": -0.004011,
+        "SWITCH": -0.01099875,
+        "CARRY": -0.00480375
+      },
+      "P0FT1OH0S1C1G0": {
+        "PROTECT_POSSESSION": 0.0
+      },
+      "P1FT1OH0S1C0G1": {
+        "SWITCH": 0.008100000000000001
+      },
+      "P1FT1OH0S1C0G0": {
+        "RECYCLE": 0.0
+      },
+      "P0FT1OH0S1C0G1": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P1FT1OH0S0C0G1": {
+        "SWITCH": 0.0
+      }
+    },
+    "CDM": {
+      "P0FT0OH1S0C1G0": {
+        "DRIBBLE": 0.004185000000000001,
+        "SAFE_PASS": 0.013033333333333336,
+        "SWITCH": 0.003975000000000001,
+        "PROTECT_POSSESSION": 0.004235000000000001,
+        "PROGRESSIVE_PASS": 0.004335000000000001
+      },
+      "P1FT0OH1S0C1G0": {
+        "SWITCH": 8.624999999999998e-05,
+        "RECYCLE": 0.00010124999999999998,
+        "SAFE_PASS": 0.00025124999999999995,
+        "PROTECT_POSSESSION": 0.00010124999999999998
+      },
+      "P1FT0OH0S0C1G0": {
+        "SWITCH": 0.0033264,
+        "SAFE_PASS": 0.014533333333333336,
+        "RECYCLE": 0.00636,
+        "DRIBBLE": 0.0046830000000000005,
+        "CARRY": 0.005338
+      },
+      "P0FT0OH0S0C1G0": {
+        "RECYCLE": -0.00014375,
+        "SAFE_PASS": -0.0001
+      },
+      "P1FT1OH0S0C1G0": {
+        "SAFE_PASS": 0.013600000000000001
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": -6e-05
+      },
+      "P1FT1OH0S0C1G1": {
+        "SAFE_PASS": 0.0
+      },
+      "P0FT0OH1S0C0G0": {
+        "SAFE_PASS": -0.0005
+      },
+      "P1FT1OH0S1C1G1": {
+        "SWITCH": 0.077625,
+        "PROTECT_POSSESSION": 0.090225,
+        "SAFE_PASS": 0.05595
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROGRESSIVE_PASS": 0.02045,
+        "PROTECT_POSSESSION": 0.008299999999999998
+      },
+      "P1FT0OH1S1C1G0": {
+        "RECYCLE": 0.00039999999999999996
+      }
+    },
+    "CM": {
+      "P0FT0OH0S0C1G0": {
+        "SAFE_PASS": 6.769230769230775e-05,
+        "DRIBBLE": -0.00019999999999999998,
+        "PROTECT_POSSESSION": 3.5571428571428605e-05,
+        "RECYCLE": -9.642857142857139e-05,
+        "PROGRESSIVE_PASS": -6.666666666666666e-06,
+        "SWITCH": 0.0005850000000000001,
+        "CARRY": 0.00015946428571428576
+      },
+      "P1FT0OH1S0C1G0": {
+        "SAFE_PASS": 0.00019418181818181817,
+        "SWITCH": -0.00057,
+        "PROGRESSIVE_PASS": -0.00032727272727272726,
+        "PROTECT_POSSESSION": -8.727272727272727e-05,
+        "DRIBBLE": 0.0002133333333333333
+      },
+      "P0FT0OH1S0C1G0": {
+        "RECYCLE": 0.003620500000000001,
+        "SAFE_PASS": 0.010887500000000001,
+        "PROTECT_POSSESSION": 0.004186666666666667,
+        "SWITCH": 0.0047405,
+        "PROGRESSIVE_PASS": 0.004575625000000001
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": 0.0,
+        "PROGRESSIVE_PASS": 0.0,
+        "DRIBBLE": 0.0,
+        "PROTECT_POSSESSION": 0.0
+      },
+      "P1FT0OH0S0C1G0": {
+        "SAFE_PASS": 0.014589999999999999,
+        "RECYCLE": 0.00652,
+        "PROGRESSIVE_PASS": 0.010956,
+        "SWITCH": 0.004836,
+        "PROTECT_POSSESSION": 0.005399999999999999,
+        "DRIBBLE": 0.005004,
+        "CARRY": 0.00603
+      },
+      "P0FT0OH0S0C0G0": {
+        "PROTECT_POSSESSION": -5e-05,
+        "SWITCH": -2.5e-05,
+        "SAFE_PASS": -2.5e-05
+      },
+      "P1FT1OH0S0C1G1": {
+        "SAFE_PASS": -0.0008500000000000006,
+        "RECYCLE": 0.03423545454545455,
+        "DRIBBLE": -0.0007595454545454545,
+        "CARRY": -0.04111454545454545,
+        "PROTECT_POSSESSION": 0.008610454545454546,
+        "SWITCH": -3.9545454545454534e-05
+      },
+      "P0FT0OH1S0C0G0": {
+        "SWITCH": -0.00062,
+        "PROTECT_POSSESSION": 0.0039239999999999995,
+        "CARRY": 0.00148
+      },
+      "P1FT1OH0S0C1G0": {
+        "SAFE_PASS": 0.013600000000000001,
+        "RECYCLE": 0.013600000000000001
+      },
+      "P0FT1OH0S1C1G1": {
+        "SAFE_PASS": -0.005685,
+        "RECYCLE": -0.008235
+      },
+      "P0FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": -0.0002,
+        "RECYCLE": -0.00022500000000000002,
+        "SAFE_PASS": -0.000368,
+        "PROGRESSIVE_PASS": -0.00044,
+        "SWITCH": -7.500000000000003e-05
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 0.00360625,
+        "DRIBBLE": 0.00373125,
+        "SAFE_PASS": 0.002245,
+        "CARRY": 0.006625000000000001,
+        "PROTECT_POSSESSION": 0.006765
+      },
+      "P0FT1OH0S1C0G0": {
+        "SAFE_PASS": 0.0001
+      },
+      "P0FT1OH0S0C1G0": {
+        "SWITCH": -0.02478
+      },
+      "P0FT1OH0S0C0G1": {
+        "SAFE_PASS": 0.0
+      },
+      "P1FT0OH1S0C0G0": {
+        "PROTECT_POSSESSION": 0.003
+      },
+      "P0FT0OH1S1C0G0": {
+        "PROTECT_POSSESSION": 0.00019999999999999998
+      },
+      "P1FT0OH0S1C1G0": {
+        "RECYCLE": 0.0
+      },
+      "P1FT1OH0S0C0G1": {
+        "SWITCH": 0.0
+      },
+      "P1FT0OH1S1C1G0": {
+        "DRIBBLE": 0.00019999999999999998
+      }
+    },
+    "GK": {
+      "P0FT0OH1S0C1G0": {
+        "SAFE_PASS": 0.010199999999999999
+      },
+      "P0FT0OH1S1C1G0": {
+        "CARRY": 0.0022377777777777778,
+        "SWITCH": 0.005056071428571429,
+        "SAFE_PASS": -0.0037439285714285712,
+        "PROGRESSIVE_PASS": -0.002818928571428571,
+        "PROTECT_POSSESSION": 0.003112857142857143
+      },
+      "P1FT0OH1S1C1G0": {
+        "CARRY": 0.0,
+        "PROTECT_POSSESSION": 0.0
+      },
+      "P0FT1OH0S1C1G1": {
+        "PROGRESSIVE_PASS": -0.009125000000000001,
+        "SAFE_PASS": -0.006906666666666668,
+        "RECYCLE": -0.0030108571428571437,
+        "PROTECT_POSSESSION": -0.004025,
+        "CARRY": -0.0010099999999999998
+      },
+      "P1FT1OH0S1C1G1": {
+        "SWITCH": 1.3877787807814458e-18,
+        "CARRY": -0.004681111111111112,
+        "SAFE_PASS": -0.007648333333333333,
+        "PROTECT_POSSESSION": 0.0020777777777777773,
+        "RECYCLE": -0.007366666666666671
+      },
+      "P1FT1OH0S0C1G1": {
+        "CARRY": 0.014025000000000001,
+        "SAFE_PASS": 0.01785,
+        "PROTECT_POSSESSION": 0.039525000000000005
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": -0.02456,
+        "RECYCLE": -0.030725000000000002
+      }
+    },
+    "LB": {
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": -0.00023999999999999998,
+        "PROGRESSIVE_PASS": -0.00045,
+        "RECYCLE": -0.00027
+      },
+      "P1FT0OH0S1C0G0": {
+        "DRIBBLE": 9.999999999999999e-05
+      },
+      "P0FT0OH0S1C0G0": {
+        "DRIBBLE": -0.009555,
+        "SWITCH": -0.015645
+      },
+      "P0FT1OH0S1C1G1": {
+        "CARRY": -0.006846428571428571,
+        "PROGRESSIVE_PASS": -0.018257142857142854,
+        "SAFE_PASS": -0.005477142857142857,
+        "SWITCH": -0.006846428571428571,
+        "PROTECT_POSSESSION": -0.006846428571428571
+      },
+      "P0FT0OH0S1C1G0": {
+        "SAFE_PASS": 0.0001
+      },
+      "P1FT1OH0S1C1G1": {
+        "DRIBBLE": 0.018150000000000003,
+        "CROSS": 0.010350000000000002,
+        "RECYCLE": 0.012900000000000002
+      },
+      "P0FT0OH0S0C1G0": {
+        "SWITCH": -0.0001
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 0.039900000000000005
+      },
+      "P1FT1OH0S0C1G1": {
+        "DRIBBLE": 0.011700000000000002,
+        "SWITCH": 0.019500000000000003
+      },
+      "P0FT1OH0S1C1G0": {
+        "PROTECT_POSSESSION": 0.0
+      },
+      "P1FT0OH0S0C1G0": {
+        "DRIBBLE": 0.0
+      },
+      "P0FT1OH0S0C0G1": {
+        "PROTECT_POSSESSION": 0.0
+      },
+      "P1FT0OH1S0C1G0": {
+        "SWITCH": -0.0005799999999999999,
+        "PROGRESSIVE_PASS": -0.0009
+      },
+      "P0FT1OH0S1C0G0": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P0FT0OH1S1C1G0": {
+        "DRIBBLE": -0.00096
+      },
+      "P1FT0OH1S0C0G0": {
+        "SAFE_PASS": 0.0024749999999999998,
+        "DRIBBLE": 0.00396
+      },
+      "P0FT0OH1S0C0G0": {
+        "PROGRESSIVE_PASS": 0.008045,
+        "CARRY": 0.004275000000000001
+      },
+      "P0FT0OH1S1C0G0": {
+        "DRIBBLE": 0.0015999999999999999
+      }
+    },
+    "LW": {
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": -5.9999999999999995e-05,
+        "CARRY": -3.94285714285714e-05,
+        "PROGRESSIVE_PASS": 1.0714285714285746e-05,
+        "PROTECT_POSSESSION": 0.00038071428571428577
+      },
+      "P0FT0OH0S1C1G0": {
+        "SAFE_PASS": -0.0003,
+        "RECYCLE": -0.00021999999999999998
+      },
+      "P0FT0OH0S1C0G0": {
+        "CARRY": 0.0
+      },
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": 0.00185,
+        "CARRY": 0.0019,
+        "CROSS": 0.0030749999999999996,
+        "PROGRESSIVE_PASS": 0.0025250000000000003
+      },
+      "P1FT1OH0S1C1G1": {
+        "CROSS": -0.010628571428571428,
+        "CARRY": 0.0007333333333333329,
+        "SAFE_PASS": -0.04054857142857143
+      },
+      "P0FT1OH0S1C1G1": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P1FT1OH0S1C0G1": {
+        "SWITCH": 0.008100000000000001
+      },
+      "P1FT0OH0S1C0G0": {
+        "CARRY": 0.003
+      },
+      "P1FT0OH0S0C1G0": {
+        "PROGRESSIVE_PASS": 0.00090875,
+        "DRIBBLE": 0.00030375000000000004,
+        "RECYCLE": 0.0005087500000000001,
+        "PROTECT_POSSESSION": 0.00045875000000000006
+      },
+      "P1FT0OH1S0C1G0": {
+        "SAFE_PASS": 0.0,
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 0.00025500000000000007,
+        "PROGRESSIVE_PASS": 0.00049375,
+        "CARRY": 0.00089375
+      },
+      "P1FT1OH0S1C0G0": {
+        "RECYCLE": 0.0
+      }
+    },
+    "RB": {
+      "P1FT0OH0S0C0G0": {
+        "DRIBBLE": -0.00017999999999999998
+      },
+      "P1FT0OH1S0C0G0": {
+        "PROGRESSIVE_PASS": -0.00015749999999999998,
+        "DRIBBLE": -0.0002625
+      },
+      "P0FT1OH0S1C0G1": {
+        "PROGRESSIVE_PASS": 0.0
+      },
+      "P0FT1OH0S1C1G1": {
+        "RECYCLE": -0.002424,
+        "PROTECT_POSSESSION": -0.0015149999999999999
+      },
+      "P1FT0OH0S1C0G0": {
+        "PROGRESSIVE_PASS": -0.00043500000000000006,
+        "RECYCLE": -0.0005250000000000001
+      },
+      "P0FT0OH0S0C1G0": {
+        "SAFE_PASS": -0.00022214285714285717,
+        "DRIBBLE": -0.00047999999999999996,
+        "PROGRESSIVE_PASS": -0.00019714285714285716,
+        "PROTECT_POSSESSION": -0.00019714285714285716,
+        "CARRY": -0.00027214285714285714
+      },
+      "P1FT1OH0S1C1G1": {
+        "DRIBBLE": 0.0167625,
+        "CARRY": 0.01321,
+        "SWITCH": 0.022737499999999997,
+        "SHOOT": 0.0318875,
+        "SAFE_PASS": 0.0294375
+      },
+      "P1FT0OH0S1C1G0": {
+        "SAFE_PASS": -0.0017375,
+        "SWITCH": -0.0011625
+      },
+      "P1FT1OH0S0C1G1": {
+        "DRIBBLE": 0.012725000000000004,
+        "CROSS": 0.006620000000000003
+      },
+      "P0FT0OH1S1C0G0": {
+        "CARRY": -0.0018599999999999999
+      },
+      "P0FT0OH1S0C1G0": {
+        "CROSS": 0.017
+      },
+      "P0FT0OH1S0C0G0": {
+        "SWITCH": 0.0177
+      },
+      "P0FT0OH0S1C1G0": {
+        "RECYCLE": -3.7500000000000003e-05,
+        "SAFE_PASS": -2.25e-05
+      },
+      "P1FT0OH0S0C1G0": {
+        "PROTECT_POSSESSION": 0.00988,
+        "RECYCLE": 0.01255
+      },
+      "P1FT0OH1S0C1G0": {
+        "SAFE_PASS": -0.00011
+      },
+      "P1FT0OH1S1C1G0": {
+        "RECYCLE": 0.0
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": -0.00012
+      },
+      "P0FT0OH0S1C0G0": {
+        "DRIBBLE": -0.00041999999999999996
+      }
+    },
+    "RW": {
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": -0.00018750000000000003,
+        "SAFE_PASS": -0.0002725
+      },
+      "P0FT0OH1S1C1G0": {
+        "CARRY": -0.06858,
+        "PROTECT_POSSESSION": -0.037950000000000005
+      },
+      "P1FT0OH1S1C1G0": {
+        "PROGRESSIVE_PASS": 0.0004999999999999999
+      },
+      "P1FT0OH0S1C1G0": {
+        "SWITCH": 0.0002999999999999999,
+        "CARRY": 0.0007799999999999999
+      },
+      "P0FT1OH0S1C1G1": {
+        "CARRY": 3.7500000000000003e-05,
+        "SAFE_PASS": 6.25e-05
+      },
+      "P1FT1OH0S1C1G1": {
+        "RECYCLE": 0.00135,
+        "PROTECT_POSSESSION": 0.0022500000000000003
+      },
+      "P0FT0OH1S0C1G0": {
+        "SAFE_PASS": -0.00030000000000000003
+      },
+      "P0FT1OH0S0C1G0": {
+        "SWITCH": -0.0008399999999999999
+      },
+      "P0FT0OH0S1C1G0": {
+        "SAFE_PASS": -0.00019999999999999998
+      },
+      "P0FT0OH0S0C1G0": {
+        "PROTECT_POSSESSION": -0.0008399999999999999
+      }
+    },
+    "ST": {
+      "P0FT0OH1S0C0G0": {
+        "RECYCLE": -0.0031
+      },
+      "P0FT0OH0S0C1G0": {
+        "SWITCH": -0.008246666666666668,
+        "DRIBBLE": -0.0019500000000000001,
+        "PROGRESSIVE_PASS": -0.00194,
+        "SAFE_PASS": -0.00102,
+        "PROTECT_POSSESSION": -0.0003266666666666667
+      },
+      "P1FT0OH1S0C1G0": {
+        "RECYCLE": 0.0011333333333333334,
+        "PROGRESSIVE_PASS": 0.00054,
+        "SAFE_PASS": 0.00059
+      },
+      "P0FT0OH1S0C1G0": {
+        "CARRY": 0.00033250000000000006,
+        "SAFE_PASS": 0.00045750000000000006,
+        "PROTECT_POSSESSION": 0.00017400000000000003
+      },
+      "P1FT0OH1S0C0G0": {
+        "SAFE_PASS": 0.0
+      },
+      "P1FT0OH0S0C1G0": {
+        "SAFE_PASS": 0.010436,
+        "DRIBBLE": 0.008705625000000002,
+        "PROTECT_POSSESSION": 0.0151565
+      },
+      "P1FT1OH0S0C1G1": {
+        "RECYCLE": 0.05793000000000001,
+        "DRIBBLE": 0.033150000000000006
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 0.0
+      },
+      "P0FT1OH0S0C1G1": {
+        "DRIBBLE": 0.0
+      },
+      "P0FT1OH0S1C1G1": {
+        "CARRY": 0.0881
+      }
+    }
+  },
+  "counts": {
+    "CB": {
+      "P0FT0OH1S0C1G0": {
+        "CARRY": 1,
+        "RECYCLE": 2,
+        "SAFE_PASS": 5,
+        "SWITCH": 3,
+        "DRIBBLE": 1,
+        "PROGRESSIVE_PASS": 2
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 1,
+        "SAFE_PASS": 2,
+        "PROTECT_POSSESSION": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT0OH1S0C1G0": {
+        "DRIBBLE": 1,
+        "PROGRESSIVE_PASS": 3,
+        "RECYCLE": 1,
+        "SAFE_PASS": 4,
+        "PROTECT_POSSESSION": 2,
+        "SWITCH": 1
+      },
+      "P0FT0OH0S0C1G0": {
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 5,
+        "SWITCH": 2,
+        "PROTECT_POSSESSION": 6,
+        "CARRY": 1,
+        "DRIBBLE": 5,
+        "RECYCLE": 2
+      },
+      "P1FT0OH0S0C1G0": {
+        "SWITCH": 1,
+        "RECYCLE": 4,
+        "PROTECT_POSSESSION": 6,
+        "DRIBBLE": 3,
+        "SAFE_PASS": 6,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT1OH0S0C1G0": {
+        "RECYCLE": 2,
+        "DRIBBLE": 1,
+        "SAFE_PASS": 4,
+        "SWITCH": 1
+      },
+      "P0FT1OH0S0C1G0": {
+        "DRIBBLE": 1,
+        "SAFE_PASS": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT0OH0S0C0G0": {
+        "SAFE_PASS": 4,
+        "SWITCH": 2,
+        "DRIBBLE": 1
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": 6,
+        "PROTECT_POSSESSION": 4,
+        "PROGRESSIVE_PASS": 1,
+        "RECYCLE": 1,
+        "SWITCH": 1
+      },
+      "P1FT1OH0S0C1G1": {
+        "PROGRESSIVE_PASS": 2,
+        "DRIBBLE": 4,
+        "SWITCH": 3,
+        "RECYCLE": 2,
+        "PROTECT_POSSESSION": 1,
+        "CARRY": 1,
+        "SAFE_PASS": 3
+      },
+      "P1FT0OH1S0C0G0": {
+        "RECYCLE": 1,
+        "PROTECT_POSSESSION": 2,
+        "PROGRESSIVE_PASS": 1,
+        "SWITCH": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH0S0C0G0": {
+        "DRIBBLE": 3,
+        "PROTECT_POSSESSION": 1,
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 1,
+        "CARRY": 1
+      },
+      "P0FT1OH0S0C0G0": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT1OH0S0C0G0": {
+        "RECYCLE": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S1C0G0": {
+        "CARRY": 1,
+        "SWITCH": 1,
+        "RECYCLE": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 2,
+        "RECYCLE": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH1S1C0G0": {
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": 2,
+        "PROGRESSIVE_PASS": 2
+      },
+      "P0FT0OH0S1C1G0": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT0OH1S0C0G0": {
+        "SAFE_PASS": 2,
+        "PROGRESSIVE_PASS": 2,
+        "PROTECT_POSSESSION": 1,
+        "RECYCLE": 1
+      },
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": 1
+      },
+      "P0FT1OH0S0C0G1": {
+        "PROGRESSIVE_PASS": 1
+      }
+    },
+    "": {
+      "P0FT0OH1S0C1G0": {
+        "CARRY": 2,
+        "RECYCLE": 4,
+        "SAFE_PASS": 16,
+        "SWITCH": 6,
+        "DRIBBLE": 2,
+        "PROGRESSIVE_PASS": 4,
+        "PROTECT_POSSESSION": 6,
+        "CROSS": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 5,
+        "SAFE_PASS": 5,
+        "PROTECT_POSSESSION": 6,
+        "PROGRESSIVE_PASS": 2,
+        "DRIBBLE": 2,
+        "CARRY": 13
+      },
+      "P1FT0OH1S0C1G0": {
+        "DRIBBLE": 4,
+        "PROGRESSIVE_PASS": 7,
+        "RECYCLE": 5,
+        "SAFE_PASS": 12,
+        "PROTECT_POSSESSION": 4,
+        "SWITCH": 7
+      },
+      "P0FT0OH0S0C1G0": {
+        "PROGRESSIVE_PASS": 6,
+        "SAFE_PASS": 26,
+        "SWITCH": 10,
+        "PROTECT_POSSESSION": 13,
+        "CARRY": 3,
+        "DRIBBLE": 12,
+        "RECYCLE": 5
+      },
+      "P1FT0OH0S0C1G0": {
+        "SWITCH": 5,
+        "RECYCLE": 10,
+        "PROTECT_POSSESSION": 14,
+        "DRIBBLE": 9,
+        "SAFE_PASS": 20,
+        "PROGRESSIVE_PASS": 7,
+        "CARRY": 2
+      },
+      "P1FT1OH0S0C1G0": {
+        "RECYCLE": 3,
+        "DRIBBLE": 1,
+        "SAFE_PASS": 7,
+        "SWITCH": 1
+      },
+      "P0FT1OH0S0C1G0": {
+        "DRIBBLE": 1,
+        "SAFE_PASS": 1,
+        "PROGRESSIVE_PASS": 1,
+        "SWITCH": 2
+      },
+      "P0FT0OH0S0C0G0": {
+        "SAFE_PASS": 5,
+        "SWITCH": 3,
+        "DRIBBLE": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": 11,
+        "PROTECT_POSSESSION": 5,
+        "PROGRESSIVE_PASS": 5,
+        "RECYCLE": 1,
+        "SWITCH": 1,
+        "DRIBBLE": 4
+      },
+      "P1FT1OH0S0C1G1": {
+        "PROGRESSIVE_PASS": 2,
+        "DRIBBLE": 8,
+        "SWITCH": 5,
+        "RECYCLE": 4,
+        "PROTECT_POSSESSION": 3,
+        "CARRY": 3,
+        "SAFE_PASS": 11,
+        "CROSS": 2
+      },
+      "P1FT0OH1S0C0G0": {
+        "RECYCLE": 1,
+        "PROTECT_POSSESSION": 3,
+        "PROGRESSIVE_PASS": 2,
+        "SWITCH": 1,
+        "SAFE_PASS": 3,
+        "DRIBBLE": 3
+      },
+      "P1FT0OH0S0C0G0": {
+        "DRIBBLE": 4,
+        "PROTECT_POSSESSION": 1,
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 1,
+        "CARRY": 1
+      },
+      "P0FT1OH0S0C0G0": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT1OH0S0C0G0": {
+        "RECYCLE": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S1C0G0": {
+        "CARRY": 2,
+        "SWITCH": 1,
+        "RECYCLE": 2,
+        "DRIBBLE": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 9,
+        "RECYCLE": 3,
+        "PROGRESSIVE_PASS": 2,
+        "CARRY": 2,
+        "SAFE_PASS": 2,
+        "SWITCH": 2
+      },
+      "P1FT0OH1S1C0G0": {
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": 6,
+        "PROGRESSIVE_PASS": 5,
+        "RECYCLE": 3,
+        "CARRY": 4,
+        "PROTECT_POSSESSION": 2,
+        "DRIBBLE": 1
+      },
+      "P0FT0OH0S1C1G0": {
+        "PROGRESSIVE_PASS": 2,
+        "PROTECT_POSSESSION": 1,
+        "RECYCLE": 3,
+        "SAFE_PASS": 6,
+        "SWITCH": 1
+      },
+      "P0FT0OH1S0C0G0": {
+        "SAFE_PASS": 3,
+        "PROGRESSIVE_PASS": 3,
+        "SWITCH": 4,
+        "PROTECT_POSSESSION": 3,
+        "CARRY": 2,
+        "RECYCLE": 2
+      },
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": 3,
+        "DRIBBLE": 1,
+        "CARRY": 4,
+        "CROSS": 1,
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT1OH0S0C0G1": {
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT1OH0S1C1G1": {
+        "SWITCH": 7,
+        "PROTECT_POSSESSION": 11,
+        "SAFE_PASS": 16,
+        "CARRY": 23,
+        "RECYCLE": 8,
+        "DRIBBLE": 2,
+        "CROSS": 3,
+        "SHOOT": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "SAFE_PASS": 16,
+        "RECYCLE": 5,
+        "PROGRESSIVE_PASS": 7,
+        "PROTECT_POSSESSION": 6,
+        "CARRY": 9,
+        "SWITCH": 1
+      },
+      "P0FT1OH0S1C0G0": {
+        "SAFE_PASS": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT0OH0S1C0G0": {
+        "DRIBBLE": 2,
+        "SWITCH": 1,
+        "CARRY": 1
+      },
+      "P0FT1OH0S1C1G0": {
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT1OH0S1C0G1": {
+        "SWITCH": 1
+      },
+      "P1FT1OH0S1C0G0": {
+        "RECYCLE": 1
+      },
+      "P0FT1OH0S1C0G1": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT1OH0S0C0G1": {
+        "SWITCH": 1
+      }
+    },
+    "CDM": {
+      "P0FT0OH1S0C1G0": {
+        "DRIBBLE": 1,
+        "SAFE_PASS": 3,
+        "SWITCH": 1,
+        "PROTECT_POSSESSION": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT0OH1S0C1G0": {
+        "SWITCH": 1,
+        "RECYCLE": 1,
+        "SAFE_PASS": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S0C1G0": {
+        "SWITCH": 2,
+        "SAFE_PASS": 3,
+        "RECYCLE": 3,
+        "DRIBBLE": 1,
+        "CARRY": 1
+      },
+      "P0FT0OH0S0C1G0": {
+        "RECYCLE": 1,
+        "SAFE_PASS": 3
+      },
+      "P1FT1OH0S0C1G0": {
+        "SAFE_PASS": 1
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": 1
+      },
+      "P1FT1OH0S0C1G1": {
+        "SAFE_PASS": 1
+      },
+      "P0FT0OH1S0C0G0": {
+        "SAFE_PASS": 1
+      },
+      "P1FT1OH0S1C1G1": {
+        "SWITCH": 1,
+        "PROTECT_POSSESSION": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROGRESSIVE_PASS": 1,
+        "PROTECT_POSSESSION": 2
+      },
+      "P1FT0OH1S1C1G0": {
+        "RECYCLE": 1
+      }
+    },
+    "CM": {
+      "P0FT0OH0S0C1G0": {
+        "SAFE_PASS": 13,
+        "DRIBBLE": 3,
+        "PROTECT_POSSESSION": 2,
+        "RECYCLE": 2,
+        "PROGRESSIVE_PASS": 3,
+        "SWITCH": 4,
+        "CARRY": 1
+      },
+      "P1FT0OH1S0C1G0": {
+        "SAFE_PASS": 2,
+        "SWITCH": 4,
+        "PROGRESSIVE_PASS": 1,
+        "PROTECT_POSSESSION": 1,
+        "DRIBBLE": 3
+      },
+      "P0FT0OH1S0C1G0": {
+        "RECYCLE": 2,
+        "SAFE_PASS": 4,
+        "PROTECT_POSSESSION": 3,
+        "SWITCH": 2,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT1OH0S0C1G1": {
+        "SAFE_PASS": 4,
+        "PROGRESSIVE_PASS": 4,
+        "DRIBBLE": 3,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S0C1G0": {
+        "SAFE_PASS": 6,
+        "RECYCLE": 1,
+        "PROGRESSIVE_PASS": 5,
+        "SWITCH": 2,
+        "PROTECT_POSSESSION": 3,
+        "DRIBBLE": 2,
+        "CARRY": 1
+      },
+      "P0FT0OH0S0C0G0": {
+        "PROTECT_POSSESSION": 1,
+        "SWITCH": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT1OH0S0C1G1": {
+        "SAFE_PASS": 6,
+        "RECYCLE": 1,
+        "DRIBBLE": 1,
+        "CARRY": 1,
+        "PROTECT_POSSESSION": 1,
+        "SWITCH": 1
+      },
+      "P0FT0OH1S0C0G0": {
+        "SWITCH": 3,
+        "PROTECT_POSSESSION": 2,
+        "CARRY": 1
+      },
+      "P1FT1OH0S0C1G0": {
+        "SAFE_PASS": 2,
+        "RECYCLE": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "SAFE_PASS": 1,
+        "RECYCLE": 1
+      },
+      "P0FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 1,
+        "RECYCLE": 1,
+        "SAFE_PASS": 2,
+        "PROGRESSIVE_PASS": 1,
+        "SWITCH": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 1,
+        "DRIBBLE": 1,
+        "SAFE_PASS": 2,
+        "CARRY": 2,
+        "PROTECT_POSSESSION": 2
+      },
+      "P0FT1OH0S1C0G0": {
+        "SAFE_PASS": 1
+      },
+      "P0FT1OH0S0C1G0": {
+        "SWITCH": 1
+      },
+      "P0FT1OH0S0C0G1": {
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH1S0C0G0": {
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT0OH1S1C0G0": {
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "RECYCLE": 1
+      },
+      "P1FT1OH0S0C0G1": {
+        "SWITCH": 1
+      },
+      "P1FT0OH1S1C1G0": {
+        "DRIBBLE": 1
+      }
+    },
+    "GK": {
+      "P0FT0OH1S0C1G0": {
+        "SAFE_PASS": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "CARRY": 9,
+        "SWITCH": 1,
+        "SAFE_PASS": 1,
+        "PROGRESSIVE_PASS": 1,
+        "PROTECT_POSSESSION": 2
+      },
+      "P1FT0OH1S1C1G0": {
+        "CARRY": 2,
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "PROGRESSIVE_PASS": 4,
+        "SAFE_PASS": 12,
+        "RECYCLE": 2,
+        "PROTECT_POSSESSION": 4,
+        "CARRY": 6
+      },
+      "P1FT1OH0S1C1G1": {
+        "SWITCH": 5,
+        "CARRY": 18,
+        "SAFE_PASS": 12,
+        "PROTECT_POSSESSION": 9,
+        "RECYCLE": 6
+      },
+      "P1FT1OH0S0C1G1": {
+        "CARRY": 1,
+        "SAFE_PASS": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 2,
+        "RECYCLE": 1
+      }
+    },
+    "LB": {
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": 1,
+        "PROGRESSIVE_PASS": 1,
+        "RECYCLE": 1
+      },
+      "P1FT0OH0S1C0G0": {
+        "DRIBBLE": 1
+      },
+      "P0FT0OH0S1C0G0": {
+        "DRIBBLE": 1,
+        "SWITCH": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "CARRY": 1,
+        "PROGRESSIVE_PASS": 2,
+        "SAFE_PASS": 2,
+        "SWITCH": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT0OH0S1C1G0": {
+        "SAFE_PASS": 1
+      },
+      "P1FT1OH0S1C1G1": {
+        "DRIBBLE": 1,
+        "CROSS": 1,
+        "RECYCLE": 1
+      },
+      "P0FT0OH0S0C1G0": {
+        "SWITCH": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT1OH0S0C1G1": {
+        "DRIBBLE": 1,
+        "SWITCH": 1
+      },
+      "P0FT1OH0S1C1G0": {
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S0C1G0": {
+        "DRIBBLE": 1
+      },
+      "P0FT1OH0S0C0G1": {
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH1S0C1G0": {
+        "SWITCH": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT1OH0S1C0G0": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "DRIBBLE": 1
+      },
+      "P1FT0OH1S0C0G0": {
+        "SAFE_PASS": 1,
+        "DRIBBLE": 2
+      },
+      "P0FT0OH1S0C0G0": {
+        "PROGRESSIVE_PASS": 1,
+        "CARRY": 1
+      },
+      "P0FT0OH1S1C0G0": {
+        "DRIBBLE": 1
+      }
+    },
+    "LW": {
+      "P1FT0OH1S1C1G0": {
+        "SAFE_PASS": 3,
+        "CARRY": 2,
+        "PROGRESSIVE_PASS": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT0OH0S1C1G0": {
+        "SAFE_PASS": 1,
+        "RECYCLE": 1
+      },
+      "P0FT0OH0S1C0G0": {
+        "CARRY": 1
+      },
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": 1,
+        "CARRY": 3,
+        "CROSS": 1,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT1OH0S1C1G1": {
+        "CROSS": 2,
+        "CARRY": 3,
+        "SAFE_PASS": 2
+      },
+      "P0FT1OH0S1C1G1": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT1OH0S1C0G1": {
+        "SWITCH": 1
+      },
+      "P1FT0OH0S1C0G0": {
+        "CARRY": 1
+      },
+      "P1FT0OH0S0C1G0": {
+        "PROGRESSIVE_PASS": 1,
+        "DRIBBLE": 1,
+        "RECYCLE": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH1S0C1G0": {
+        "SAFE_PASS": 2,
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "PROTECT_POSSESSION": 2,
+        "PROGRESSIVE_PASS": 1,
+        "CARRY": 1
+      },
+      "P1FT1OH0S1C0G0": {
+        "RECYCLE": 1
+      }
+    },
+    "RB": {
+      "P1FT0OH0S0C0G0": {
+        "DRIBBLE": 1
+      },
+      "P1FT0OH1S0C0G0": {
+        "PROGRESSIVE_PASS": 1,
+        "DRIBBLE": 1
+      },
+      "P0FT1OH0S1C0G1": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "RECYCLE": 2,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH0S1C0G0": {
+        "PROGRESSIVE_PASS": 1,
+        "RECYCLE": 1
+      },
+      "P0FT0OH0S0C1G0": {
+        "SAFE_PASS": 1,
+        "DRIBBLE": 3,
+        "PROGRESSIVE_PASS": 1,
+        "PROTECT_POSSESSION": 1,
+        "CARRY": 1
+      },
+      "P1FT1OH0S1C1G1": {
+        "DRIBBLE": 1,
+        "CARRY": 2,
+        "SWITCH": 1,
+        "SHOOT": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "SAFE_PASS": 1,
+        "SWITCH": 1
+      },
+      "P1FT1OH0S0C1G1": {
+        "DRIBBLE": 1,
+        "CROSS": 2
+      },
+      "P0FT0OH1S1C0G0": {
+        "CARRY": 1
+      },
+      "P0FT0OH1S0C1G0": {
+        "CROSS": 1
+      },
+      "P0FT0OH1S0C0G0": {
+        "SWITCH": 1
+      },
+      "P0FT0OH0S1C1G0": {
+        "RECYCLE": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH0S0C1G0": {
+        "PROTECT_POSSESSION": 2,
+        "RECYCLE": 1
+      },
+      "P1FT0OH1S0C1G0": {
+        "SAFE_PASS": 2
+      },
+      "P1FT0OH1S1C1G0": {
+        "RECYCLE": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 1
+      },
+      "P0FT0OH0S1C0G0": {
+        "DRIBBLE": 1
+      }
+    },
+    "RW": {
+      "P0FT0OH1S1C0G0": {
+        "SWITCH": 1,
+        "SAFE_PASS": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "CARRY": 2,
+        "PROTECT_POSSESSION": 1
+      },
+      "P1FT0OH1S1C1G0": {
+        "PROGRESSIVE_PASS": 1
+      },
+      "P1FT0OH0S1C1G0": {
+        "SWITCH": 1,
+        "CARRY": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "CARRY": 1,
+        "SAFE_PASS": 1
+      },
+      "P1FT1OH0S1C1G1": {
+        "RECYCLE": 1,
+        "PROTECT_POSSESSION": 1
+      },
+      "P0FT0OH1S0C1G0": {
+        "SAFE_PASS": 2
+      },
+      "P0FT1OH0S0C1G0": {
+        "SWITCH": 1
+      },
+      "P0FT0OH0S1C1G0": {
+        "SAFE_PASS": 1
+      },
+      "P0FT0OH0S0C1G0": {
+        "PROTECT_POSSESSION": 1
+      }
+    },
+    "ST": {
+      "P0FT0OH1S0C0G0": {
+        "RECYCLE": 1
+      },
+      "P0FT0OH0S0C1G0": {
+        "SWITCH": 3,
+        "DRIBBLE": 1,
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 4,
+        "PROTECT_POSSESSION": 3
+      },
+      "P1FT0OH1S0C1G0": {
+        "RECYCLE": 3,
+        "PROGRESSIVE_PASS": 1,
+        "SAFE_PASS": 1
+      },
+      "P0FT0OH1S0C1G0": {
+        "CARRY": 1,
+        "SAFE_PASS": 1,
+        "PROTECT_POSSESSION": 2
+      },
+      "P1FT0OH1S0C0G0": {
+        "SAFE_PASS": 1
+      },
+      "P1FT0OH0S0C1G0": {
+        "SAFE_PASS": 5,
+        "DRIBBLE": 1,
+        "PROTECT_POSSESSION": 2
+      },
+      "P1FT1OH0S0C1G1": {
+        "RECYCLE": 1,
+        "DRIBBLE": 1
+      },
+      "P0FT0OH1S1C1G0": {
+        "SWITCH": 1
+      },
+      "P0FT1OH0S0C1G1": {
+        "DRIBBLE": 1
+      },
+      "P0FT1OH0S1C1G1": {
+        "CARRY": 1
+      }
+    }
+  },
+  "reward": {
+    "reward": "threat_return",
+    "form": "PHI(end) - PHI(start) for ball movers; absolute PHI for shots",
+    "potential": "momentum_model xT grid derived from XGEngine",
+    "goal_value": 1.0,
+    "shot_off_target_frac": 0.5,
+    "loss_weight": 0.6,
+    "default": 0.0,
+    "notes": "Failures are charged the opponent's threat at the loss point, not a penalty on an intent. No diversity/dominance penalty."
+  }
+}

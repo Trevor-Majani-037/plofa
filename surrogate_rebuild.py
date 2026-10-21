@@ -35,7 +35,9 @@ from surrogate_collect import (
     TEMPLATE_BASE, TEMPLATE_CAM, TEMPLATE_CF,
     FitnessSurrogate, _build_match_components,
 )
-from surrogate_collect import _COLLECTOR, _correlate_outcomes
+from surrogate_collect import (
+    _CHAIN_CALLS, _COLLECTOR, _correlate_outcomes_causal,
+)
 
 ALL_POSITIONS = ["GK", "CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST", "CF"]
 
@@ -104,11 +106,18 @@ def _run_matches(n_matches, seed, away_styles, targeted, decision,
             if away_template is not None:
                 at = away_template
                 tpl_tag += f"/away={_template_name(at)}"
+            # The CAUSAL join, not the legacy proximity one: a decision can
+            # emit more than one execution event (a failed pass emits PASS
+            # *and* TURNOVER), and a one-event-per-record cursor mis-charges
+            # the extra event against the next decision.  Measured, that join
+            # ranked SHOOT the WORST of all ten intents.  See
+            # `surrogate_collect._correlate_outcomes_causal`.
+            _CHAIN_CALLS.clear()
             eng = _build_match_components(
                 "Probe FC", "Rival FC", "attacking", opp_style,
                 home_template=ht, away_template=at)
             result = eng.simulate()
-            paired = _correlate_outcomes(result.timeline, list(_COLLECTOR))
+            paired = _correlate_outcomes_causal(_CHAIN_CALLS)
             all_paired.extend(paired)
             _COLLECTOR.clear()
             print(f"  match {m+1}: collected {len(paired)} pairs "

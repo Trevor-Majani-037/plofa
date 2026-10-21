@@ -1374,8 +1374,10 @@ class PossessionEpisode:
                     "high_speed_sprint_distance_m": 0.0,
                     "sprint_count": 0.0,
                     "high_speed_sprint_count": 0.0,
+                    "standing_time_s": 0.0,
                     "walk_time_s": 0.0,
                     "jog_time_s": 0.0,
+                    "running_time_s": 0.0,
                     "sprint_time_s": 0.0,
                     "top_speed_mps": 0.0,
                 }
@@ -1392,8 +1394,20 @@ class PossessionEpisode:
             in_high_sprint = False
             sprint_seg_dist = 0.0
             high_sprint_seg_dist = 0.0
+            # Same five Di Salvo bands the published table claims to use
+            # (`position_engine.ACTIVITY_BAND_EDGES` = 0.5 / 2.0 / 4.2 / 7.0).
+            # The trace used to cut only THREE ways -- <2.0 walking, <7.0
+            # jogging, else sprinting -- so a player at 0.0 m/s was booked as
+            # WALKING and a 6.9 m/s run as JOGGING. The integrator booked the
+            # same speed into the correct band, so the two halves of one
+            # published number disagreed about what a band means.
+            STANDING_THRESHOLD = 0.5
+            WALK_THRESHOLD = 2.0
+            JOG_THRESHOLD = 4.2
+            standing_time_s = 0.0
             walk_time_s = 0.0
             jog_time_s = 0.0
+            running_time_s = 0.0
             sprint_time_s = 0.0
 
             for i in range(1, len(trace)):
@@ -1438,10 +1452,14 @@ class PossessionEpisode:
                     speed = s1
                     seg_dist = min(seg_dist, dt * speed)
                     total_dist += seg_dist
-                    if speed < 2.0:
+                    if speed < STANDING_THRESHOLD:
+                        standing_time_s += dt
+                    elif speed < WALK_THRESHOLD:
                         walk_time_s += dt
-                    elif speed < SPRINT_THRESHOLD:
+                    elif speed < JOG_THRESHOLD:
                         jog_time_s += dt
+                    elif speed < SPRINT_THRESHOLD:
+                        running_time_s += dt
                     else:
                         sprint_time_s += dt
                 else:
@@ -1489,8 +1507,10 @@ class PossessionEpisode:
                 "hsr_distance_m": round(hsr_dist, 2),
                 "sprint_count": float(sprint_count),
                 "high_speed_sprint_count": float(high_sprint_count),
+                "standing_time_s": round(standing_time_s, 3),
                 "walk_time_s": round(walk_time_s, 3),
                 "jog_time_s": round(jog_time_s, 3),
+                "running_time_s": round(running_time_s, 3),
                 "sprint_time_s": round(sprint_time_s, 3),
                 "top_speed_mps": round(top_speed, 2),
             }

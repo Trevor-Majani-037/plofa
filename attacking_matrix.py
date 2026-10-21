@@ -31,7 +31,7 @@ Consumption rules
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Any
 
 from position_engine import ELLIPSE_COMPOSE_FLOOR
@@ -430,6 +430,19 @@ class AttackingDecision:
     x: float = 0.0
     y: float = 0.0
 
+    # ── PROVENANCE FOR TARGET AUTHORITY (2026-10-19) ──────────────────────
+    # `value` is the matrix's OWN score for the option it chose; `scores`
+    # maps every candidate teammate name to theirs. Both are additive and
+    # defaulted, so every existing construction site is unaffected.
+    #
+    # They exist so the on-ball policy's preferred receiver can be compared
+    # against the matrix's choice IN THE MATRIX'S OWN UNITS, which is the
+    # only fair way to ask "is the policy's target roughly as good as the
+    # one the structure picked?". See EventChain.POLICY_TARGET_DEFERENCE.
+    # Populated on pass decisions only; 0.0/{} on a shot.
+    value: float = 0.0
+    scores: dict = field(default_factory=dict)
+
     @property
     def is_pass(self) -> bool:
         return self.action in ("KEY_PASS", "PROGRESSIVE_PASS", "RECYCLE_PASS")
@@ -803,6 +816,11 @@ class AttackingMatrix:
                 target_x=tx, target_y=ty,
                 shot_score=shot, scenario=scenario, reason=reason,
                 fallback=False, x=x, y=y,
+                # The matrix's own scoring of every candidate it weighed,
+                # so a higher layer can ask "is the policy's option within
+                # a margin of the one I chose?" without re-running `decide`.
+                value=float(option.value),
+                scores={o.target.name: float(o.value) for o in opts},
             )
 
         def _shoot(reason: str) -> AttackingDecision:
