@@ -2307,6 +2307,22 @@ fix only touches three lines of noise seeding.
   the tracked `__pycache__/*.pyc`, which are noise. Note the `.quarantine_*`
   and `.corrupt-*` directories in the tree are pre-existing, not mine — leave
   them alone.
+- **⛔ AND A COMMIT IS NOT A PUSH — SEVEN COMMITS SAT UNPUSHED FOR DAYS
+  (2026-10-21).** `git commit` never reaches GitHub. This repo had **seven
+  finished, gated commits** sitting locally (mine plus six from earlier
+  sessions: the Percy work, the momentum chart, the activity/distance work)
+  and the only way it surfaced was the user refreshing GitHub and finding a
+  **five-day-old HEAD**. Two causes, both now fixed:
+  1. **no upstream tracking branch was set on `main`** — so `git push` needed
+     an explicit `origin main` and nothing reported the drift. Fixed with
+     `git branch --set-upstream-to=origin/main main` ✓;
+  2. **nothing in the workflow checked** ✓ — so it is now a tool:
+     **`_diag_push_state.py`** prints the branch, the divergence, WHICH
+     commits are waiting and how old they are, and what is still uncommitted
+     in the working tree ✓ (a commit is not a push, and neither is somebody
+     else's work in flight ✓). **Run it after every commit in this project
+     and say where the work actually is** ✓ — the user's words: *"im
+     refreshing my github am not seeing the new files"* ✓.
 - DONE: neural net + sensors + GA evolution; surrogate build + integration;
   pseudo-evo; evolved real brains; registration-bug fix (`validate_neural_xl.py`).
 - DONE: LIVE SWAP — `event_chain.py` routes through `NeuralDecisionBrain`;
@@ -8427,6 +8443,46 @@ midfielder, `ROLE_INTENTS["AM"]` includes SHOOT and `ROLE_ONLY_INTENTS`
 puts SHOOT with {ST, AM, WING}: the AM family performed SHOOT in the
 corpus, so a CAM shooting is role-appropriate. The rule is now DERIVED from
 the role vocabulary, and the CAM's 14.9% of shots is no longer flagged.
+
+### THE REAL-MATCH GATE — the first run, and what it does and does NOT move
+
+`tools/diag/_diag_v7_gate.py` — the plan's acceptance numbers, measured on the
+harness of record's seeding (`random.seed(seed + m * 100)` before every
+match, the identity perception regime). **Three matches per arm: a
+direction, not a result.**
+
+| metric | **v7 (distilled + refined)** | shipped T1 | real PL |
+|---|---|---|---|
+| home goals | **9** | 4 | — |
+| possession % | 53.8 | 54.6 | — |
+| forward % | 35.7 | 35.0 | 35-40 ✓ |
+| square % | 39.5 | 41.2 | 45-50 |
+| backward % | 24.8 | 23.7 | 10-15 ✗ |
+| median pass length | 9.4 m | 9.0 m | 15-18 ✗ |
+| median signed advance | +1.1 m | +1.2 m | — |
+| ST shots | 7 | 6 | — |
+| **ST goals** | **1** | **0** | — |
+
+**THE PASS GEOMETRY DID NOT MOVE, AND THE REASON IS THE STANDING ONE: the
+brain owns the VERB and the structure owns the NOUN.** The receiver of an
+ordinary pass is AttackingMatrix 1178 / TacticalPhase 296 / wide-combo 225 /
+policy 1, so the pass's length and direction are the matrix's, not the
+brain's. The retrain changes the intent mix, the delivery class and the
+shot count; it cannot move the arrow's endpoint until the receiver
+authority is changed (the standing item 4). **The forward share is ALREADY
+inside the real band (35.0-35.7% against 35-40) and the backward share is
+the engine's own backward-heaviness (23.7-24.8% against 10-15) — both
+unchanged by this set, and both are the matrix's, not the brain's.**
+
+**AND THE BAND MATTERS FOR THE COMPARISON.** The plan's benchmark
+(35-40 / 45-50 / 10-15) is the **Opta-style progression band** (a pass is
+forward if it closes ≥10% of the distance to the opponent's goal). The
+engine's own `classify_direction` is a **±1 m dead band**, which puts
+almost nothing in "square" (0.0% in the first run) and is a DIFFERENT
+measurement — **the two must never be compared to each other**, and the
+historical 27.9 / 41.0 / 31.1 came from a probe that no longer exists, so
+it cannot be reproduced and must not be quoted against these numbers.
+The probe now prints BOTH bands and says which is which.
 
 ### THE INSTRUMENTS THIS SECTION USES (all read-only, all in `tools/diag/`)
 
