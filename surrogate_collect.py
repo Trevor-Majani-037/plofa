@@ -339,11 +339,19 @@ def _snapshot_decide(player, *args, **kwargs):
     # sensors are the same vector either way (the perception noise is
     # deterministic per snapshot, and `perceive` draws from a SEEDED
     # generator, so moving this line does not move the global RNG stream).
-    sensors = perceive(
+    #
+    # THE SCENE IS REQUESTED TOO, because the situational blocks must be
+    # built from the PERCEIVED scene — the same one the live path uses.
+    # Reading the role block and the entity tokens from the FULL scene
+    # would give the net more than the player can see, and the corpus
+    # would then be in a DIFFERENT FRAME from the one it is played in:
+    # a net trained on a leaked frame behaves differently on the pitch
+    # than in training, and the difference is invisible.
+    sensors, scene = perceive(
         player, x, y, teammates, defenders, position_engine,
         under_pressure, attacks_right, game_state, minute,
         team_possession=team_possession, score_diff=_score_diff_of(game_state),
-        config=get_perception_config(),
+        config=get_perception_config(), return_scene=True,
     )
     # ε-exploration: replace the decision with a random ACTION the role can
     # perform, so the corpus eventually covers the actions the policy never
@@ -368,8 +376,11 @@ def _snapshot_decide(player, *args, **kwargs):
         sensors=sensors,
         intent=d.intent,
         team=_team_of(player, position_engine),
-        **_situational_blocks(player, x, y, teammates, defenders,
-                             position_engine, attacks_right),
+        **_situational_blocks(player, x, y,
+                             scene.get("teammates", teammates),
+                             scene.get("defenders", defenders),
+                             scene.get("position_engine", position_engine),
+                             attacks_right),
     ))
     _CALL_ORDER += 1
     return d
