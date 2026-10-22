@@ -38,6 +38,101 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools", "gates"))
 
 
+def run_real_match(brains: str, home: str, away: str, seed: int,
+                   out: str, matchday: int = 3, date_str: str = "2026-09-06"):
+    """A real-roster match with the CHALLENGER bound to the home XI only.
+
+    The auto-load stays on the shipped set (so the away side is the control
+    in both arms) and the challenger is registered BY NAME for the home XI,
+    which takes precedence over the position auto-load.  The brain DIR is
+    global, so `set_brain_dir(challenger)` would give the away side the
+    challenger too — and the match would be "challenger against challenger",
+    which is not the shipping question.
+    """
+    from brain_integration import set_brain_dir
+    set_brain_dir("brains")
+    from football_brain import FootballBrain
+    from brain_integration import clear_registry, register_brain
+    from match_engine import MatchConfig, MatchEngine
+    from player_dna import SquadBuilder
+    from roster_loader import get_loader
+    from squad_manager import SubstitutionController
+    from validate_neural_xl import POSITION_BRAIN_MAP
+    import production_roster_sanity as prs
+
+    match_date = date.fromisoformat(date_str)
+    loader = get_loader()
+    clubs = loader.get_all_clubs()
+    for team in (home, away):
+        if team not in clubs:
+            raise SystemExit(f"team {team!r} not in the roster: {sorted(clubs)}")
+
+    from season_manager import SeasonState
+    season_state = SeasonState("26/27", prs.SEASON_STATE_FILE)
+    home_avail = prs._build_availability(home, matchday, season_state,
+                                        prs.OUTPUTS_DIR, match_date)
+    away_avail = prs._build_availability(away, matchday, season_state,
+                                        prs.OUTPUTS_DIR, match_date)
+    home_raw = loader.build_matchday_squad(home, availability=home_avail)
+    away_raw = loader.build_matchday_squad(away, availability=away_avail)
+    home_style = prs._resolve_team_profile(home, home_raw["formation"],
+                                           is_home=True)
+    away_style = prs._resolve_team_profile(away, away_raw["formation"],
+                                           is_home=False)
+    home_squad = SquadBuilder.build(
+        team_name=home, starters=home_raw["starters"],
+        substitutes=home_raw["substitutes"],
+        team_superstars=home_raw["superstars"],
+        set_piece_takers=home_raw["sp_takers"])
+    away_squad = SquadBuilder.build(
+        team_name=away, starters=away_raw["starters"],
+        substitutes=away_raw["substitutes"],
+        team_superstars=away_raw["superstars"],
+        set_piece_takers=away_raw["sp_takers"])
+    all_players = (home_squad["starters"] + home_squad["substitutes"]
+                   + away_squad["starters"] + away_squad["substitutes"])
+    prs._apply_starting_stamina(all_players, {**home_avail, **away_avail},
+                                season_state, match_date)
+    prs._attach_souls(all_players)
+
+    clear_registry()
+    bound = 0
+    for p in home_squad["starters"]:
+        stem = POSITION_BRAIN_MAP.get(p.position)
+        if not stem:
+            continue
+        path = os.path.join(brains, f"{stem}.json")
+        if not os.path.exists(path):
+            continue
+        register_brain(p.name, FootballBrain.load(path))
+        bound += 1
+
+    config = MatchConfig(
+        home_team=home, away_team=away, match_date=match_date,
+        matchday=matchday, season="26/27",
+        venue=f"{home} Stadium", stadium_capacity=45000,
+        referee="Sanity Referee", referee_strictness=0.5)
+    sub = SubstitutionController(
+        home_team=home, away_team=away,
+        home_subs_bench=home_squad["substitutes"],
+        away_subs_bench=away_squad["substitutes"])
+    random.seed(seed)
+    engine = MatchEngine(config, home_style, away_style)
+    engine.set_squad(home, home_squad["starters"], home_squad["substitutes"])
+    engine.set_squad(away, away_squad["starters"], away_squad["substitutes"])
+    engine.set_stamina_controller(sub)
+    result = engine.simulate()
+
+    from exporter import PLOFAExporter
+    os.makedirs(out, exist_ok=True)
+    exporter = PLOFAExporter(result=result,
+                             all_players={home: home_squad, away: away_squad},
+                             home_color="#C8102E", away_color="#FFFFFF",
+                             sub_controller=sub)
+    exporter.export_all(out)
+    return result, bound, out
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()

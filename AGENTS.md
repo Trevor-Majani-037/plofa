@@ -8663,6 +8663,57 @@ summary for the season's brain set is that the v7 set makes the team's
 finisher its finisher, and that is worth having; it is not the 7-from-7
 that the identity regime showed.
 
+### ⛔ THE STRUCTURE OF EVERY "v7 vs T1" GATE — AND WHY THE TWO NUMBERS ARE NOT THE SAME QUESTION
+
+**THE SCRATCH HARNESS COMPARES THE SETS AGAINST THEMSELVES.** In
+`_run_neural` the brain set is registered **by name** for the home XI, and
+the scratch fixture gives BOTH teams the same generic names (GK, CB1, …) —
+so the away side finds the same registrations and plays the same set. **Every
+scratch-harness number is therefore "the set against the set"** (v7 against
+v7, against T1 against T1), exactly the structure the historical gates used
+(neural against neural, against heuristic against heuristic) ✓ — comparable in
+kind ✓, but **it is NOT "our team against a fixed opponent"** ✓.
+
+**THE REAL-ROSTER GATE ANSWERS THE SHIPPING QUESTION.** `run_match.py` is the
+scratch teams (Hartwell City and Thornfield United are HAND-ENTERED test
+sides — they are not in the workbook; the real roster is eighteen clubs). So
+the real-roster gate uses two REAL clubs (Natrican v Tryox City ✓), binds the
+challenger **by name to the home XI only** ✓, and leaves the auto-load on the
+shipped set so the AWAY SIDE IS THE SAME CONTROL IN BOTH ARMS ✓.
+
+**AND TWO TRAPS THAT ALMOST PRODUCED A FALSE ANSWER, both from the same
+place — module state:**
+
+1. **ONE PROCESS PER MATCH.** The brain registry, the per-position brain
+   cache and the mind registry are module state. The first version of the
+   real-roster gate ran both arms in ONE process, and the second arm
+   inherited the first arm's brains: the two arms produced **byte-identical
+   matches** (124 shots each, 11 goals each) and the gate reported "the
+   brains make no difference". **They make a very large difference** — the
+   same seed in two separate processes gives xG 2.55-1.77 against 0.77-1.06.
+   (The AGENTS.md's retraction — "the module-level caches do not contaminate
+   the TIMELINE" — is still true ✓; the brain BINDINGS are module state,
+   and that is a different thing.)
+2. **THE BRAIN DIR IS GLOBAL.** `set_brain_dir(challenger)` gives the AWAY
+   side the challenger too, and the match becomes "challenger against
+   challenger" — a match with no side bias ✗. The auto-load must stay on
+   the shipped set and the challenger must be registered by name ✓.
+
+**AND `run_match.py` SEEDS NOTHING** ✓, so every invocation is a DIFFERENT
+match: the v7 set's 4-5 and the shipped set's 4-1 were two different
+games, not a comparison ✗.
+
+**AND THE MANAGER'S PERSISTED MEMORY DOES NOT AFFECT A MATCH** ✓ — which
+removes the last confound in the real-roster gate. The managers' `memory.json`
+/ `mind.json` are written by every match and read by the next one, so the two
+arms were starting from different manager states. Measured: the same seed and
+the same brains, run twice in a row, gave **byte-identical** results (1-1,
+29 shots, xG 1.19-1.27) even though the first run had just written the
+memory ✓. **So a real-roster match is reproducible from its seed and its
+brains**, the within-arm drift is nil, and the arms are independent ✓ —
+which is also why the control's seed 21 reproduced exactly (3-2, 20 shots,
+xG 0.38-0.13) across two separate gate runs ✓.
+
 ### THE INSTRUMENTS THIS SECTION USES (all read-only, all in `tools/diag/`)
 
 - `_diag_scale_balance.py` — the reward's swing against the guards (the
