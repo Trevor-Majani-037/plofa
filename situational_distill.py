@@ -391,6 +391,33 @@ def split_sequences(seqs: List[Sequence], seed: int = 123,
     return train, eval_
 
 
+def _position_family(position: str) -> str:
+    """The ROLE FAMILY of a position name.
+
+    The corpus is grouped by FAMILY (the position label is normalised to
+    it), because a live roster names its players "CM1" / "CB1".  The
+    families are: GK, CB, FB (LB + RB), DM (CDM), CM, AM (CAM), WING
+    (LW + RW), ST (ST + CF).
+
+    The PROJECTION MATTERS: looping over the POSITION names ("LB", "LW",
+    "CDM", ...) against a corpus keyed by FAMILY would find NOTHING for
+    seven of the eleven positions, and the trainer would silently write
+    no brain for them.  That is the same shape as the bug AGENTS.md
+    records for `_diag_intent_mix_all.py`'s FAMILY map.
+    """
+    from role_features import ROLE_FAMILY
+
+    return ROLE_FAMILY.get(position.rstrip("0123456789"), position)
+
+
+def positions_for_family(family: str) -> List[str]:
+    """Every POSITION name that belongs to a family."""
+    from role_features import ROLE_FAMILY
+
+    out = [p for p, fam in ROLE_FAMILY.items() if fam == family]
+    return sorted(out)
+
+
 def distill_all(
     positions: List[str],
     corpus_path: str,
@@ -404,7 +431,7 @@ def distill_all(
 ) -> Dict[str, Any]:
     """Train every position from the situational corpus, and CENSUS it.
 
-    THE HOLD-OUT IS THE POINT.  The census asks "does this brain collapse?"
+    THE HOLDOUT IS THE POINT.  The census asks "does this brain collapse?"
     and a collapse measured on the TRAINING set understates the collapse
     (a brain that memorised one action has memorised it on the training
     set too, so the two agree — but a brain that merely FAILED to learn
@@ -412,6 +439,14 @@ def distill_all(
     split BY SEQUENCE — never by step, because a step's neighbours are
     the same possession and would leak — and the census is read on the
     held-out split.
+
+    ONE BRAIN PER FAMILY, written to every position file in it.  The
+    corpus cannot separate a left winger from a right winger (they share
+    the WING family and the same role features), so training them
+    separately would produce two IDENTICAL brains and a false impression
+    of per-position specialisation.  One brain per family is the honest
+    structure, and the file names stay the eleven position names so the
+    registration works.
     """
     import os
 
@@ -423,32 +458,53 @@ def distill_all(
     os.makedirs(out_dir, exist_ok=True)
     reports: Dict[str, Any] = {}
     flags: List[str] = []
+    trained_families: Dict[str, Any] = {}
+
     for pos in positions:
-        seqs = by_pos.get(pos, [])
-        if not seqs:
+        family = _position_family(pos)
+        if family not in trained_families:
+            seqs = by_pos.get(family, [])
+            if not seqs:
+                if verbose:
+                    print(f"  {pos} (family {family}): no sequences in the "
+                          f"corpus")
+                continue
+            train, eval_ = split_sequences(seqs, seed=seed, holdout=holdout)
+            brain, report = distill_situational(
+                family, surrogate, train, epochs=epochs,
+                learning_rate=learning_rate, seed=seed, verbose=verbose)
+
+            mix = _mix_over(brain, eval_ or train)
+            report["mix_heldout"] = {k: round(v, 4)
+                                     for k, v in sorted(mix.items())}
+            report["train_sequences"] = len(train)
+            report["eval_sequences"] = len(eval_)
+            report["family"] = family
+            # The census flags are computed from a POSITION name (the
+            # role-inappropriate rule needs `ROLE_FAMILY.get(position)`,
+            # and a FAMILY name is not a key of that map — passing "FB"
+            # would silently SKIP the role rule).
+            pos_flags = census_flags(pos, mix)
+            report["census_flags"] = pos_flags
+            flags.extend(f"{p}: {f}" for p in positions_for_family(family)
+                         for f in pos_flags)
+            trained_families[family] = (brain, report)
             if verbose:
-                print(f"  {pos}: no sequences in the corpus")
+                top = sorted(mix.items(), key=lambda kv: -kv[1])[:3]
+                print(f"  {family}: {len(train)} train / {len(eval_)} held-out"
+                      f"  loss {report['loss_last']:.4f}"
+                      f"  agree {report['agreement']:.3f}"
+                      f"  mix " + ", ".join(f"{k} {v:.0%}" for k, v in top))
+                if pos_flags:
+                    print(f"      CENSUS: {'; '.join(pos_flags)}")
+
+        if family not in trained_families:
             continue
-        # Deterministic split BY SEQUENCE (one definition, shared with the
-        # census probe, so the census reads the SAME held-out split).
-        train, eval_ = split_sequences(seqs, seed=seed, holdout=holdout)
-
-        brain, report = distill_situational(
-            pos, surrogate, train, epochs=epochs,
-            learning_rate=learning_rate, seed=seed, verbose=verbose)
-
-        # The census mix: on the HELD-OUT split when there is one.
-        mix = _mix_over(brain, eval_ or train)
-        report["mix_heldout"] = {k: round(v, 4) for k, v in sorted(mix.items())}
-        report["train_sequences"] = len(train)
-        report["eval_sequences"] = len(eval_)
-        pos_flags = census_flags(pos, mix)
-        report["census_flags"] = pos_flags
-        flags.extend(pos_flags)
-
+        brain, report = trained_families[family]
         brain.meta = dict(brain.meta or {})
         brain.meta.update({
             "position": pos,
+            "family": family,
             "training_method": "bptt_situational",
             "corpus": os.path.basename(corpus_path),
             "epochs": epochs,
@@ -456,13 +512,6 @@ def distill_all(
         })
         brain.save(os.path.join(out_dir, f"{pos}.json"))
         reports[pos] = report
-        if verbose:
-            top = sorted(mix.items(), key=lambda kv: -kv[1])[:3]
-            print(f"  {pos}: {len(train)} train / {len(eval_)} held-out  "
-                  f"loss {report['loss_last']:.4f}  agree {report['agreement']:.3f}"
-                  f"  mix " + ", ".join(f"{k} {v:.0%}" for k, v in top))
-            if pos_flags:
-                print(f"      CENSUS: {'; '.join(pos_flags)}")
 
     summary = {"reports": reports, "flags": flags, "out_dir": out_dir}
     with open(os.path.join(out_dir, "_distill_report.json"), "w",

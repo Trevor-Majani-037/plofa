@@ -997,6 +997,8 @@ def collect_from_matches(
     policy: str = "heuristic",
     explore: float = 0.0,
     explore_situational: bool = False,
+    situational_out: Optional[str] = None,
+    raw_out: Optional[str] = None,
 ) -> List[Tuple[np.ndarray, PlayerIntent, float, str, str]]:
     """Run n real matches with the heuristic brain, collecting training data.
 
@@ -1013,6 +1015,12 @@ def collect_from_matches(
     replaced by a random action the player's ROLE can perform, so the corpus
     covers the actions the policy never chooses.  0.0 = the policy's own
     choice (the historical behaviour).  See ``_explore_intent``.
+
+    ``situational_out`` / ``raw_out``
+        WHERE the corpora are written, and they are written AFTER EVERY
+        MATCH rather than at the end.  A collection is 20-30 minutes of
+        CPU, and a machine that dies at minute 22 must not cost the
+        other 22: the files on disk are always a complete prefix.
     """
     global _COLLECTOR, _EXPLORE_EPS, _EXPLORE_RNG, _EXPLORED
     global _EXPLORE_SITUATIONAL, _SITUATIONAL_RECORDS
@@ -1067,6 +1075,18 @@ def collect_from_matches(
             all_paired.extend(paired)
             _SITUATIONAL_RECORDS.extend(_COLLECTOR)
             _COLLECTOR.clear()
+            # ── CRASH RESILIENCE ──────────────────────────────────
+            # The corpus and the raw pairs are written AFTER EVERY MATCH,
+            # not at the end.  A collection is 20-30 minutes of CPU, and
+            # a machine that dies at minute 22 must not cost the other
+            # 22: the files on disk are always a complete prefix, so the
+            # run can be resumed or the surrogate refitted from the raw
+            # corpus (`tools/diag/_diag_refit.py`).
+            if situational_out:
+                save_situational_corpus(list(_SITUATIONAL_RECORDS),
+                                        situational_out, quiet=True)
+            if raw_out:
+                save_raw_corpus(list(all_paired), raw_out, quiet=True)
             if verbose:
                 print(f"  match {m+1}: collected {len(paired)} pairs "
                       f"(opp={opp_style}, template={_template_name(template)}, "
@@ -1439,7 +1459,7 @@ def build_surrogate(
     return surrogate
 
 
-def save_raw_corpus(data: List[Tuple], path: str) -> None:
+def save_raw_corpus(data: List[Tuple], path: str, quiet: bool = False) -> None:
     """Save the RAW (sensors, intent, reward, event_type, position) pairs.
 
     A fitted table cannot be refitted: the shrinkage means the raw sums are
@@ -1460,7 +1480,8 @@ def save_raw_corpus(data: List[Tuple], path: str) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"pairs": out}, f)
-    print(f"Saved raw corpus ({len(out)} pairs) to {path}")
+    if not quiet:
+        print(f"Saved raw corpus ({len(out)} pairs) to {path}")
 
 
 def load_raw_corpus(path: str) -> List[Tuple]:
@@ -1599,15 +1620,17 @@ def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
     })
 
 
-def save_situational_corpus(records: List[DecisionRecord], path: str) -> int:
+def save_situational_corpus(records: List[DecisionRecord], path: str,
+                            quiet: bool = False) -> int:
     """Write the situational corpus (the sequences the BPTT trains on)."""
     sequences = build_situational_sequences(records)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"sequences": sequences}, f)
     steps = sum(len(s["steps"]) for s in sequences)
-    print(f"Saved situational corpus ({len(sequences)} sequences, "
-          f"{steps} steps) to {path}")
+    if not quiet:
+        print(f"Saved situational corpus ({len(sequences)} sequences, "
+              f"{steps} steps) to {path}")
     return len(sequences)
 
 
@@ -1659,7 +1682,9 @@ if __name__ == "__main__":
         raw = collect_from_matches(n_matches=args.matches, seed=args.seed,
                                    verbose=True, away_styles=styles,
                                    policy=args.policy, explore=args.explore,
-                                   explore_situational=args.explore_situational)
+                                   explore_situational=args.explore_situational,
+                                   situational_out=args.situational_out,
+                                   raw_out=args.raw_out)
         print(f"Total decision->outcome samples: {len(raw)}")
         print(f"Explored (replaced) decisions: {sc_explored()}")
         surrogate = FitnessSurrogate().fit(raw)

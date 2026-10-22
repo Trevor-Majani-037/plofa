@@ -44,6 +44,7 @@ import numpy as np
 from situational_brain import HIDDEN_D, SituationalBrain
 from situational_distill import (
     census_flags, load_sequences, split_sequences, _mix_over,
+    _position_family,
 )
 
 POSITIONS = ["GK", "CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST", "CF"]
@@ -108,9 +109,10 @@ def main() -> int:
         if not os.path.exists(path):
             print(f"{pos:<5} (missing)")
             continue
-        seqs = by_pos.get(pos, [])
+        seqs = by_pos.get(_position_family(pos), [])
         if not seqs:
-            print(f"{pos:<5} (no sequences)")
+            print(f"{pos:<5} (no sequences for family "
+                  f"{_position_family(pos)})")
             continue
         _train, eval_ = split_sequences(seqs, seed=123, holdout=0.2)
         brain = SituationalBrain.load(path)
