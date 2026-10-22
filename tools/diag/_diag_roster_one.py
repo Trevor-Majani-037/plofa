@@ -42,6 +42,11 @@ def main() -> int:
     # Percy) and are NOT in the workbook — the real roster is these eighteen.
     home = sys.argv[3] if len(sys.argv) > 3 else "Natrican"
     away = sys.argv[4] if len(sys.argv) > 4 else "Tryox City"
+    # The KIND of brain the challenger directory holds: "mlp" (the shipped
+    # FootballBrain) or "situational" (the new attention + recurrence +
+    # memory + plan brain).  The router in brain_integration chooses by
+    # the brain's TYPE, so this is all that differs between the arms.
+    brain_kind = sys.argv[5] if len(sys.argv) > 5 else "mlp"
 
     import numpy as np
     from _diag_v7_export_real import run_real_match
@@ -49,7 +54,8 @@ def main() -> int:
     random.seed(seed)
     np.random.seed(seed)
     out = os.path.join(OUT_DIR, f"seed{seed}_{os.path.basename(brains_dir)}")
-    result, bound, _out = run_real_match(brains_dir, home, away, seed, out)
+    result, bound, _out = run_real_match(brains_dir, home, away, seed, out,
+                                         brain_kind=brain_kind)
 
     import glob
     jsons = glob.glob(os.path.join(out, "*.json"))

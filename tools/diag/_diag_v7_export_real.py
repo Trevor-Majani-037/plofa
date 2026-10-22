@@ -38,8 +38,30 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools", "gates"))
 
 
+def _load_brain(path: str, kind: str = "mlp"):
+    """Load a brain of the given KIND.
+
+    ``mlp``
+        the shipped ``FootballBrain`` (the 24-ish dim feedforward net).
+    ``situational``
+        the new ``SituationalBrain`` — attention + recurrence + memory +
+        a plan head.  It is a DIFFERENT CLASS with a different file
+        format, and the router in ``brain_integration`` chooses by the
+        brain's TYPE, so registering one is all it takes to put the
+        situational layer on the pitch.
+    """
+    if kind == "situational":
+        from situational_brain import SituationalBrain
+
+        return SituationalBrain.load(path)
+    from football_brain import FootballBrain
+
+    return FootballBrain.load(path)
+
+
 def run_real_match(brains: str, home: str, away: str, seed: int,
-                   out: str, matchday: int = 3, date_str: str = "2026-09-06"):
+                   out: str, matchday: int = 3, date_str: str = "2026-09-06",
+                   brain_kind: str = "mlp"):
     """A real-roster match with the CHALLENGER bound to the home XI only.
 
     The auto-load stays on the shipped set (so the away side is the control
@@ -104,7 +126,7 @@ def run_real_match(brains: str, home: str, away: str, seed: int,
         path = os.path.join(brains, f"{stem}.json")
         if not os.path.exists(path):
             continue
-        register_brain(p.name, FootballBrain.load(path))
+        register_brain(p.name, _load_brain(path, brain_kind))
         bound += 1
 
     config = MatchConfig(

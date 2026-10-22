@@ -48,10 +48,19 @@ POSITION_BRAIN_MAP = {
 _HEURISTIC_DECIDE = DecisionBrain.decide
 
 
-def register_full_xi(brains_dir: str, starters: List[Any]) -> int:
+def register_full_xi(brains_dir: str, starters: List[Any],
+                     brain_kind: str = "mlp") -> int:
     """Register every position's brain to all matching starters.
 
     Returns number of player-bindings created.
+
+    ``brain_kind``
+        ``"mlp"`` (the default) loads the shipped ``FootballBrain``.  It
+        is the default so the harness of record is byte-identical to
+        what it always was.  ``"situational"`` loads the new
+        ``SituationalBrain`` — a different class with a different file
+        format, which the router in ``brain_integration`` chooses by
+        TYPE, so registering one is all it takes.
     """
     clear_registry()
     bound = 0
@@ -62,14 +71,19 @@ def register_full_xi(brains_dir: str, starters: List[Any]) -> int:
         path = os.path.join(brains_dir, f"{stem}.json")
         if not os.path.exists(path):
             continue
-        brain = FootballBrain.load(path)
+        if brain_kind == "situational":
+            from situational_brain import SituationalBrain
+
+            brain = SituationalBrain.load(path)
+        else:
+            brain = FootballBrain.load(path)
         register_brain(p.name, brain)
         bound += 1
     return bound
 
 
 def _run_neural(brains_dir: str, seed: int, home_style: str, away_style: str,
-                perception: bool = False):
+                perception: bool = False, brain_kind: str = "mlp"):
     # Production default is perception ON (true football), but the
     # gate-of-record compares brain SETS at identical seeds and the
     # heuristic arm has NO perception layer — running neural-with-degraded-
@@ -86,7 +100,8 @@ def _run_neural(brains_dir: str, seed: int, home_style: str, away_style: str,
         set_perception(PerceptionConfig(enabled=False))
     try:
         home_squad, away_squad = match_probe._build_squads("Probe FC", "Rival FC")
-        n_bound = register_full_xi(brains_dir, home_squad["starters"])
+        n_bound = register_full_xi(brains_dir, home_squad["starters"],
+                                   brain_kind=brain_kind)
         config = match_probe.MatchConfig(
             home_team="Probe FC", away_team="Rival FC",
             match_date=date(2026, 9, 6), matchday=3, season="26/27",

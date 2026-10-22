@@ -156,6 +156,10 @@ def load_sequences(path: str) -> List[Sequence]:
         steps = entry["steps"]
         if not steps:
             continue
+        # The corpus does NOT carry the intent: the intent TARGET comes
+        # from the SURROGATE, so that the objective is identical to the
+        # one the MLP brains were distilled against.  A missing key is
+        # therefore normal, not a malformed corpus.
         seq = Sequence(
             tokens=[s["tokens"] for s in steps],
             token_mask=[s["token_mask"] for s in steps],
@@ -163,8 +167,8 @@ def load_sequences(path: str) -> List[Sequence]:
             role=[s["role"] for s in steps],
             memory=[s["memory"] for s in steps],
             plan=[s["plan"] for s in steps],
-            intent=[s["intent"] for s in steps],
-            phase=[s["phase"] for s in steps],
+            intent=[s.get("intent", 0) for s in steps],
+            phase=[s.get("phase", -1) for s in steps],
             position=entry.get("position", ""),
         )
         seq.check()
@@ -277,3 +281,209 @@ def distill_situational(
         "mix": {k: round(v / total, 4) for k, v in sorted(mix.items())},
     }
     return brain, report
+
+
+# ─────────────────────────────────────────────────────────────
+# THE CENSUS RULES — the SAME ones the MLP census uses
+# ─────────────────────────────────────────────────────────────
+#
+# Copied from `_diag_intent_mix_all.py` rather than re-invented, because
+# the rules are the GATE and two gates that drift are one gate:
+#   * fewer than five intents in the mix  -> collapsed
+#   * any single intent over 40%           -> collapsed
+#   * a role-specific action the role should not perform at all
+#     (derived from `role_features.ROLE_ONLY_INTENTS`, NOT hand-written)
+#
+# The role-inappropriate rule was once a hand-written list of positions
+# that "should not shoot" and it flagged the CAM — but the CAM IS the
+# attacking midfielder and `ROLE_ONLY_INTENTS["SHOOT"]` is {ST, AM, WING}.
+# A guard that flags good football gets switched off, and then it flags
+# nothing.
+
+CENSUS_MIN_INTENTS = 5
+CENSUS_MAX_SHARE = 0.40
+CENSUS_ROLE_ACTION_MAX = 0.01
+
+
+def census_flags(position: str, mix: Dict[str, float]) -> List[str]:
+    """The census verdict for one position's intent mix."""
+    from role_features import ROLE_FAMILY, ROLE_ONLY_INTENTS
+
+    flags: List[str] = []
+    if not mix:
+        return [f"{position}: empty mix"]
+    total = max(1e-9, sum(mix.values()))
+    top = max(mix, key=lambda k: mix[k])
+    top_share = mix[top] / total
+    if len(mix) < CENSUS_MIN_INTENTS:
+        flags.append(f"{position}: only {len(mix)} intents")
+    if top_share > CENSUS_MAX_SHARE:
+        flags.append(f"{position}: {top} at {top_share:.0%}")
+    fam = ROLE_FAMILY.get(position.rstrip("0123456789"))
+    for intent, allowed in ROLE_ONLY_INTENTS.items():
+        share = mix.get(intent, 0.0) / total
+        if fam is not None and fam not in allowed and share > CENSUS_ROLE_ACTION_MAX:
+            flags.append(f"{position}: {intent} at {share:.1%} "
+                         f"(a role-inappropriate action)")
+    return flags
+
+
+def split_sequences(seqs: List[Sequence], seed: int = 123,
+                    holdout: float = 0.2) -> Tuple[List[Sequence],
+                                                    List[Sequence]]:
+    """Split sequences into train / held-out, BY SEQUENCE.
+
+    NEVER by step: a step's neighbours are the same possession, so a
+    step-level split leaks the training data into the held-out set and
+    the "generalisation" number becomes a training number with a
+    different name.
+
+    The split is DETERMINISTIC (seeded permutation of the position's own
+    sequence list), so the census probe can reproduce EXACTLY the split
+    the trainer used — and the census therefore reads data the brain
+    has never seen.
+    """
+    if not seqs:
+        return [], []
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(seqs))
+    n_hold = max(1, int(len(seqs) * holdout)) if len(seqs) >= 5 else 0
+    hold_idx = set(int(i) for i in order[:n_hold])
+    train = [s for i, s in enumerate(seqs) if i not in hold_idx]
+    eval_ = [s for i, s in enumerate(seqs) if i in hold_idx]
+    if not train:
+        train, eval_ = seqs, []
+    return train, eval_
+
+
+def distill_all(
+    positions: List[str],
+    corpus_path: str,
+    surrogate: Any,
+    out_dir: str,
+    epochs: int = 60,
+    learning_rate: float = 0.01,
+    seed: int = 123,
+    holdout: float = 0.2,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """Train every position from the situational corpus, and CENSUS it.
+
+    THE HOLD-OUT IS THE POINT.  The census asks "does this brain collapse?"
+    and a collapse measured on the TRAINING set understates the collapse
+    (a brain that memorised one action has memorised it on the training
+    set too, so the two agree — but a brain that merely FAILED to learn
+    looks different on data it has never seen).  So the sequences are
+    split BY SEQUENCE — never by step, because a step's neighbours are
+    the same possession and would leak — and the census is read on the
+    held-out split.
+    """
+    import os
+
+    all_seqs = load_sequences(corpus_path)
+    by_pos: Dict[str, List[Sequence]] = {}
+    for seq in all_seqs:
+        by_pos.setdefault(seq.position or "", []).append(seq)
+
+    os.makedirs(out_dir, exist_ok=True)
+    reports: Dict[str, Any] = {}
+    flags: List[str] = []
+    for pos in positions:
+        seqs = by_pos.get(pos, [])
+        if not seqs:
+            if verbose:
+                print(f"  {pos}: no sequences in the corpus")
+            continue
+        # Deterministic split BY SEQUENCE (one definition, shared with the
+        # census probe, so the census reads the SAME held-out split).
+        train, eval_ = split_sequences(seqs, seed=seed, holdout=holdout)
+
+        brain, report = distill_situational(
+            pos, surrogate, train, epochs=epochs,
+            learning_rate=learning_rate, seed=seed, verbose=verbose)
+
+        # The census mix: on the HELD-OUT split when there is one.
+        mix = _mix_over(brain, eval_ or train)
+        report["mix_heldout"] = {k: round(v, 4) for k, v in sorted(mix.items())}
+        report["train_sequences"] = len(train)
+        report["eval_sequences"] = len(eval_)
+        pos_flags = census_flags(pos, mix)
+        report["census_flags"] = pos_flags
+        flags.extend(pos_flags)
+
+        brain.meta = dict(brain.meta or {})
+        brain.meta.update({
+            "position": pos,
+            "training_method": "bptt_situational",
+            "corpus": os.path.basename(corpus_path),
+            "epochs": epochs,
+            "seed": seed,
+        })
+        brain.save(os.path.join(out_dir, f"{pos}.json"))
+        reports[pos] = report
+        if verbose:
+            top = sorted(mix.items(), key=lambda kv: -kv[1])[:3]
+            print(f"  {pos}: {len(train)} train / {len(eval_)} held-out  "
+                  f"loss {report['loss_last']:.4f}  agree {report['agreement']:.3f}"
+                  f"  mix " + ", ".join(f"{k} {v:.0%}" for k, v in top))
+            if pos_flags:
+                print(f"      CENSUS: {'; '.join(pos_flags)}")
+
+    summary = {"reports": reports, "flags": flags, "out_dir": out_dir}
+    with open(os.path.join(out_dir, "_distill_report.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+    if verbose:
+        print()
+        if flags:
+            print("CENSUS FLAGGED:")
+            for f in flags:
+                print(f"    {f}")
+        else:
+            print("CENSUS PASSES: every position uses >4 intents, no action "
+                  "over 40%, and no role-specific action out of role.")
+    return summary
+
+
+def _mix_over(brain: Any, sequences: List[Sequence]) -> Dict[str, float]:
+    """The intent mix over a set of sequences."""
+    labels = [p.value for p in PlayerIntent]
+    counts: Dict[str, int] = {}
+    for seq in sequences:
+        logits, _pl, _h, _c = brain.forward_sequence(
+            seq.tokens, seq.token_mask, seq.state, seq.role, seq.memory,
+            seq.plan, np.zeros(HIDDEN_D))
+        for idx in logits.argmax(axis=1):
+            name = labels[int(idx)]
+            counts[name] = counts.get(name, 0) + 1
+    total = max(1, sum(counts.values()))
+    return {k: v / total for k, v in counts.items()}
+
+
+if __name__ == "__main__":
+    import argparse
+
+    p = argparse.ArgumentParser(description="Train the situational brains by "
+                                           "BPTT and census them.")
+    p.add_argument("--corpus", required=True,
+                   help="the situational corpus (--situational-out)")
+    p.add_argument("--surrogate", required=True,
+                   help="the FITTED surrogate the intent targets come from")
+    p.add_argument("--out", default="brains_v8")
+    p.add_argument("--positions", default=None)
+    p.add_argument("--epochs", type=int, default=60)
+    p.add_argument("--learning-rate", type=float, default=0.01)
+    p.add_argument("--seed", type=int, default=123)
+    p.add_argument("--holdout", type=float, default=0.2)
+    A = p.parse_args()
+
+    from critic_surrogate import load_any_surrogate
+
+    sur = load_any_surrogate(A.surrogate)
+    positions = ([s.strip().upper() for s in A.positions.split(",")]
+                 if A.positions else
+                 ["GK", "CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW",
+                  "ST", "CF"])
+    distill_all(positions, A.corpus, sur, A.out, epochs=A.epochs,
+                learning_rate=A.learning_rate, seed=A.seed,
+                holdout=A.holdout, verbose=True)

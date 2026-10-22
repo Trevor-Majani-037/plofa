@@ -154,7 +154,8 @@ def _shape(result, home: str) -> dict:
 
 
 def run_arm(brains_dir: str, n_matches: int, seed: int,
-            home_style: str, away_style: str, perception: bool = False) -> dict:
+            home_style: str, away_style: str, perception: bool = False,
+            brain_kind: str = "mlp") -> dict:
     goals = 0
     poss = []
     scores = []
@@ -170,7 +171,8 @@ def run_arm(brains_dir: str, n_matches: int, seed: int,
         s = seed + m * 100
         random.seed(s)          # identical stream to the harness of record
         result, _fitness = _run_neural(brains_dir, s, home_style, away_style,
-                                       perception=perception)
+                                       perception=perception,
+                                       brain_kind=brain_kind)
         home = result.config.home_team
         goals += result.home_goals
         poss.append(result.home_possession_pct)
