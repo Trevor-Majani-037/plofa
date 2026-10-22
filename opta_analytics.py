@@ -209,6 +209,11 @@ class OptaAnalytics:
         # a consumer can never mistake an authored value for an observation.
         self._measured_s_total: Dict[str, float] = {}
         self._available_s_total: Dict[str, float] = {}
+        # Seconds the two measurement instruments DOUBLE-BOOKED in the same
+        # minute (shape integrator + possession trace). Published as
+        # `activity_overlap_s`: a scaled value must never look like an
+        # observation.
+        self._overlap_s_total: Dict[str, float] = {}
         self._physics_stats: Dict[str, Dict] = {}     # physics-derived distance/sprint data
 
         # Per-minute team position index (for opponent-geometry on each event)
@@ -526,19 +531,28 @@ class OptaAnalytics:
         return stand, walk, jog, run, sprint
 
     def _compute_activity(self):
-        """
-        Baseline activity profile + real-motion perturbation.
+        """Activity seconds and distance: MEASURED first, template only for
+        the seconds no instrument watched.
 
-        BASE_MINUTE_ACTIVITY scaled by DNA work_rate is the PRIMARY distance
-        and speed-band signal — it was calibrated to realistic per-minute
-        totals (9–14 km/90 for outfield players).
+        Per minute and per player:
+          - the 10 Hz shape integrator bands every off-ball tick into the five
+            Di Salvo bands (`position_engine.ACTIVITY_BAND_EDGES`), including
+            ticks where the player stands still (`moved == 0` is standing, not
+            absence — see `MatchEngine._record_offball_distance`);
+          - the possession episode trace contributes its own measured bands;
+          - the two OVERLAP in time, so their sum is scaled back into the
+            minute and the correction is published as `activity_overlap_s`;
+          - `BASE_MINUTE_ACTIVITY` (a per-position table scaled by DNA
+            `work_rate`) supplies ONLY the shape of the seconds nobody watched
+            (`uncovered_s`) — a player on the ball all minute is not stepped.
+            Telemetry (`touches`, `peak_touch_jump`) may shape that residue
+            only; a measured second is a fact and is never overwritten.
 
-        Real telemetry from position_engine is used as a PERTURBATION on top:
-          - `peak_touch_jump` >= 20m  -> unambiguous sprint burst
-          - `touches` > 0             -> some of the minute was ball-involved
-          - `distance_total` vs baseline -> shift standing/walking into
-            running/sprinting when the engine clearly moved this player more
-            than the authored template predicts.
+        `distance_covered` is the measured metres plus a template budget for
+        the unwatched seconds — never a full-match template with a correction
+        bolted on. It used to be exactly that, and the table had to invent its
+        16–83% per-position standing share because standing time was not
+        measurable at all.
         """
         activity: Dict[str, Dict] = {}
         distances: Dict[str, float] = {}
@@ -546,6 +560,7 @@ class OptaAnalytics:
         table: List[Dict] = []
         measured_s_total = self._measured_s_total
         available_s_total = self._available_s_total
+        overlap_total_s = self._overlap_s_total
 
         SPRINT_JUMP_THRESHOLD = 20.0
         RUN_JUMP_THRESHOLD = 12.0
@@ -563,14 +578,9 @@ class OptaAnalytics:
                     physics_sprints = row.get("physics_sprint_count", 0.0)
                     physics_high_sprints = row.get("physics_high_speed_sprint_count", 0.0)
                     physics_top_speed = row.get("physics_top_speed_mps", 0.0)
-                    # Seconds for which we hold REAL physics, from the same
-                    # accumulator that produced physics_dist. Needed because
-                    # the trace only covers the action windows, so comparing
-                    # its distance against a whole-minute baseline without
-                    # dividing out the time is not like-for-like.
-                    traced_s = (row.get("physics_walk_time_s", 0.0)
-                                + row.get("physics_jog_time_s", 0.0)
-                                + row.get("physics_sprint_time_s", 0.0))
+                    # NOTE: a `traced_s` local used to sit here, summing only
+                    # walk+jog+sprint. It was assigned and never read -- dead
+                    # code that looked like the coverage calculation. Removed.
 
                     measured_s = {
                         "standing": row.get("physics_standing_time_s", 0.0),
@@ -580,6 +590,30 @@ class OptaAnalytics:
                         "sprinting": row.get("physics_sprint_time_s", 0.0),
                     }
                     measured_total_s = sum(measured_s.values())
+
+                    # ── A MINUTE HAS SIXTY SECONDS ────────────────────────
+                    # TWO instruments write the same minute: the 10 Hz shape
+                    # integrator (every off-ball tick) and the possession
+                    # episode trace (the race movement inside an episode).
+                    # They OVERLAP in time, and the row carries their sum, so
+                    # a player could be published with more seconds than the
+                    # match contains -- measured, whole-match totals reached
+                    # 6,195 s against 5,820 s of clock (106%), and the
+                    # per-player `activity_measured_pct` could exceed 100.
+                    # Time is a union, not a sum. Tick-level overlap cannot be
+                    # recovered from the row, so the merged bands are scaled
+                    # back into the minute, which preserves their ratios and
+                    # makes the total honest. The size of the correction is
+                    # published as `activity_overlap_s` so nobody has to guess
+                    # whether a figure was scaled.
+                    overlap_s = max(0.0, measured_total_s - 60.0)
+                    if overlap_s > 0.0:
+                        _scale = 60.0 / measured_total_s
+                        for _b in ACTIVITY_BUCKETS:
+                            measured_s[_b] *= _scale
+                        measured_total_s = 60.0
+                    overlap_total_s[name] = overlap_total_s.get(name, 0.0) + overlap_s
+
                     uncovered_s = max(0.0, 60.0 - measured_total_s)
 
                     stand, walk, jog, run, sprint = self._activity_profile(name)
@@ -629,19 +663,35 @@ class OptaAnalytics:
                             tpl_s["sprinting"] = min(tpl_s["sprinting"],
                                                      sprint_secs * uncovered_s / 60.0)
                             high_sprint_secs = min(6.0, physics_high_sprints * 6.0)
-                            tpl_s["running"] = min(tpl_s["running"],
-                                                   tpl_s["running"] + high_sprint_secs * uncovered_s / 60.0)
+                            # `min(x, x + positive)` is a NO-OP: it is
+                            # `x`. These two lines read as telemetry shaping
+                            # and could never have fired; they now add, and
+                            # the redistribution below keeps the residue at
+                            # exactly `uncovered_s`.
+                            tpl_s["running"] += high_sprint_secs * uncovered_s / 60.0
                             tpl_s["running"] = max(tpl_s["running"],
                                                    tpl_s["sprinting"] * 0.5)
                         if touches > 0:
-                            tpl_s["jogging"] = min(tpl_s["jogging"],
-                                                   tpl_s["jogging"] + touches * 0.3 * uncovered_s / 60.0)
-                            tpl_s["running"] = min(tpl_s["running"],
-                                                   tpl_s["running"] + touches * 0.5 * uncovered_s / 60.0)
+                            tpl_s["jogging"] += touches * 0.3 * uncovered_s / 60.0
+                            tpl_s["running"] += touches * 0.5 * uncovered_s / 60.0
                         if peak_jump >= SPRINT_JUMP_THRESHOLD:
                             tpl_s["sprinting"] += (2.0 + (peak_jump - SPRINT_JUMP_THRESHOLD) * 0.15) * uncovered_s / 60.0
                         elif peak_jump >= RUN_JUMP_THRESHOLD:
                             tpl_s["running"] += (2.0 + (peak_jump - RUN_JUMP_THRESHOLD) * 0.1) * uncovered_s / 60.0
+
+                    # The residue is a SHAPE for exactly `uncovered_s` seconds.
+                    # The telemetry above can ADD to individual bands (and
+                    # `running = max(running, sprinting*0.5)` can too), which
+                    # lets the split sum past the gap it is supposed to fill:
+                    # measured, that pushed whole-match totals ~20-70 s above
+                    # the match clock even after the overlap cap. Redistribute
+                    # instead of adding, so the residue can never create time.
+                    _tpl_sum = sum(tpl_s.values())
+                    if uncovered_s > 0.0 and _tpl_sum > 0.0:
+                        _k = uncovered_s / _tpl_sum
+                        if abs(_k - 1.0) > 1e-12:
+                            for _b in ACTIVITY_BUCKETS:
+                                tpl_s[_b] *= _k
 
                     secs = {b: measured_s[b] + tpl_s[b] for b in ACTIVITY_BUCKETS}
                     template_dist = sum(tpl_s[b] * SPEEDS[b] for b in ACTIVITY_BUCKETS)
@@ -905,6 +955,12 @@ class OptaAnalytics:
                     "measured" if self._measured_s_total.get(name, 0.0)
                     >= 0.995 * self._available_s_total.get(name, 1.0)
                     else "measured + position template for unobserved seconds"),
+                # Seconds the shape integrator and the possession trace both
+                # booked in the same minute. Non-zero means the five bands
+                # above were scaled back into the minute (time is a union,
+                # not a sum). Zero means nothing was altered.
+                "activity_overlap_s": round(
+                    self._overlap_s_total.get(name, 0.0), 1),
                 "runs": runs_val,
                 "sprints": sprints,
                 "high_speed_sprints": high_speed_sprints,

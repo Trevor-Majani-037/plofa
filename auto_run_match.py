@@ -86,17 +86,17 @@ class _BuiltSquad(TypedDict):
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 10, 11) # Year, Month, Day
-MATCHDAY     = 6 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 10, 18) # Year, Month, Day
+MATCHDAY     = 7 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "Natrican"
-AWAY_TEAM  = "Ganester"
+HOME_TEAM  = "Oxton"
+AWAY_TEAM  = "Rodice"
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = "Natrican Stadium"
+VENUE     = "Oxland City"
 CAPACITY  = 45_000
 
 # ── Referee (auto-assigned by default) ──────────────────────────────
@@ -277,7 +277,7 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#002244",
         "style":         TeamStyle.ATTACKING,
         "playing_style": PlayingStyle.DIRECT,
-        "intensity":     Intensity.MEDIUM,
+        "intensity":     Intensity.VERY_HIGH,
     },
     "Lige-8": {
         "home_color": "#061FBEE6",
@@ -296,9 +296,9 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
     "Play City": {
         "home_color": "#FDBA6C",
         "away_color": "#FFFFFF",
-        "style":         TeamStyle.PARK_THE_BUS,
-        "playing_style": PlayingStyle.COUNTER,
-        "intensity":     Intensity.MEDIUM,
+        "style":         TeamStyle.TIKI_TAKA,
+        "playing_style": PlayingStyle.HIGH_PRESS,
+        "intensity":     Intensity.HIGH,
     },
     "Red Wolves": {
         "home_color": "#CC0000",
@@ -354,7 +354,7 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#FFFFFF",
         "style":         TeamStyle.WING_PLAY,
         "playing_style": PlayingStyle.COUNTER,
-        "intensity":     Intensity.LOW,
+        "intensity":     Intensity.HIGH,
     },
     "Avada Zenith":{
         "home_color": "#FFFFFF",
@@ -368,7 +368,7 @@ TEAM_CATALOG: dict[str, _TeamEntry] = {
         "away_color": "#0F22CD",
         "style":         TeamStyle.ROUTE_ONE,
         "playing_style": PlayingStyle.PATIENT_BUILD_UP,
-        "intensity":     Intensity.LOW,
+        "intensity":     Intensity.HIGH,
     },
     "Rodice": {
         "home_color": "#0B3E0C",

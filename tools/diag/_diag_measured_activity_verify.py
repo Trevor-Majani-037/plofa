@@ -22,6 +22,7 @@ import random
 import sys
 from collections import defaultdict
 from datetime import date
+from typing import Dict, List
 
 sys.path.insert(0, ".")
 
@@ -106,18 +107,37 @@ print("=" * 92)
 print("1. MEASURED COVERAGE  (was 42.1% mean before the standing-time fix)")
 print("=" * 92)
 print(f"{'player':<20}{'pos':<5}{'measured s':>12}{'of':>8}{'coverage':>10}"
-      f"{'published pct':>15}")
+      f"{'published pct':>15}{'overlap s':>11}{'published s':>13}")
 cors = []
 outf = []
 for n in sorted(analytics.player_data,
                 key=lambda k: -analytics.player_data[k]["distance_covered"]):
     ms = sum(raw[n].values())
-    cov = ms / available
+    pd_ = analytics.player_data[n]
+    # NET coverage: the raw sum can exceed the clock because the integrator and
+    # the trace overlap in time. The overlap is subtracted here so the column
+    # says how much of the match is measured, not how many instrument-seconds
+    # were produced. (Before this, the table printed 102.3% for one player and
+    # it read as a bug rather than as the overlap it is.)
+    cov = (ms - pd_.get("activity_overlap_s", 0.0)) / available
     if pos.get(n) != "GK":
         cors.append(cov)
         outf.append(n)
     print(f"{n:<20}{pos.get(n,'?'):<5}{ms:>12.0f}{available:>8.0f}"
-          f"{cov*100:>9.1f}%{analytics.player_data[n]['activity_measured_pct']:>14.1f}%")
+          f"{cov*100:>9.1f}%{pd_['activity_measured_pct']:>14.1f}%"
+          f"{pd_.get('activity_overlap_s', 0.0):>11.0f}"
+          f"{sum(analytics._activity.get(n, {}).values()):>13.0f}")
+
+# G2: A MINUTE HAS SIXTY SECONDS. Once the integrator and the trace are
+# merged and scaled, no player may be published with more activity time than
+# the match contains.
+_over = [(n, sum(analytics._activity.get(n, {}).values()), available)
+         for n in outf
+         if sum(analytics._activity.get(n, {}).values()) > available + 1.0]
+if _over:
+    raise SystemExit(f"GATE G2 FAILED: published seconds exceed the clock: "
+                     f"{_over[:3]}")
+print(f"  GATE G2 PASS: no outfielder is published above {available:.0f} s")
 print("-" * 92)
 mean_cov = sum(cors) / len(cors)
 print(f"{'OUTFIELDER MEAN':<25}{'':>12}{'':>8}{mean_cov*100:>9.1f}%")
@@ -132,17 +152,24 @@ print()
 print("=" * 92)
 print("2. PUBLISHED SECONDS vs RAW MEASURED SECONDS  (whole match)")
 print("=" * 92)
+print("  (raw seconds are scaled back into each minute when the integrator and")
+print("   the possession trace double-booked it -- `overlap s` above.)")
 print(f"{'player':<20}{'band':<11}{'measured s':>12}{'published s':>13}"
       f"{'template s':>12}{'share measured':>16}")
 for n in outf[:4]:
     pub = analytics._activity.get(n, {})
+    ov = analytics.player_data[n].get("activity_overlap_s", 0.0)
     for band, _ in BANDS:
-        tpl = pub.get(band, 0.0) - raw[n][band]
-        share = raw[n][band] / max(pub.get(band, 0.0), 1e-9) * 100
-        print(f"{n:<20}{band:<11}{raw[n][band]:>12.0f}{pub.get(band,0.0):>13.0f}"
+        # The overlap cannot be attributed per band; scale it to the band's
+        # share of the measured total so the comparison is like-for-like.
+        _ovb = ov * (raw[n][band] / max(sum(raw[n].values()), 1e-9))
+        meas_b = max(0.0, raw[n][band] - _ovb)
+        tpl = pub.get(band, 0.0) - meas_b
+        share = meas_b / max(pub.get(band, 0.0), 1e-9) * 100
+        print(f"{n:<20}{band:<11}{meas_b:>12.0f}{pub.get(band,0.0):>13.0f}"
               f"{tpl:>12.0f}{share:>15.0f}%")
-    print(f"{'':<20}{'SUM':<11}{sum(raw[n].values()):>12.0f}"
-          f"{sum(pub.values()):>13.0f}{sum(pub.values())-sum(raw[n].values()):>12.0f}")
+    print(f"{'':<20}{'SUM':<11}{sum(raw[n].values())-ov:>12.0f}"
+          f"{sum(pub.values()):>13.0f}{sum(pub.values())-sum(raw[n].values())+ov:>12.0f}")
     print()
 
 print("=" * 92)
@@ -166,3 +193,40 @@ print()
 print("  Before this change the published distance was 100% template plus a")
 print("  fraction of the trace; the template share was effectively the whole")
 print("  number. It is now the residue the integrator did not watch.")
+
+# ── PER-POSITION SUMMARY + CACHE ──────────────────────────────────────
+# Written to disk so a re-report costs nothing: everything above is a single
+# match, and a percentile/per-position question should not need a second one.
+per_pos: Dict[str, Dict[str, List[float]]] = {}
+for n in outf:
+    p_ = pos.get(n, "?")
+    d = analytics.player_data[n]
+    b = analytics._activity.get(n, {})
+    tot = max(sum(b.values()), 1e-9)
+    acc = per_pos.setdefault(p_, {"km": [], "stand": [], "meas": []})
+    acc["km"].append(d["distance_covered"])
+    acc["stand"].append(100.0 * b.get("standing", 0.0) / tot)
+    acc["meas"].append(d["activity_measured_pct"])
+
+print()
+print("=" * 92)
+print("4. PER POSITION (outfielders who played)")
+print("=" * 92)
+print(f"{'pos':<6}{'n':>4}{'km mean':>10}{'km min':>8}{'km max':>8}"
+      f"{'standing %':>12}{'measured %':>12}")
+for p_ in ("CB", "LB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST", "CF"):
+    acc = per_pos.get(p_)
+    if not acc:
+        continue
+    print(f"{p_:<6}{len(acc['km']):>4}{sum(acc['km'])/len(acc['km']):>10.2f}"
+          f"{min(acc['km']):>8.2f}{max(acc['km']):>8.2f}"
+          f"{sum(acc['stand'])/len(acc['stand']):>11.1f}%"
+          f"{sum(acc['meas'])/len(acc['meas']):>11.1f}%")
+
+import json
+with open("_diag_measured_verify.json", "w", encoding="utf-8") as fh:
+    json.dump({"per_position": per_pos,
+               "players": {n: {"position": pos.get(n, "?"),
+                               **analytics.player_data[n]} for n in outf}},
+              fh, indent=1, default=str)
+print("\n  cached -> _diag_measured_verify.json (do not commit)")

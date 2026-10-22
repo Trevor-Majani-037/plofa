@@ -484,3 +484,89 @@ def test_real_match_export_is_valid():
     for key in ("run_type_observed", "run_mode_intended"):
         assert doc["profiles"][key]["totals"], f"{key} empty"
     assert doc["schema"]["event_type"], "the dictionary must be populated"
+
+
+# ── target_authority: who named the RECEIVER (2026-10-19) ────────────────
+# `decision_authority` has always answered "who chose the action". The
+# receiver on an ordinary pass is named by the structure ~98% of the time, and
+# before this field the export could not say so at all. These three tests are
+# synthetic and fast on purpose: the property is about the FORMAT, not about
+# what a particular match happened to do.
+
+def test_target_authority_is_a_separate_question_from_decision_authority():
+    md = {"decision_authority": "player_policy", "target_authority": "matrix"}
+    d = exp([ev(EventType.PASS, x=50, y=34, ex=55, ey=34, md=md)])
+    dec = d["events"][0]["decision"]
+    assert dec["authority"] == "player_policy"
+    assert dec["target_authority"] == "matrix"
+
+
+def test_target_authority_enum_covers_everything_the_engine_emits():
+    """Same rule as the decision_authority guard: an undocumented value is a
+    consumer reading a word the file's own dictionary does not contain."""
+    labels = ("matrix", "phase", "wide_combo", "gk_distribution",
+              "policy", "policy_deference", "heuristic", "soul", "unknown")
+    d = exp([ev(EventType.PASS, x=50, y=34, ex=55, ey=34,
+                md={"target_authority": lab}) for lab in labels])
+    documented = set(d["schema"]["target_authority"])
+    emitted = {e["decision"]["target_authority"] for e in d["events"]
+               if e.get("decision", {}).get("target_authority")}
+    assert emitted == set(labels), "the fixture must exercise every label"
+    assert not (emitted - documented), (
+        f"undocumented target_authority values: {sorted(emitted - documented)}")
+
+
+def test_target_deference_distribution_reaches_the_index():
+    """The margin is meant to be set from data, so one match must yield the
+    distribution through the ordinary export path, not through a probe.
+
+    The two firing MODES are reported apart on purpose. MEASURED 2026-10-19 on
+    the first live run: the pooled `fired` set was dominated by the
+    `matrix_silent` mode (where the margin is not applied at all), so a pooled
+    percentile described neither set. A silent row and a comparable row that
+    both carry `gap_frac = 0.0` must land in different buckets -- that is the
+    whole reason the split exists.
+    """
+    mds = [
+        {"target_authority": "policy_deference",
+         "target_deference": {"fired": True, "applied": True, "gap_frac": -0.01,
+                              "matrix_silent": False}},
+        {"target_authority": "matrix",
+         "target_deference": {"fired": False, "applied": False, "gap_frac": 0.30,
+                              "matrix_silent": False}},
+        {"target_authority": "matrix",
+         "target_deference": {"fired": True, "applied": False, "gap_frac": 0.02,
+                              "matrix_silent": False}},
+        # Same gap_frac as row 4 below would be if it were a tie -- but this one
+        # is SILENCE, and the index must not pool it with the comparison.
+        {"target_authority": "policy_deference",
+         "target_deference": {"fired": True, "applied": True, "gap_frac": 0.0,
+                              "matrix_silent": True,
+                              "matrix_reason": "no_clear_option"}},
+    ]
+    d = exp([ev(EventType.PASS, x=50, y=34, ex=55, ey=34, md=m) for m in mds])
+    agg = d["index"]["target_deference"]
+    assert agg["n_inspected"] == 4
+    assert agg["n_fired"] == 3
+    assert agg["n_applied"] == 2
+    assert agg["n_matrix_silent"] == 1
+    assert agg["n_comparable"] == 3
+    assert agg["silent"]["n"] == 1 and agg["silent"]["p50"] == 0.0
+    assert agg["comparable"]["n"] == 3
+    assert set(agg) >= {"gap_frac_p10", "gap_frac_p50", "gap_frac_p90",
+                        "n_matrix_silent", "n_comparable", "silent",
+                        "comparable"}
+    # The per-event payload must carry both new keys through, or the index could
+    # never have counted them.
+    silent_ev = d["events"][3]["decision"]["target_deference"]
+    assert silent_ev["matrix_silent"] is True
+    assert silent_ev["matrix_reason"] == "no_clear_option"
+
+
+def test_the_deference_aggregate_is_absent_when_the_experiment_is_off():
+    """Absence must be a fact, not a zero: a consumer must be able to tell
+    'the experiment was off' from 'it fired zero times'."""
+    d = exp([ev(EventType.PASS, x=50, y=34, ex=55, ey=34,
+                md={"target_authority": "matrix"})])
+    assert "target_deference" not in d["index"]
+    assert "target_authority" in d["events"][0]["decision"]

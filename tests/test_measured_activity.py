@@ -30,6 +30,8 @@ WHY A NEW FILE. `test_opta_analytics_runs_sprints.py` is green about
 values ACCUMULATE, never that the magnitude is a measurement. A suite that is
 green and silent about a feature is not evidence about it.
 """
+import math
+import random
 import unittest
 from types import SimpleNamespace
 
@@ -252,6 +254,201 @@ class PublishedSecondsAreMeasuredTests(unittest.TestCase):
         pd = a.player_data["P"]
         self.assertEqual(pd["activity_measured_pct"], 100.0)
         self.assertEqual(pd["activity_source"], "measured")
+
+
+class BlockLineIsHeldNotFrozenTests(unittest.TestCase):
+    """A defender holding a block SHUFFLES along his line; he does not freeze.
+
+    Before 2026-10-19 the arrived branch set `moved = 0.0` (after computing a
+    step it then discarded), so 98% of dead-phase block ticks were booked as
+    standing time: 234,157 of 239,409. These tests pin the replacement, and
+    the one property the first replacement got wrong: chasing a circling
+    point at a pace above the cap made the man CRAWL whenever the point swung
+    back, which measures as standing even though he is moving.
+    """
+
+    DT = 0.1
+    BUDGET = 1.5 * 0.55 * 0.1       # a CM's per-tick cap, 0.0825 m
+
+    def _sweep(self, n=400, cy=34.0, ty=34.0, tx=50.0, cx=50.0,
+               radius=1.0, rate=1.0, budget=None):
+        b = self.BUDGET if budget is None else budget
+        rows = []
+        for i in range(n):
+            nx, ny, moved = MatchEngine._block_shuffle_target(
+                cx, cy, tx, ty, i * rate * self.DT, rate, radius, b)
+            rows.append((nx, ny, moved))
+            cx, cy = nx, ny
+        return rows
+
+    def test_the_shuffle_holds_a_constant_pace_instead_of_crawling(self):
+        wave = 4.0 * 1.0 * 1.0 / (2.0 * math.pi) * self.DT      # 0.0637 m
+        moves = [m for _, _, m in self._sweep()]
+        self.assertGreater(sum(moves), 10.0, "the shuffle never moved at all")
+        # The circle pursuit this replaced fell to 0.1-0.5 m/s on about a
+        # QUARTER of ticks. A triangle wave is slow only on the reversal tick
+        # itself, once per half period (pi/rate = 3.1 s = ~31 ticks).
+        slow = [m for m in moves if m < wave - 1e-9]
+        self.assertLess(len(slow) / len(moves), 0.05,
+                        f"{len(slow)}/{len(moves)} ticks crawl — the wave is "
+                        f"degenerating into a pursuit")
+        # A slow tick is a REVERSAL, not a freeze: it is isolated (never two
+        # in a row) and it is a negligible share of the ground covered.
+        idx = [i for i, m in enumerate(moves) if m < wave - 1e-9]
+        for a, b in zip(idx, idx[1:]):
+            self.assertGreater(b - a, 1, "two consecutive slow ticks = a stall")
+        self.assertLess(sum(slow) / sum(moves), 0.02)
+        # Once on the wave, the pace is EXACTLY the wave's pace (the early
+        # ticks run at the cap while catching up to it). Reversals excluded:
+        # they are the isolated ticks just accounted for.
+        steady = [m for m in moves[120:] if m >= wave - 1e-9]
+        self.assertGreater(len(steady), 200)
+        for m in steady:
+            self.assertAlmostEqual(m, wave, places=9)
+        self.assertGreater(wave / self.DT, PE.ACTIVITY_BAND_EDGES[0],
+                           "the pace must be above the standing edge")
+
+    def test_the_shuffle_stays_inside_the_radius_of_the_slot(self):
+        for _, ny, _ in self._sweep():
+            self.assertLessEqual(abs(ny - 34.0), 1.0 + 1e-9)
+
+    def test_depth_is_only_closed_and_the_step_is_capped(self):
+        # 10 m away in x, settled in y: every step is within the cap and the
+        # depth error shrinks monotonically.
+        rows = self._sweep(n=400, cx=40.0, tx=50.0)
+        for _, _, m in rows:
+            self.assertLessEqual(m, self.BUDGET + 1e-9)
+        xs = [x for x, _, _ in rows]
+        self.assertEqual(xs, sorted(xs), "the depth closure went backwards")
+        # the y shuffle always takes priority; the remainder closes the gap
+        self.assertLess(50.0 - xs[-1], 5.0, "depth error is not being closed")
+        self.assertLess(50.0 - xs[-1], 50.0 - xs[0])
+
+    def test_a_tight_cap_is_respected(self):
+        for _, _, m in self._sweep(budget=0.01):
+            self.assertLessEqual(m, 0.01 + 1e-9)
+
+    def test_the_shuffle_consumes_no_global_randomness(self):
+        state = random.getstate()
+        self._sweep(n=50)
+        self.assertEqual(random.getstate(), state)
+
+    def test_the_live_block_branch_does_not_hard_zero_the_step(self):
+        """Structural: the arrived branch must BOOK movement. A behavioural
+        test of the helper cannot see a re-introduced `moved = 0.0` at the
+        call site."""
+        import inspect
+        src = inspect.getsource(MatchEngine._offball_move_player)
+        self.assertIn("_block_shuffle_target", src,
+                      "the block branch no longer calls the shuffle helper")
+        # the LAST `if _in_block:` is the arrived/shuffle branch (an earlier
+        # one gates the move toward the slot)
+        block = src.rsplit("if _in_block:", 1)[1]
+        block = block.split("\n            else:", 1)[0]
+        self.assertIn("_block_shuffle_target", block,
+                      "anchor is stale — the shuffle call moved out of the "
+                      "block branch")
+        self.assertNotIn("moved = 0.0", block,
+                         "the block branch freezes the defender again")
+
+
+class DeadPhaseStillStepsTheOnBallManTests(unittest.TestCase):
+    """The sticky per-minute on-ball set is right for the LIVE window (the
+    possession trace covers it) and wrong for the DEAD window (nothing does).
+    Excluding an on-ball player there froze him for the rest of the minute:
+    measured, 27,773 of a CM's 36,561 excluded ticks were dead-phase."""
+
+    def _calls(self):
+        import ast
+        import inspect
+        import textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(MatchEngine)))
+        out = {}
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "_offball_move_player"):
+                    inc = next((k for k in node.keywords
+                                if k.arg == "include_on_ball"), None)
+                    if inc is None:
+                        val = None
+                    elif isinstance(inc.value, ast.Constant):
+                        val = inc.value.value
+                    elif (isinstance(inc.value, ast.Attribute)
+                          and inc.value.attr == "_DEAD_TIME_ON_BALL"):
+                        val = "flag"
+                    else:
+                        val = "expr"
+                    out.setdefault(fn.name, []).append(val)
+        return out
+
+    def test_the_flag_exists_and_defaults_off(self):
+        import inspect
+        sig = inspect.signature(MatchEngine._offball_move_player)
+        self.assertIn("include_on_ball", sig.parameters)
+        self.assertIs(sig.parameters["include_on_ball"].default, False)
+
+    def test_the_dead_phase_opts_in_and_the_live_phase_does_not(self):
+        calls = self._calls()
+        self.assertIn("_continuous_offball_phase", calls,
+                      "anchor is stale — the dead-phase call site moved")
+        self.assertIn("_offball_run", calls,
+                      "anchor is stale — the live call site moved")
+        self.assertTrue(all(v in (True, "flag")
+                            for v in calls["_continuous_offball_phase"]),
+                        "the dead phase does not step on-ball players")
+        self.assertTrue(MatchEngine._DEAD_TIME_ON_BALL,
+                        "the dead-phase kill switch is off")
+        self.assertTrue(all(v is None for v in calls["_offball_run"]),
+                        "the live phase must keep excluding on-ball players")
+
+
+class TimeIsAUnionTests(unittest.TestCase):
+    """A minute has sixty seconds. Two instruments write the same minute (the
+    shape integrator and the possession trace) and their time OVERLAPS, so the
+    row's sum is not time. Published, whole-match totals reached 6,195 s
+    against 5,820 s of clock and `activity_measured_pct` could exceed 100."""
+
+    def _frames(self, band_s, dist, n=1, **row_kw):
+        return [{"minute": m, "home": [_row("P", band_s=band_s, dist=dist,
+                                            **row_kw)],
+                 "away": [], "home_goals": 0, "away_goals": 0,
+                 "possession_team": "Home", "phase": "open_play"}
+                for m in range(1, n + 1)]
+
+    def test_overlap_is_scaled_back_into_the_minute(self):
+        # 70 instrument-seconds in a 60 s minute
+        a = _analytics(self._frames((20.0, 20.0, 15.0, 10.0, 5.0), 70.0))
+        act = a._activity["P"]
+        self.assertAlmostEqual(sum(act.values()), 60.0, places=6)
+        self.assertAlmostEqual(a.player_data["P"]["activity_overlap_s"], 10.0,
+                               places=6)
+        # ratios preserved (standing and walking were equal)
+        self.assertAlmostEqual(act["standing"], act["walking"], places=6)
+        self.assertLessEqual(a.player_data["P"]["activity_measured_pct"], 100.0)
+
+    def test_the_residue_cannot_create_time(self):
+        """Telemetry adds to individual residue bands; without redistribution
+        the split could sum past the gap it describes."""
+        a = _analytics(self._frames((5.0, 12.0, 7.0, 4.0, 2.0), 45.0,
+                                    touch_d=45.0, touches=5, top=8.0,
+                                    sprint=2.0, high=2.0))
+        self.assertAlmostEqual(sum(a._activity["P"].values()), 60.0, places=6)
+        rows = self._frames((5.0, 12.0, 7.0, 4.0, 2.0), 45.0, n=3,
+                            touch_d=45.0, touches=5, top=8.0, sprint=2.0,
+                            high=2.0)
+        for r in rows:
+            r["home"][0]["peak_touch_jump"] = 30.0
+        b = _analytics(rows)
+        self.assertAlmostEqual(sum(b._activity["P"].values()), 180.0, places=6)
+
+    def test_no_minute_publishes_more_than_sixty_seconds(self):
+        # the pre-fix shape: 75 s booked by one instrument alone
+        a = _analytics(self._frames((30.0, 20.0, 15.0, 7.0, 3.0), 75.0, n=2))
+        self.assertAlmostEqual(sum(a._activity["P"].values()), 120.0, places=6)
 
 
 if __name__ == "__main__":

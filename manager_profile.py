@@ -183,11 +183,16 @@ MANAGER_OVERRIDES: Dict[str, tuple] = {
     "Telbey":        ("defensive",  "Meso Jones"),
     "Trendboys":     ("direct",     "Lucas Roe"),
     "Tryox City":    ("counter",    "Wehl McKinn"),
+    "Natrican":     ("direct",  "Alrvo Nuese"),
+    "Play City":    ("possession", "Respi Tepiro"),
+    "Red Wolves":   ("attacking", "Zack Loriente"),
+    "Triumpher":    ("attacking", "Garley Smiddos"),
 
     # ── Coaches whose "LIKELY HOOD" == NO → replaced next season ──
     # Natrican (Fabisch Diaz), Play City (Michael Borin),
     # Red Wolves (Zack Loriente), Triumpher (Garley Smiddos) get new/auto.
     "Uditon":        ("possession", "Jovey Leinard"),   # Micha Sunod out → Leinard in
+    "Rodice":        ("gegenpress", "Kasper Lind")
 
     # ── Promoted sides (no 2025/26 coach data) ──
     # Avada Zenith, Ganester, Rodice → auto-generated below.
