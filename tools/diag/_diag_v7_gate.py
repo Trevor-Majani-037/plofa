@@ -268,6 +268,13 @@ def main() -> int:
                         "degree cone, a range limit, positional noise - which "
                         "is exactly the condition under which the v7 striker "
                         "has to read the situation and shoot.")
+    p.add_argument("--brain-kind", choices=("mlp", "situational"), default="mlp",
+                   help="the KIND of brain the directories hold: 'mlp' (the "
+                        "shipped FootballBrain) or 'situational' (the new "
+                        "attention + recurrence + memory + plan brain).  It "
+                        "is a PARAMETER and not a second probe, because a "
+                        "second probe is a second gate, and two gates that "
+                        "drift are one gate.")
     args = p.parse_args()
 
     for d in (args.brains_a, args.brains_b):
@@ -280,10 +287,12 @@ def main() -> int:
         else "  [identity regime - the gate of record]"
 
     a = run_arm(args.brains_a, args.matches, args.seed, args.home_style,
-                args.away_style, perception=perception)
+                args.away_style, perception=perception,
+                brain_kind=args.brain_kind)
     show(f"A = {os.path.basename(args.brains_a)}{tag}", a)
     b = run_arm(args.brains_b, args.matches, args.seed, args.home_style,
-                args.away_style, perception=perception)
+                args.away_style, perception=perception,
+                brain_kind=args.brain_kind)
     show(f"B = {os.path.basename(args.brains_b)}{tag}", b)
 
     print("\n" + "=" * 72)
