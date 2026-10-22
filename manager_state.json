@@ -38,6 +38,11 @@
           5,
           3,
           2.812
+        ],
+        [
+          7,
+          3,
+          2.44
         ]
       ]
     },
@@ -79,6 +84,11 @@
           5,
           1,
           1.972
+        ],
+        [
+          7,
+          3,
+          0.8979999999999999
         ]
       ]
     },
@@ -120,6 +130,11 @@
           5,
           0,
           0.0
+        ],
+        [
+          7,
+          0,
+          0.496
         ]
       ]
     },
@@ -161,6 +176,11 @@
           5,
           3,
           1.8639999999999999
+        ],
+        [
+          7,
+          3,
+          1.414
         ]
       ]
     },
@@ -202,6 +222,11 @@
           5,
           0,
           1.012
+        ],
+        [
+          7,
+          0,
+          0.0
         ]
       ]
     },
@@ -243,6 +268,11 @@
           5,
           0,
           1.786
+        ],
+        [
+          7,
+          3,
+          1.342
         ]
       ]
     },
@@ -284,6 +314,11 @@
           5,
           0,
           1.042
+        ],
+        [
+          7,
+          0,
+          0.658
         ]
       ]
     },
@@ -325,6 +360,11 @@
           5,
           1,
           0.028000000000000136
+        ],
+        [
+          7,
+          3,
+          1.342
         ]
       ]
     },
@@ -366,6 +406,11 @@
           5,
           0,
           0.0
+        ],
+        [
+          7,
+          0,
+          1.7080000000000002
         ]
       ]
     },
@@ -407,6 +452,11 @@
           5,
           1,
           0.0
+        ],
+        [
+          7,
+          0,
+          0.5860000000000001
         ]
       ]
     },
@@ -448,6 +498,11 @@
           5,
           3,
           0.958
+        ],
+        [
+          7,
+          3,
+          0.868
         ]
       ]
     },
@@ -504,17 +559,17 @@
       ]
     },
     "Natrican": {
-      "name": "Tomas Okafor",
+      "name": "Alrvo Nuese",
       "club": "Natrican",
-      "risk_tolerance": 0.794,
+      "risk_tolerance": 0.55,
       "substitution_patience": 0.303,
       "style_bias": 0.668,
-      "rotation_tendency": 0.456,
-      "man_management": 0.397,
-      "prefer_possession": 0.55,
+      "rotation_tendency": 0.4,
+      "man_management": 0.45,
+      "prefer_possession": 0.28,
       "nationality": "Spanish",
-      "tactical_philosophy": "Attacking",
-      "face_pressure": 0.51,
+      "tactical_philosophy": "Direct",
+      "face_pressure": 0.625,
       "matches_under_contract_at": 0,
       "result_history": [
         [
@@ -541,17 +596,22 @@
           5,
           3,
           0.988
+        ],
+        [
+          7,
+          3,
+          1.504
         ]
       ]
     },
     "Triumpher": {
-      "name": "Petr Novak",
+      "name": "Garley Smiddos",
       "club": "Triumpher",
-      "risk_tolerance": 0.651,
+      "risk_tolerance": 0.85,
       "substitution_patience": 0.464,
       "style_bias": 0.748,
-      "rotation_tendency": 0.583,
-      "man_management": 0.309,
+      "rotation_tendency": 0.52,
+      "man_management": 0.48,
       "prefer_possession": 0.55,
       "nationality": "German",
       "tactical_philosophy": "Attacking",
@@ -582,21 +642,26 @@
           5,
           3,
           2.2060000000000004
+        ],
+        [
+          7,
+          0,
+          1.132
         ]
       ]
     },
     "Play City": {
-      "name": "Emil Sato",
+      "name": "Respi Tepiro",
       "club": "Play City",
-      "risk_tolerance": 0.316,
+      "risk_tolerance": 0.45,
       "substitution_patience": 0.249,
       "style_bias": 0.807,
-      "rotation_tendency": 0.273,
-      "man_management": 0.334,
-      "prefer_possession": 0.4,
+      "rotation_tendency": 0.45,
+      "man_management": 0.55,
+      "prefer_possession": 0.8,
       "nationality": "Spanish",
-      "tactical_philosophy": "Defensive",
-      "face_pressure": 0.675,
+      "tactical_philosophy": "Possession",
+      "face_pressure": 0.54,
       "matches_under_contract_at": 0,
       "result_history": [
         [
@@ -623,17 +688,22 @@
           5,
           0,
           0.136
+        ],
+        [
+          7,
+          0,
+          0.658
         ]
       ]
     },
     "Red Wolves": {
-      "name": "Rico Santana",
+      "name": "Zack Loriente",
       "club": "Red Wolves",
-      "risk_tolerance": 0.842,
+      "risk_tolerance": 0.85,
       "substitution_patience": 0.571,
       "style_bias": 0.683,
-      "rotation_tendency": 0.439,
-      "man_management": 0.405,
+      "rotation_tendency": 0.52,
+      "man_management": 0.48,
       "prefer_possession": 0.55,
       "nationality": "French",
       "tactical_philosophy": "Attacking",
@@ -664,6 +734,11 @@
           5,
           3,
           0.3340000000000001
+        ],
+        [
+          7,
+          3,
+          0.2919999999999999
         ]
       ]
     },
@@ -705,6 +780,11 @@
           5,
           0,
           1.666
+        ],
+        [
+          7,
+          0,
+          1.102
         ]
       ]
     },
@@ -746,6 +826,11 @@
           5,
           3,
           0.21399999999999997
+        ],
+        [
+          7,
+          0,
+          0.0
         ]
       ]
     },
@@ -787,6 +872,11 @@
           5,
           1,
           2.056
+        ],
+        [
+          7,
+          3,
+          2.83
         ]
       ]
     }

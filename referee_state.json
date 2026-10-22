@@ -37,7 +37,10 @@
       "teams_seen": {
         "Justice": 2,
         "Ganester": 1,
-        "Seafcea": 1
+        "Avada Zenith": 1,
+        "Club Chovers": 1,
+        "Play City": 1,
+        "Telbey": 1
       },
       "last_matchday": 4
     },
@@ -119,8 +122,9 @@
       ],
       "teams_seen": {
         "Red Wolves": 1,
-        "Club Chovers": 2,
-        "Uditon": 1
+        "Club Chovers": 1,
+        "Uditon": 2,
+        "Triumpher": 1
       },
       "last_matchday": 4
     },
@@ -141,7 +145,9 @@
         "Seafcea": 1,
         "Oxton": 1,
         "Avada Zenith": 1,
-        "Rodice": 1
+        "Rodice": 1,
+        "Trendboys": 1,
+        "Red Wolves": 1
       },
       "last_matchday": 4
     },
@@ -271,7 +277,9 @@
         "Club Chovers": 1,
         "Rodice": 1,
         "Oxton": 1,
-        "Triumpher": 1
+        "Triumpher": 1,
+        "Justice": 1,
+        "Natrican": 1
       },
       "last_matchday": 3
     },
@@ -289,10 +297,11 @@
         3
       ],
       "teams_seen": {
-        "Lige-8": 1,
-        "Red Wolves": 1,
-        "Ganester": 1,
-        "Seafcea": 1
+        "Lige-8": 2,
+        "Ganester": 2,
+        "Seafcea": 1,
+        "Claw": 1,
+        "Tryox City": 1
       },
       "last_matchday": 3
     },
@@ -333,7 +342,9 @@
         "Rock FC": 1,
         "Iron FC": 1,
         "Play City": 1,
-        "Lige-8": 1
+        "Lige-8": 1,
+        "Seafcea": 1,
+        "Pearls": 1
       },
       "last_matchday": 5
     },
@@ -392,18 +403,20 @@
       "experience_years": 13,
       "bias_home": -0.02,
       "bias_away": 0.02,
-      "matches_officiated": 2,
+      "matches_officiated": 3,
       "matchdays_refd": [
         2,
-        5
+        5,
+        7
       ],
       "teams_seen": {
         "Pearls": 1,
         "Tryox City": 1,
-        "Oxton": 1,
-        "Natrican": 1
+        "Oxton": 2,
+        "Natrican": 1,
+        "Rodice": 1
       },
-      "last_matchday": 5
+      "last_matchday": 7
     },
     {
       "name": "Javier Rollan",
