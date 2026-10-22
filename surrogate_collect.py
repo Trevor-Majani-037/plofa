@@ -999,6 +999,7 @@ def collect_from_matches(
     explore_situational: bool = False,
     situational_out: Optional[str] = None,
     raw_out: Optional[str] = None,
+    resume_from: int = 0,
 ) -> List[Tuple[np.ndarray, PlayerIntent, float, str, str]]:
     """Run n real matches with the heuristic brain, collecting training data.
 
@@ -1021,6 +1022,10 @@ def collect_from_matches(
         MATCH rather than at the end.  A collection is 20-30 minutes of
         CPU, and a machine that dies at minute 22 must not cost the
         other 22: the files on disk are always a complete prefix.
+
+    ``resume_from``
+        How many matches are ALREADY on disk.  A crashed run is resumed
+        from there instead of restarted.
     """
     global _COLLECTOR, _EXPLORE_EPS, _EXPLORE_RNG, _EXPLORED
     global _EXPLORE_SITUATIONAL, _SITUATIONAL_RECORDS
@@ -1038,8 +1043,24 @@ def collect_from_matches(
         away_styles = [away_style]
 
     all_paired = []
+    if resume_from and raw_out and os.path.exists(raw_out):
+        # SEED THE RAW PAIRS FROM THE FILE, so the surrogate still sees
+        # every pair of the matches already on disk.
+        try:
+            all_paired.extend(load_raw_corpus(raw_out))
+            if verbose:
+                print(f"  seeded {len(all_paired)} raw pairs from disk")
+        except Exception:
+            pass
     try:
         for m in range(n_matches):
+            if m < resume_from:
+                # ALREADY ON DISK (a crashed run being resumed).  The
+                # decisions are not replayed — only the matches that were
+                # never played are.
+                if verbose:
+                    print(f"  match {m+1}: skipped (already on disk)")
+                continue
             random.seed(seed + m * 1000)
             opp_style = away_styles[m % len(away_styles)]
             template = _COLLECTION_TEMPLATES[m % len(_COLLECTION_TEMPLATES)]
@@ -1084,7 +1105,8 @@ def collect_from_matches(
             # corpus (`tools/diag/_diag_refit.py`).
             if situational_out:
                 save_situational_corpus(list(_SITUATIONAL_RECORDS),
-                                        situational_out, quiet=True)
+                                        situational_out, quiet=True,
+                                        matches_completed=m + 1)
             if raw_out:
                 save_raw_corpus(list(all_paired), raw_out, quiet=True)
             if verbose:
@@ -1621,17 +1643,41 @@ def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
 
 
 def save_situational_corpus(records: List[DecisionRecord], path: str,
-                            quiet: bool = False) -> int:
-    """Write the situational corpus (the sequences the BPTT trains on)."""
+                            quiet: bool = False,
+                            matches_completed: int = 0) -> int:
+    """Write the situational corpus (the sequences the BPTT trains on).
+
+    ``matches_completed`` is written WITH it, so a crashed run can be
+    RESUMED rather than restarted: the next invocation reads the counter
+    and skips the matches already on disk.
+    """
     sequences = build_situational_sequences(records)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"sequences": sequences}, f)
+        json.dump({"matches_completed": int(matches_completed),
+                   "sequences": sequences}, f)
     steps = sum(len(s["steps"]) for s in sequences)
     if not quiet:
         print(f"Saved situational corpus ({len(sequences)} sequences, "
-              f"{steps} steps) to {path}")
+              f"{steps} steps, {matches_completed} matches) to {path}")
     return len(sequences)
+
+
+def completed_matches(path: str) -> int:
+    """How many matches are already in a corpus file (0 if there is none).
+
+    A crashed collection is RESUMED from here: the matches already on
+    disk are skipped and the rest are played.  A run that dies at minute
+    22 must not cost the other 22.
+    """
+    if not path or not os.path.exists(path):
+        return 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return int(data.get("matches_completed", 0))
+    except Exception:
+        return 0
 
 
 if __name__ == "__main__":
@@ -1679,12 +1725,20 @@ if __name__ == "__main__":
 
     styles = [s.strip() for s in args.styles.split(",") if s.strip()] if args.styles else None
     if args.raw_out or args.situational_out:
+        # RESUME: a crashed collection continues from the matches already
+        # on disk rather than paying for them again.  The raw pairs are
+        # seeded from the file as well, so the surrogate still sees every
+        # pair of the finished matches.
+        resume = completed_matches(args.situational_out) if args.situational_out else 0
+        if resume:
+            print(f"RESUMING: {resume} match(es) already on disk")
         raw = collect_from_matches(n_matches=args.matches, seed=args.seed,
                                    verbose=True, away_styles=styles,
                                    policy=args.policy, explore=args.explore,
                                    explore_situational=args.explore_situational,
                                    situational_out=args.situational_out,
-                                   raw_out=args.raw_out)
+                                   raw_out=args.raw_out,
+                                   resume_from=resume)
         print(f"Total decision->outcome samples: {len(raw)}")
         print(f"Explored (replaced) decisions: {sc_explored()}")
         surrogate = FitnessSurrogate().fit(raw)
