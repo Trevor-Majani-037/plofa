@@ -496,5 +496,47 @@ class TheCorpusAndCensusTests(unittest.TestCase):
         self.assertEqual(census_flags("CM", broad), [])
 
 
+class TheTeamKeyTests(unittest.TestCase):
+    """`PlayerProfile` carries the team as `team_name`, NOT `team`.
+
+    Reading `player.team` returns the default `""` and the team is
+    silently lost — which cost the plan block (it was all zeros in every
+    match) and the corpus's team key (70 of 79 sequences came back as
+    the away team).  Two traps, one attribute.
+    """
+
+    def test_the_team_is_read_from_team_name(self):
+        from player_state import player_team
+        from player_dna import SquadBuilder
+        from surrogate_collect import TEMPLATE_BASE
+
+        home = SquadBuilder.build("Probe FC", list(TEMPLATE_BASE), [])
+        away = SquadBuilder.build("Rival FC", list(TEMPLATE_BASE), [])
+        h_cm1 = [p for p in home["starters"] if p.name == "CM1"][0]
+        a_cm1 = [p for p in away["starters"] if p.name == "CM1"][0]
+
+        # The two players share a NAME and are different objects.
+        self.assertEqual(h_cm1.name, a_cm1.name)
+        self.assertIsNot(h_cm1, a_cm1)
+
+        # The attribute the codebase actually has.
+        self.assertTrue(hasattr(h_cm1, "team_name"))
+        self.assertFalse(hasattr(h_cm1, "team"),
+                         "PlayerProfile has no 'team' attribute — reading it "
+                         "returns the default '' and the team is lost")
+
+        # And the helper resolves each one correctly.
+        self.assertEqual(player_team(h_cm1), "Probe FC")
+        self.assertEqual(player_team(a_cm1), "Rival FC")
+
+    def test_a_player_with_no_team_reads_empty(self):
+        from player_state import player_team
+
+        class Bare:
+            pass
+
+        self.assertEqual(player_team(Bare()), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
