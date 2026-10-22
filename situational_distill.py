@@ -245,7 +245,17 @@ def distill_situational(
             logp = _log_softmax(logits)
             plan_logp = _log_softmax(plan_logits)
             nll = -(logp[np.arange(T), seq.intent])
-            pnll = -(plan_logp[np.arange(T), seq.phase])
+            # THE PLAN TARGET MUST BE A REAL CLASS.  A step whose phase
+            # is unknown (-1) is SKIPPED from the plan term, not folded
+            # into the last class: `plan_logp[..., -1]` would be a
+            # perfectly valid index and would teach the head a class
+            # that does not exist.
+            plan_mask = np.asarray(seq.phase) >= 0
+            if plan_mask.any():
+                pnll = -(plan_logp[np.arange(T)[plan_mask],
+                                 np.asarray(seq.phase)[plan_mask]])
+            else:
+                pnll = np.zeros(T)
             total_loss += float((nll + plan_loss_w * pnll).sum())
 
             probs = np.exp(logp)
@@ -255,10 +265,13 @@ def distill_situational(
             dlogits = probs.copy()
             dlogits[np.arange(T), seq.intent] -= 1.0
             dlogits /= T
-            pprobs = np.exp(plan_logp)
-            dplan = pprobs.copy()
-            dplan[np.arange(T), seq.phase] -= 1.0
-            dplan *= plan_loss_w / T
+            dplan = np.zeros((T, PLAN_OUT_D), dtype=np.float64)
+            if plan_mask.any():
+                pprobs = np.exp(plan_logp)
+                rows = np.arange(T)[plan_mask]
+                cols = np.asarray(seq.phase)[plan_mask]
+                dplan[rows, cols] = pprobs[rows, cols] - 1.0
+                dplan *= plan_loss_w / max(1, int(plan_mask.sum()))
 
             g = brain.backward(dlogits, dplan, caches)
             for k in keys:
