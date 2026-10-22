@@ -112,6 +112,14 @@ class DecisionRecord:
     order: int              # global call order
     sensors: np.ndarray     # 24-float
     intent: PlayerIntent
+    # ── THE TEAM, and it is NOT OPTIONAL ────────────────────────
+    # The scratch collection fixture gives BOTH teams the same generic
+    # names (GK, CB1, CM1, ...), so "CB1" is two different players.
+    # A sequence keyed on the NAME ALONE would interleave the home
+    # centre-back's touches with the away centre-back's, and the
+    # recurrent core would be trained on a state that jumps halfway
+    # across the pitch between two steps.  The team disambiguates them.
+    team: str = ""
     # ── THE SITUATIONAL BLOCKS (2026-10-22) ─────────────────────
     # The four-capability brain reads four things the flat 24-d vector
     # cannot carry: the ENTITY SET it attends to, the player's own ROLE
@@ -359,11 +367,31 @@ def _snapshot_decide(player, *args, **kwargs):
         order=_CALL_ORDER,
         sensors=sensors,
         intent=d.intent,
+        team=_team_of(player, position_engine),
         **_situational_blocks(player, x, y, teammates, defenders,
                              position_engine, attacks_right),
     ))
     _CALL_ORDER += 1
     return d
+
+
+def _team_of(player: Any, position_engine: Any) -> str:
+    """Which team this player is on.
+
+    The player's own ``.team`` attribute when it has one, else the
+    position engine's record of the name (which is the authoritative
+    one — the engine knows who it put where).
+    """
+    team = getattr(player, "team", "") or ""
+    if team:
+        return str(team)
+    try:
+        st = position_engine.states.get(getattr(player, "name", ""))
+        if st is not None and getattr(st, "team", ""):
+            return str(st.team)
+    except Exception:
+        pass
+    return ""
 
 
 def _situational_blocks(player, x, y, teammates, defenders,
@@ -1475,10 +1503,15 @@ def build_situational_sequences(records: List[DecisionRecord]
     for rec in records:
         if rec.tokens is None or rec.memory is None or rec.role is None:
             continue
-        by_player.setdefault(rec.player, []).append(rec)
+        # KEYED BY (TEAM, PLAYER): the scratch fixture gives both teams
+        # the same generic names, so the name alone interleaves two
+        # players and the recurrent core would be trained on a state
+        # that jumps halfway across the pitch between two steps.
+        by_player.setdefault(f"{rec.team}|{rec.player}", []).append(rec)
 
     sequences: List[Dict[str, Any]] = []
-    for player, recs in by_player.items():
+    for key, recs in by_player.items():
+        player = key.split("|", 1)[1]
         recs = sorted(recs, key=lambda r: r.order)
         chunk: List[DecisionRecord] = []
         prev_order = None
@@ -1500,6 +1533,7 @@ def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
         return
     out.append({
         "player": player,
+        "team": chunk[0].team,
         "position": chunk[0].position,
         "steps": [{
             "tokens": [[round(float(v), 5) for v in row]
