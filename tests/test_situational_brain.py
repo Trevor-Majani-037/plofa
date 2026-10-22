@@ -373,5 +373,128 @@ class TheTrainerLearnsTests(unittest.TestCase):
         self.assertGreater(report["mix"]["PROGRESSIVE_PASS"], 0.5)
 
 
+class TheCorpusAndCensusTests(unittest.TestCase):
+    """The corpus format and the census rules — the two things that would
+    silently train the wrong thing."""
+
+    def _write_corpus(self, path, positions):
+        import json
+
+        seqs = []
+        for pos, n in positions:
+            for i in range(n):
+                seqs.append({
+                    "player": f"{pos}{i}",
+                    "position": pos,
+                    "steps": [{
+                        "tokens": [[0.0] * TOKEN_D for _ in range(2)],
+                        "token_mask": [1.0, 1.0],
+                        "state": [0.0] * STATE_D,
+                        "role": [0.0] * ROLE_D,
+                        "memory": [0.0] * MEMORY_D,
+                        "plan": [0.0] * PLAN_D,
+                        "phase": 1,
+                        "minute": 1.0,
+                    } for _ in range(3)],
+                })
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"sequences": seqs}, fh)
+        return path
+
+    def test_a_numbered_position_is_one_role_not_two(self):
+        """A live roster names its players CM1 / CM2 / CB1.
+
+        A per-LABEL grouping would split one role across two groups, so
+        the trainer would see "CM" as empty and silently train nothing
+        for the most important role on the pitch.
+        """
+        import tempfile
+        from situational_distill import load_sequences
+
+        tmp = tempfile.mkdtemp()
+        path = self._write_corpus(
+            os.path.join(tmp, "c.json"), [("CM1", 3), ("CM2", 3), ("CB1", 2)])
+        seqs = load_sequences(path)
+        fams = sorted({s.position for s in seqs})
+        self.assertEqual(fams, ["CB", "CM"],
+                         f"the roles were not normalised: {fams}")
+        self.assertEqual(len(seqs), 8)
+
+    def test_a_corpus_without_an_intent_still_loads(self):
+        """The intent TARGET comes from the surrogate, so the corpus does
+        not carry one — a missing key is normal, not malformed."""
+        import tempfile
+        from situational_distill import load_sequences
+
+        tmp = tempfile.mkdtemp()
+        path = self._write_corpus(os.path.join(tmp, "c.json"), [("ST", 2)])
+        seqs = load_sequences(path)
+        self.assertEqual(len(seqs), 2)
+        self.assertEqual(len(seqs[0].intent), 3)
+
+    def test_the_split_does_not_leak_and_is_reproducible(self):
+        from situational_distill import Sequence, split_sequences
+
+        def mk(i):
+            return Sequence(
+                tokens=np.zeros((2, 2, TOKEN_D)),
+                token_mask=np.ones((2, 2)),
+                state=np.zeros((2, STATE_D)),
+                role=np.zeros((2, ROLE_D)),
+                memory=np.zeros((2, MEMORY_D)),
+                plan=np.zeros((2, PLAN_D)),
+                intent=np.zeros(2, dtype=np.int64),
+                phase=np.zeros(2, dtype=np.int64),
+                position="ST",
+            )
+
+        seqs = [mk(i) for i in range(10)]
+        train, ev = split_sequences(seqs, seed=123, holdout=0.2)
+        self.assertEqual(len(train) + len(ev), 10)
+        self.assertTrue(ev, "the hold-out must not be empty")
+        self.assertFalse({id(s) for s in train} & {id(s) for s in ev},
+                         "the split LEAKS")
+        train2, ev2 = split_sequences(seqs, seed=123, holdout=0.2)
+        self.assertEqual([id(s) for s in train], [id(s) for s in train2],
+                         "the split must be reproducible — the census probe "
+                         "depends on reproducing the trainer's split exactly")
+        self.assertEqual([id(s) for s in ev], [id(s) for s in ev2])
+
+    def test_the_census_flags_a_collapse(self):
+        from situational_distill import census_flags
+
+        collapsed = {"SAFE_PASS": 1.0}
+        flags = census_flags("CM", collapsed)
+        self.assertTrue(flags, "a one-intent mix is a collapse")
+
+    def test_the_census_flags_a_role_inappropriate_action(self):
+        from situational_distill import census_flags
+
+        # The striker crossing: CROSS belongs to {WING, FB}.
+        flags = census_flags("ST", {"CROSS": 0.5, "SAFE_PASS": 0.5})
+        self.assertTrue(any("CROSS" in f for f in flags),
+                        f"a striker crossing must be flagged: {flags}")
+
+    def test_the_census_does_not_flag_the_cam_shooting(self):
+        """The role-inappropriate rule was once a hand-written list of
+        positions that "should not shoot", and it listed the CAM — but
+        the CAM IS the attacking midfielder, and `ROLE_ONLY_INTENTS["SHOOT"]`
+        is {ST, AM, WING}.  A guard that flags good football gets
+        switched off, and then it flags nothing."""
+        from situational_distill import census_flags
+
+        flags = census_flags("CAM", {"SHOOT": 0.2, "SAFE_PASS": 0.8})
+        self.assertFalse(any("SHOOT" in f for f in flags),
+                         f"a CAM shooting is role-appropriate: {flags}")
+
+    def test_the_census_passes_a_broad_mix(self):
+        from situational_distill import census_flags
+
+        broad = {"SAFE_PASS": 0.2, "CARRY": 0.2, "PROGRESSIVE_PASS": 0.15,
+                 "PROTECT_POSSESSION": 0.15, "SWITCH": 0.1, "RECYCLE": 0.1,
+                 "DRIBBLE": 0.1}
+        self.assertEqual(census_flags("CM", broad), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -160,6 +160,16 @@ def load_sequences(path: str) -> List[Sequence]:
         # from the SURROGATE, so that the objective is identical to the
         # one the MLP brains were distilled against.  A missing key is
         # therefore normal, not a malformed corpus.
+        #
+        # THE POSITION IS NORMALISED TO ITS ROLE FAMILY.  A live roster
+        # names its players "CM1", "CM2", "CB1" ... and a per-label
+        # grouping would split ONE role across two groups — so the
+        # trainer would see "CM" as empty and silently train nothing.
+        # `role_features._role_family` is the canonical stripper (it
+        # removes the digits), and it is the same one the rest of the
+        # project uses, so there is one definition.
+        raw_position = entry.get("position", "")
+        family = _role_family(raw_position) or raw_position
         seq = Sequence(
             tokens=[s["tokens"] for s in steps],
             token_mask=[s["token_mask"] for s in steps],
@@ -169,7 +179,7 @@ def load_sequences(path: str) -> List[Sequence]:
             plan=[s["plan"] for s in steps],
             intent=[s.get("intent", 0) for s in steps],
             phase=[s.get("phase", -1) for s in steps],
-            position=entry.get("position", ""),
+            position=family,
         )
         seq.check()
         out.append(seq)
