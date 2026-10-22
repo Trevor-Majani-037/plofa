@@ -1487,6 +1487,19 @@ SEQUENCE_MAX_STEPS = 12
 #: so a gap of 20 means something else happened in between.
 SEQUENCE_ORDER_GAP = 20
 
+#: A RESTART CUT.  A goal, a kick-off or a goal kick RESETS the ball to a
+#: goal line, so the carrier's x jumps 50-90 m with only a handful of
+#: decisions in between — a speed no body has.  That is not two players
+#: and it is not a player teleporting: it is a new context, and the
+#: RECURRENT state must not be carried across it.  So a sequence is CUT
+#: there.
+#:
+#: The test is the IMPLIED SPEED, not the distance: 85 m across 14
+#: decisions is a 3 m/s JOG — perfectly possible for one man — while 85 m
+#: across 2 decisions is 85 m/s, which is not football.
+SECONDS_PER_DECISION = 0.5
+MAX_IMPLIED_SPEED_MPS = 9.5
+
 
 def build_situational_sequences(records: List[DecisionRecord]
                                 ) -> List[Dict[str, Any]]:
@@ -1521,14 +1534,27 @@ def build_situational_sequences(records: List[DecisionRecord]
         recs = sorted(recs, key=lambda r: r.order)
         chunk: List[DecisionRecord] = []
         prev_order = None
+        prev_x = None
         for rec in recs:
+            cut = False
             if prev_order is not None:
                 gap = rec.order - prev_order
                 if gap > SEQUENCE_ORDER_GAP or len(chunk) >= SEQUENCE_MAX_STEPS:
-                    _emit_sequence(sequences, chunk, player)
-                    chunk = []
+                    cut = True
+                elif prev_x is not None and gap >= 1:
+                    # A RESTART: the ball was reset to a goal line, so
+                    # the carrier's x jumped at a speed no body has.  The
+                    # recurrent context must not cross it.
+                    jump = abs(float(rec.sensors[2]) * 105.0
+                               - float(prev_x) * 105.0)
+                    if jump / (gap * SECONDS_PER_DECISION) > MAX_IMPLIED_SPEED_MPS:
+                        cut = True
+            if cut:
+                _emit_sequence(sequences, chunk, player)
+                chunk = []
             chunk.append(rec)
             prev_order = rec.order
+            prev_x = float(rec.sensors[2]) * 105.0
         _emit_sequence(sequences, chunk, player)
     return sequences
 

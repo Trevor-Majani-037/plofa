@@ -58,6 +58,22 @@ INTERLEAVE_JUMP_M = 30.0
 #: of decisions.  A big jump with a LARGE order gap is legitimate.
 CLOSE_GAP = 20
 
+#: THE REAL TEST IS THE IMPLIED SPEED, not the distance.  85 m across 14
+#: decisions is a 3 m/s JOG — perfectly possible for one man.  85 m
+#: across 3 decisions is 57 m/s, which is not football.  The engine's
+#: players top out around 7.5-9 m/s (`_JOG_SPEED` 1.8, the sprint band
+#: starts at 7.0 m/s), so 9.5 m/s is above anything the body can do.
+#:
+#: THE CONSTANTS COME FROM THE COLLECTOR, which uses the same test to
+#: CUT a sequence at a RESTART (a goal resets the ball to a goal line,
+#: and the recurrent context must not cross that).
+from surrogate_collect import (  # noqa: E402
+    MAX_IMPLIED_SPEED_MPS, SECONDS_PER_DECISION,
+)
+
+MAX_IMPLIED_SPEED_MPS = MAX_IMPLIED_SPEED_MPS
+SECONDS_PER_DECISION = SECONDS_PER_DECISION
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -96,11 +112,16 @@ def main() -> int:
             # decisions is ONE MAN who lost the ball and got it back.
             # The SAME jump after 2 decisions is TWO MEN — the interleave.
             gap = int(seq.gap[t]) if len(seq.gap) > t else 999
-            if jump > INTERLEAVE_JUMP_M and gap <= CLOSE_GAP:
+            # THE IMPOSSIBLE TEST: the speed the player would have had to
+            # cover between his own two touches.  A distance alone says
+            # nothing — 85 m across 14 decisions is a JOG.
+            implied = (jump / (gap * SECONDS_PER_DECISION)
+                       if gap >= 2 else 0.0)
+            if jump > INTERLEAVE_JUMP_M and implied > MAX_IMPLIED_SPEED_MPS:
                 big += 1
-                if jump > biggest_impossible[0]:
-                    biggest_impossible = (jump, seq.position, seq.player,
-                                          gap)
+                if implied > biggest_impossible[0]:
+                    biggest_impossible = (implied, seq.position, seq.player,
+                                          gap, jump)
         if big:
             interleaved.append((seq.position, seq.player, len(seq), big))
         for t in range(len(seq)):
@@ -148,11 +169,13 @@ def main() -> int:
           f"({100.0*over/max(1,len(jumps_arr)):.1f}%)  "
           f"(a big jump is LEGITIMATE if the player went that long without "
           f"the ball)")
-    print(f"  IMPOSSIBLE ones (a big jump within {CLOSE_GAP} decisions — "
-          f"two men, not one): {len(interleaved)} sequences")
+    print(f"  IMPOSSIBLE ones (implied speed over "
+          f"{MAX_IMPLIED_SPEED_MPS:.1f} m/s — no body does that): "
+          f"{len(interleaved)} sequences")
     if biggest_impossible[0] > 0:
-        j, pos, pl, g = biggest_impossible
-        print(f"      the largest: {j:.1f} m by {pos} {pl} after {g} decisions")
+        sp, pos, pl, g, j = biggest_impossible
+        print(f"      the largest: {sp:.1f} m/s by {pos} {pl} "
+              f"({j:.0f} m after {g} decisions)")
     for pos, player, n, big in interleaved[:8]:
         print(f"      {pos} {player}: {big} of {n-1} steps")
     if len(interleaved) > 8:
