@@ -9438,3 +9438,107 @@ exist; the CORPUS does not.  The chain is:
   of the phase machine, not an emergent plan.  Making it a genuine plan
   needs a target that is NOT the engine's own phase, and that is a
   separate design question.
+
+## THE SITUATIONAL CORPUS — FOUR SILENT TRAPS, ALL FOUND BY MEASURING (2026-10-22)
+
+**The collection was run three times before it was right.**  Every one of
+the failures was SILENT — the corpus was produced, the file was written,
+and the only symptom was a number that did not add up.  They are recorded
+because they are the exact shape this project keeps meeting, and because
+each one is a trap that will bite again.
+
+### 1. THE TEAM KEY — the fixture gives both teams the same NAMES
+
+`surrogate_collect.TEMPLATE_BASE` gives BOTH sides the same generic
+names: `GK, CB1, CB2, LB, RB, CDM, CM1, CM2, LW, ST, RW`.  So **"CB1" is
+the home centre-back AND the away centre-back**, and a corpus grouped by
+the player NAME interleaves their touches.
+
+That matters ONLY because of the RECURRENCE: a sequence is the unit the
+GRU is trained over, and an interleaved sequence is a state that jumps
+halfway across the pitch between two consecutive steps.  The intent
+target is unaffected (it comes from the surrogate, per state).
+
+The fix is a `(TEAM, PLAYER)` key, and getting the team took **two
+attempts**, because of two more traps:
+
+- **THE ATTRIBUTE IS `team_name`, NOT `team`.**  `PlayerProfile` carries
+  the team as `team_name`; there is no `team` attribute.  Reading
+  `player.team` returns the default `""` and the team is silently lost.
+  **This was also live in the decision path** — the situational brain's
+  plan lookup read `player.team`, so the plan block was all zeros in
+  every match and the team plan never advanced.  One helper now
+  (`player_state.player_team()`), used by both.
+- **THE POSITION-ENGINE FALLBACK IS AMBIGUOUS.**  `PositionEngine.states`
+  is keyed by NAME, so with duplicate names the away team's state has
+  overwritten the home team's.  Measured: **70 of 79 sequences came back
+  as the away team.**  The team is read from the PLAYER OBJECT, which is
+  unambiguous — the two CB1s are two objects with two different
+  `team_name` values.
+
+### 2. THE FRAME LEAK — the corpus knew more than the player could see
+
+The collector built the ROLE block and the ENTITY TOKENS from the **full**
+scene while the shared 24-d block came from the **perceived** one.  So
+the net would have been trained on a role block and an attention set
+that knew more than the player can see, and then played with a
+perceived one.
+
+A net trained on a leaked frame behaves differently on the pitch than in
+training, and **the difference is invisible** — the training numbers look
+fine and the football is quietly wrong.  The corpus is now built from the
+PERCEIVED scene, exactly as the live path does.
+
+### 3. THE RESTART CUT — and a 105x UNIT ERROR that cut EVERYTHING
+
+The corpus census flagged 29 of 113 sequences as "impossible" (a carrier
+jumping 50-90 m in a couple of decisions).  **The data said what they
+were: every one landed on x = 0.0 or x = 105.0 — a GOAL LINE.**  A goal,
+a kick-off or a goal kick RESETS the ball to a goal line, so the
+carrier's x jumps at a speed no body has.  That is not two players (so
+the team key was right) and it is not a player teleporting: **it is a new
+context**, and the recurrent state must not be carried across it.  A
+sequence is now CUT there.
+
+**THE FIRST VERSION OF THE CUT PRODUCED A 17-BYTE CORPUS.**  The jump
+was computed by multiplying an already-converted value by 105 a SECOND
+time: the sensor's x is NORMALISED (`x / 105.0`), so the jump in metres
+is the difference of the RAW values times 105, and `prev_x` was being
+stored already converted.  A 105x error that made every sequence look
+like a restart.  **A guard that fires on EVERYTHING is worse than no
+guard** — and the only reason it was caught is that the output was
+measured rather than assumed.
+
+### 4. THE IMPOSSIBLE TEST IS A SPEED, NOT A DISTANCE
+
+The first version of the census called any jump over 30 m an interleave
+and reported **0 of 79** — which read as a clean corpus on a corpus that
+was 40% interleaved.  Two errors in one instrument:
+
+- **THE UNITS.**  The 24-d block's x is NORMALISED to [0, 1], so a jump
+  of "0.8" is EIGHTY METRES.  Reading it as metres made every threshold
+  meaningless.
+- **THE THRESHOLD.**  85 m across 14 decisions is a **3 m/s JOG** —
+  perfectly possible for one man who lost the ball and got it back.  The
+  test has to be the IMPLIED SPEED: 85 m across 2 decisions is 85 m/s,
+  which is not football.  The engine's players top out around 7.5-9 m/s
+  (`_JOG_SPEED` 1.8, the sprint band starts at 7.0 m/s), so 9.5 m/s is
+  above anything the body can do.
+
+**The constants now live in the collector and the census probe IMPORTS
+them**, so the cut and the check can never drift apart.
+
+### THE CORPUS AS IT NOW STANDS (one-match smoke, before the 12-match run)
+
+| | |
+|---|---|
+| sequences / steps | 124 / 444 |
+| **impossible sequences** | **0** |
+| consecutive carrier jump | median **4.9 m**, p90 26.2 m |
+| the shared names the team key separated | 12 |
+| **memory block non-zero** | **87.8%** of steps |
+| final-third share | 52.0% |
+
+The 87.8% is the measure that the MEMORY is alive in the corpus: a corpus
+whose memory block was all zeros would train a net that ignores memory,
+and the memory is one of the four capabilities this exercise is about.
