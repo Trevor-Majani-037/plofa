@@ -126,7 +126,9 @@ class SituationalDecisionBrain:
         # ── 5) THE PLAN PROPOSAL ──────────────────────────────────
         plan_trace = None
         if store is not None:
-            team = getattr(player, "team", "") or ""
+            from player_state import player_team
+
+            team = player_team(player)
             if team:
                 team_plan = store.team(team)
                 pprobs = _softmax(plan_logits)

@@ -378,20 +378,15 @@ def _snapshot_decide(player, *args, **kwargs):
 def _team_of(player: Any, position_engine: Any) -> str:
     """Which team this player is on.
 
-    The player's own ``.team`` attribute when it has one, else the
-    position engine's record of the name (which is the authoritative
-    one — the engine knows who it put where).
+    Read from the PLAYER OBJECT, which is the only unambiguous source:
+    the scratch fixture gives both teams the same generic names, and the
+    position engine's states are keyed by NAME, so a lookup there
+    returns whichever team was initialised last.  (Measured: 70 of 79
+    sequences came back as the away team for exactly that reason.)
     """
-    team = getattr(player, "team", "") or ""
-    if team:
-        return str(team)
-    try:
-        st = position_engine.states.get(getattr(player, "name", ""))
-        if st is not None and getattr(st, "team", ""):
-            return str(st.team)
-    except Exception:
-        pass
-    return ""
+    from player_state import player_team
+
+    return player_team(player)
 
 
 def _situational_blocks(player, x, y, teammates, defenders,
@@ -1531,11 +1526,17 @@ def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
                    player: str) -> None:
     if len(chunk) < 2:
         return
-    out.append({
-        "player": player,
-        "team": chunk[0].team,
-        "position": chunk[0].position,
-        "steps": [{
+    steps = []
+    prev_order = None
+    for r in chunk:
+        # THE ORDER GAP: how many decisions the whole match took since
+        # this player's previous touch.  It is the DISCRIMINATOR between
+        # an interleave and a legitimate long absence: a jump of 40 m
+        # after 60 other decisions is a man who lost the ball and got it
+        # back, and the SAME jump after 2 decisions is two different men.
+        gap = 0 if prev_order is None else int(r.order - prev_order)
+        prev_order = r.order
+        steps.append({
             "tokens": [[round(float(v), 5) for v in row]
                        for row in np.asarray(r.tokens)],
             "token_mask": [float(v) for v in np.asarray(r.token_mask)],
@@ -1546,7 +1547,13 @@ def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
             if r.plan is not None else [],
             "phase": int(r.phase),
             "minute": round(float(r.minute), 2),
-        } for r in chunk],
+            "gap": gap,
+        })
+    out.append({
+        "player": player,
+        "team": chunk[0].team,
+        "position": chunk[0].position,
+        "steps": steps,
     })
 
 

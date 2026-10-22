@@ -108,10 +108,10 @@ class Sequence:
     """One player's run of touches — the unit BPTT trains over."""
 
     __slots__ = ("tokens", "token_mask", "state", "role", "memory", "plan",
-                 "intent", "phase", "position")
+                 "intent", "phase", "position", "player", "team", "gap")
 
     def __init__(self, tokens, token_mask, state, role, memory, plan,
-                 intent, phase, position):
+                 intent, phase, position, player="", team="", gap=None):
         self.tokens = np.asarray(tokens, dtype=np.float64)
         self.token_mask = np.asarray(token_mask, dtype=np.float64)
         self.state = np.asarray(state, dtype=np.float64)
@@ -121,6 +121,15 @@ class Sequence:
         self.intent = np.asarray(intent, dtype=np.int64)
         self.phase = np.asarray(phase, dtype=np.int64)
         self.position = position
+        self.player = player
+        self.team = team
+        # The ORDER GAP: how many match decisions passed since this
+        # player's previous touch.  It is the DISCRIMINATOR between an
+        # interleave (a big spatial jump with a SMALL gap — two different
+        # men) and a legitimate absence (a big jump with a LARGE gap — one
+        # man who lost the ball and got it back).
+        self.gap = (np.asarray(gap, dtype=np.int64) if gap is not None
+                    else np.zeros(len(self.state), dtype=np.int64))
 
     def __len__(self) -> int:
         return int(self.state.shape[0])
@@ -180,6 +189,9 @@ def load_sequences(path: str) -> List[Sequence]:
             intent=[s.get("intent", 0) for s in steps],
             phase=[s.get("phase", -1) for s in steps],
             position=family,
+            player=entry.get("player", ""),
+            team=entry.get("team", ""),
+            gap=[s.get("gap", 0) for s in steps],
         )
         seq.check()
         out.append(seq)

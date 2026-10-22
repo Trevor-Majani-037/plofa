@@ -52,6 +52,12 @@ from situational_distill import load_sequences
 #: sequence is a few seconds.)
 INTERLEAVE_JUMP_M = 30.0
 
+#: ...UNLESS the player genuinely went a long way without the ball.  Two
+#: touches this close together in the timeline cannot be 30 m apart for
+#: one man: the ball would have had to travel there and back in a couple
+#: of decisions.  A big jump with a LARGE order gap is legitimate.
+CLOSE_GAP = 20
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -71,18 +77,30 @@ def main() -> int:
     mem_total = 0
     final_third = 0
     final_third_steps = 0
+    biggest_impossible = (0.0, "", "", 0)
 
     for seq in seqs:
         by_role[seq.position] += 1
         steps_by_role[seq.position] += len(seq)
         big = 0
         for t in range(1, len(seq)):
-            px_prev = float(seq.state[t - 1][2])   # player_x
-            px_now = float(seq.state[t][2])
+            # THE 24-d BLOCK'S x IS NORMALISED to [0, 1] (it is
+            # `x / 105.0`), so a jump of 0.8 is EIGHTY METRES, not 0.8 m.
+            # Reading the raw value as metres is the unit trap, and it
+            # would make every threshold meaningless.
+            px_prev = float(seq.state[t - 1][2]) * 105.0   # player_x, metres
+            px_now = float(seq.state[t][2]) * 105.0
             jump = abs(px_now - px_prev)
             jumps.append(jump)
-            if jump > INTERLEAVE_JUMP_M:
+            # THE DISCRIMINATOR.  A jump of 40 m after 60 other
+            # decisions is ONE MAN who lost the ball and got it back.
+            # The SAME jump after 2 decisions is TWO MEN — the interleave.
+            gap = int(seq.gap[t]) if len(seq.gap) > t else 999
+            if jump > INTERLEAVE_JUMP_M and gap <= CLOSE_GAP:
                 big += 1
+                if jump > biggest_impossible[0]:
+                    biggest_impossible = (jump, seq.position, seq.player,
+                                          gap)
         if big:
             interleaved.append((seq.position, seq.player, len(seq), big))
         for t in range(len(seq)):
@@ -105,6 +123,21 @@ def main() -> int:
     print(f"memory block non-zero {mem_nonzero}/{mem_total} "
           f"({100.0*mem_nonzero/max(1,mem_total):.1f}%)")
     print()
+    print("THE TEAM KEY — the same NAME on two teams must be two sequences")
+    import json
+    with open(A.corpus, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    names = {}
+    for entry in raw.get("sequences", []):
+        names.setdefault(entry.get("player", ""), set()).add(
+            entry.get("team", ""))
+    shared = {n: sorted(t) for n, t in names.items() if len(t) > 1}
+    print(f"  player names carried by more than one team: {len(shared)}")
+    for n, t in list(shared.items())[:6]:
+        print(f"      {n}: {t}")
+    if shared:
+        print("  -> the team key SEPARATED them (each is its own sequence)")
+    print()
     print("THE INTERLEAVE (one sequence must be ONE player's touches)")
     print(f"  consecutive player_x jump: median {np.median(jumps_arr):.1f} m  "
           f"p90 {np.percentile(jumps_arr, 90):.1f} m  "
@@ -112,8 +145,14 @@ def main() -> int:
           f"max {jumps_arr.max():.1f} m")
     over = int((jumps_arr > INTERLEAVE_JUMP_M).sum())
     print(f"  jumps over {INTERLEAVE_JUMP_M:.0f} m: {over} of {len(jumps_arr)} "
-          f"({100.0*over/max(1,len(jumps_arr)):.1f}%)")
-    print(f"  sequences containing one: {len(interleaved)} of {len(seqs)}")
+          f"({100.0*over/max(1,len(jumps_arr)):.1f}%)  "
+          f"(a big jump is LEGITIMATE if the player went that long without "
+          f"the ball)")
+    print(f"  IMPOSSIBLE ones (a big jump within {CLOSE_GAP} decisions — "
+          f"two men, not one): {len(interleaved)} sequences")
+    if biggest_impossible[0] > 0:
+        j, pos, pl, g = biggest_impossible
+        print(f"      the largest: {j:.1f} m by {pos} {pl} after {g} decisions")
     for pos, player, n, big in interleaved[:8]:
         print(f"      {pos} {player}: {big} of {n-1} steps")
     if len(interleaved) > 8:

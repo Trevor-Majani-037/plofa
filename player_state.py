@@ -216,6 +216,35 @@ class TeamPlan:
         return out
 
 
+def player_team(player: Any) -> str:
+    """Which team this player is on.
+
+    TWO TRAPS, AND BOTH ARE SILENT.
+
+    1. ``PlayerProfile`` carries the team as ``team_name`` — there is NO
+       ``team`` attribute.  Reading ``player.team`` returns the default
+       ``""``, so the team's PLAN (and the corpus's team key) is
+       silently lost and every player looks team-less.
+
+    2. The fallback must NOT be the position engine.  The scratch
+       fixture gives BOTH teams the same generic names (GK, CB1, CM1,
+       ...), and ``PositionEngine.states`` is keyed by NAME — so the
+       away team's state has overwritten the home team's, and a lookup by
+       name returns the WRONG team for half the squad.  (Measured: 70 of
+       79 sequences came back as the away team, because the away team was
+       initialised last.)
+
+    So the team is read from the PLAYER OBJECT, which is unambiguous:
+    the two centre-backs called "CB1" are two different objects with two
+    different ``team_name`` values.
+    """
+    for attr in ("team_name", "team"):
+        value = getattr(player, attr, "") or ""
+        if value:
+            return str(value)
+    return ""
+
+
 @dataclass
 class NeuralStateStore:
     """The two containers, in one place, with the lifecycle they need.
