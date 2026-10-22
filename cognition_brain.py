@@ -138,19 +138,14 @@ class CognitionDecisionBrain:
 # match facts without any parallel simulation.
 
 def _observe_event(event: Any) -> None:
-    # MatchEvent.player / secondary_player are NAME STRINGS, not profiles.
-    for actor in (
-        getattr(event, "player", None),
-        getattr(event, "secondary_player", None),
-    ):
-        if actor is None:
-            continue
-        name = actor if isinstance(actor, str) else getattr(actor, "name", None)
-        if not name:
-            continue
-        mind = get_mind(name)
-        if mind is not None:
-            mind.observe(event)
+    # THE ONE DEFINITION of "a match event becomes a memory" lives in
+    # `cognition.mind.observe_event` — it was moved there so the tap can be
+    # the match engine's DEFAULT observer (every runner gets a memory, not
+    # just the production one).  This function stays as the production
+    # entry point `engage_mind_observer()` installs.
+    from cognition.mind import observe_event
+
+    observe_event(event)
 
 
 def engage_mind_observer() -> None:

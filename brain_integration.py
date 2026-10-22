@@ -311,6 +311,18 @@ class NeuralDecisionBrain:
         record_trace: bool = False,
         coach_instructions: Any = None,
     ) -> PlayerDecision:
+        # A SITUATIONAL BRAIN (attention + recurrence + memory + a plan
+        # head) takes a different route.  The route is chosen by the TYPE
+        # of the registered brain, so the shipped ``brains/`` set is
+        # untouched: nothing on this path runs unless a player has been
+        # given a SituationalBrain explicitly.
+        situational = _maybe_situational(
+            player, x, y, teammates, defenders, position_engine,
+            team_profile, under_pressure, attacks_right, game_state,
+            minute, soul, record_trace, coach_instructions,
+        )
+        if situational is not None:
+            return situational
         routed = _maybe_cognition(
             player, x, y, teammates, defenders, position_engine,
             team_profile, under_pressure, attacks_right, game_state,
@@ -398,6 +410,41 @@ def clear_consequence() -> None:
     _consequence_checked = False
 
 
+def _maybe_situational(
+    player: Any, x: float, y: float,
+    teammates: List[Any], defenders: List[Any],
+    position_engine: Any, team_profile: Any,
+    under_pressure: bool, attacks_right: bool, game_state: Any,
+    minute: float, soul: Any, record_trace: bool,
+    coach_instructions: Any = None,
+) -> Optional[PlayerDecision]:
+    """The SITUATIONAL route (attention + recurrence + memory + a plan).
+
+    Returns None for every player whose brain is an ordinary
+    ``FootballBrain`` — which is every player in the shipped set.  The
+    route is chosen by the brain's TYPE, so there is no flag to forget to
+    turn off and no way for it to change the shipped behaviour by
+    accident.
+    """
+    try:
+        from situational_brain import SituationalBrain
+
+        brain = _resolve_brain(player)
+        if not isinstance(brain, SituationalBrain):
+            return None
+        from situational_decision import SituationalDecisionBrain
+
+        return SituationalDecisionBrain.decide(
+            player, x, y, teammates, defenders, position_engine,
+            team_profile, under_pressure, attacks_right, game_state,
+            minute, soul, record_trace, coach_instructions,
+        )
+    except Exception:
+        # A situational failure must NEVER kill a match — degrade to the
+        # ordinary path.  Same discipline as the cognition route.
+        return None
+
+
 def _maybe_cognition(
     player: Any, x: float, y: float,
     teammates: List[Any], defenders: List[Any],
@@ -457,7 +504,11 @@ def _brain_label(brain: FootballBrain) -> str:
     """A short identifier for schema error messages."""
     meta = getattr(brain, "meta", None) or {}
     fam = meta.get("role_family") if isinstance(meta, dict) else None
-    return f"brain[{fam or '?'} in={getattr(brain, 'w1').shape[0]}]"
+    w1 = getattr(brain, "w1", None)
+    if w1 is None:
+        # A situational brain has no w1 — it is not an MLP at all.
+        return f"brain[{fam or 'situational'}]"
+    return f"brain[{fam or '?'} in={w1.shape[0]}]"
 
 
 def _aligned_tail(brain: FootballBrain, player: Any,
@@ -646,6 +697,16 @@ def _decide_core(
 ) -> PlayerDecision:
     """The vanilla neural decision path (cognition off / no mind)."""
     brain = _resolve_brain(player)
+    if not isinstance(brain, FootballBrain):
+        # The situational route failed and we are falling back here.  This
+        # path reads ``brain.w1``, so it needs an MLP brain: use the
+        # POSITION's trained brain, or a random one.  Without this guard
+        # the fallback is not a fallback at all — it raises
+        # ``AttributeError: 'SituationalBrain' object has no attribute
+        # 'w1'`` and takes the match down.
+        brain = _brain_for_position(getattr(player, "position", ""))
+        if brain is None:
+            brain = FootballBrain.random()
     sensors = build_sensors(
         brain, player, x, y, teammates, defenders, position_engine,
         team_profile, under_pressure, attacks_right, game_state, minute,

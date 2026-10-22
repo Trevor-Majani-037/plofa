@@ -253,17 +253,52 @@ def _team_press_g(engine: Any, team: str, ball_x: float, ball_y: float,
 # zero behaviour change until engaged.
 _COGNITION_OBSERVER = None
 
+#: The memory tap is the DEFAULT observer (2026-10-22).
+#:
+#: It used to be installed ONLY by ``cognition_brain.engage_mind_observer()``,
+#: which only ``auto_run_match.py`` and ``season_manager.py`` call — so the
+#: scratch runner and every real-roster harness had NO memory at all.  A
+#: memory that exists only in production is not a memory.
+#:
+#: The tap is a no-op for any player without a mind, so a match that
+#: provisions no minds costs one dict lookup per absorbed event.  Setting
+#: ``_COGNITION_OBSERVER`` explicitly still wins; setting it to ``None``
+#: with ``set_cognition_observer(None)`` now DISABLES the default too, so
+#: the old "observer is off" behaviour is still reachable.
+_COGNITION_OBSERVER_DEFAULT = True
+_DEFAULT_MEMORY_OBSERVER = None
+
 
 def set_cognition_observer(fn) -> None:
-    """Engage a per-event cognition observer (None disables)."""
-    global _COGNITION_OBSERVER
+    """Engage a per-event cognition observer (None disables).
+
+    ``None`` disables the DEFAULT memory tap as well — that is the old
+    behaviour and it is still reachable.
+    """
+    global _COGNITION_OBSERVER, _COGNITION_OBSERVER_DEFAULT
     _COGNITION_OBSERVER = fn
+    _COGNITION_OBSERVER_DEFAULT = fn is not None
+
+
+def _default_memory_observer():
+    """The memory tap, imported lazily once (no import cycle at module load)."""
+    global _DEFAULT_MEMORY_OBSERVER
+    if _DEFAULT_MEMORY_OBSERVER is None:
+        from cognition.mind import observe_event
+
+        _DEFAULT_MEMORY_OBSERVER = observe_event
+    return _DEFAULT_MEMORY_OBSERVER
 
 
 def _cognition_observe(event) -> None:
     obs = _COGNITION_OBSERVER
     if obs is None:
-        return
+        if not _COGNITION_OBSERVER_DEFAULT:
+            return
+        try:
+            obs = _default_memory_observer()
+        except Exception:
+            return
     try:
         obs(event)
     except Exception:
@@ -2238,6 +2273,19 @@ class MatchEngine:
         profile = self.home_profile if team_name == self.config.home_team else self.away_profile
         attacks_right = (team_name == self.config.home_team)
         self.position_engine.initialize_team(team_name, starters, profile, attacks_right=attacks_right)
+
+        # Every player gets a MIND, so the episodic memory has somewhere to
+        # live in EVERY runner (2026-10-22).  The provisioned mind is
+        # UNENGAGED: it accumulates memory but it does NOT change the
+        # decision path, so the shipped brains behave exactly as before.
+        # The production runner registers its own ENGAGED minds before the
+        # engine exists, and those are returned untouched.
+        try:
+            from memory_features import provision_minds
+
+            provision_minds([p.name for p in starters if getattr(p, "name", None)])
+        except Exception:
+            pass
 
     def set_stamina_controller(self, controller):
         """

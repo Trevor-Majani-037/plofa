@@ -43,6 +43,7 @@ from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
 from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_X, PITCH_Y, CENTER_Y
+from player_state import NeuralStateStore
 from tactical_shapes import (
     FormationStance,
     stance_delta_roles,
@@ -648,6 +649,16 @@ class PositionEngine:
         self.team_rosters: Dict[str, List[str]] = {}       # team -> [player_names]
         self.team_profiles: Dict[str, "TeamProfile"] = {}
         self.team_attacks_right: Dict[str, bool] = {}       # team -> attacks_right
+        # NEURAL STATE (2026-10-22) — the per-player RECURRENT state and the
+        # per-team PLAN.  It lives HERE, in a container parallel to
+        # `self.states`, for one structural reason: a recurrent state stored
+        # on the brain would be shared by every player of a position (the
+        # brain instances are cached per POSITION — `brain_integration.
+        # _pos_brain_cache`), so the state has to belong to the PLAYER.
+        # It is deliberately a SEPARATE container from the spatial state: a
+        # minute boundary or a substitution resets position, and it must not
+        # silently wipe what the player's brain remembers.
+        self.neural_states = NeuralStateStore()
         # Checkpoint 18 — modern winger registry: per-winger spatial profiles
         # (touchline anchor, flank commitment, byline instinct, isolation thirst).
         self.winger_registry: WingerRegistry = WingerRegistry()
@@ -4808,6 +4819,10 @@ class PositionEngine:
     def remove_player(self, team_name: str, player_name: str):
         """Remove a sent-off player from the position engine."""
         self.states.pop(player_name, None)
+        # The neural state goes with them: a recurrent state carried over
+        # from the pitch to the dressing room would be a state the brain
+        # was never trained to resume from.
+        self.neural_states.remove_player(player_name)
         roster = self.team_rosters.get(team_name, [])
         if player_name in roster:
             roster.remove(player_name)

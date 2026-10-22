@@ -112,11 +112,30 @@ class DecisionRecord:
     order: int              # global call order
     sensors: np.ndarray     # 24-float
     intent: PlayerIntent
+    # ── THE SITUATIONAL BLOCKS (2026-10-22) ─────────────────────
+    # The four-capability brain reads four things the flat 24-d vector
+    # cannot carry: the ENTITY SET it attends to, the player's own ROLE
+    # block, what he REMEMBERS of his match so far, and the PLAN the team
+    # is executing.  They are recorded here so the situational corpus can
+    # be built WITHOUT re-running the matches.
+    tokens: Optional[np.ndarray] = None       # (N_MAX, TOKEN_D)
+    token_mask: Optional[np.ndarray] = None   # (N_MAX,)
+    role: Optional[np.ndarray] = None         # (ROLE_D,)
+    memory: Optional[np.ndarray] = None       # (MEMORY_D,)
+    plan: Optional[np.ndarray] = None         # (PLAN_D,)
+    phase: int = -1                           # the engine's possession phase
 
 
 _COLLECTOR: List[DecisionRecord] = []
 _CALL_ORDER = 0
 _SAVED_DECIDE = None
+
+#: The decision records ACCUMULATED ACROSS MATCHES, for the situational
+#: corpus.  ``_COLLECTOR`` is cleared after every match (so the pairing
+#: cursor does not walk into the next match); the situational corpus needs
+#: the opposite, because a sequence can span a match boundary in the file
+#: and the corpus is written once at the end.
+_SITUATIONAL_RECORDS: List[DecisionRecord] = []
 
 #: ε-exploration: the probability that a decision is REPLACED by a random
 #: action from the player's role vocabulary.  0.0 = the policy's own choice
@@ -340,9 +359,89 @@ def _snapshot_decide(player, *args, **kwargs):
         order=_CALL_ORDER,
         sensors=sensors,
         intent=d.intent,
+        **_situational_blocks(player, x, y, teammates, defenders,
+                             position_engine, attacks_right),
     ))
     _CALL_ORDER += 1
     return d
+
+
+def _situational_blocks(player, x, y, teammates, defenders,
+                        position_engine, attacks_right) -> Dict[str, Any]:
+    """The four blocks the situational brain reads, for the CORPUS.
+
+    THE PLAN IS TEACHER-FORCED HERE, and it has to be said out loud: the
+    plan INPUT recorded in the corpus is the engine's OWN possession phase
+    (the ground truth), not a plan the brain proposed.  The shipped brains
+    have no plan head, so during collection there IS no proposed plan.
+
+    That makes the plan input at TRAINING time the true phase, while at
+    INFERENCE it is the head's own adopted proposal — the standard
+    teacher-forcing exposure gap.  It is measured rather than hidden: the
+    corpus keeps the ground-truth phase, so the agreement between the
+    head's proposal and the phase the engine is really in can be
+    reported, and that agreement IS the number that says whether the
+    learned plan is real.
+
+    Every block is best-effort: a collector that cannot build one of them
+    records None rather than raising, because a collection run is
+    expensive and a missing block is a hole, not a failure.
+    """
+    out: Dict[str, Any] = {}
+    try:
+        from situation_tokens import entity_tokens
+
+        tokens, mask = entity_tokens(player, x, y, teammates, defenders,
+                                      position_engine, attacks_right)
+        out["tokens"] = tokens
+        out["token_mask"] = mask
+    except Exception:
+        pass
+    try:
+        from situational_context import role_tail
+
+        out["role"] = role_tail(player, x, y, teammates, defenders,
+                                position_engine, attacks_right)
+    except Exception:
+        pass
+    try:
+        from memory_features import memory_features as _mf
+
+        out["memory"] = _mf(getattr(player, "name", "") or "")
+    except Exception:
+        pass
+    try:
+        from possession_phases import possession_phase_for
+
+        phase = possession_phase_for(x, y, attacks_right)
+        pid = _phase_index(phase)
+        out["phase"] = int(pid)
+        out["plan"] = _teacher_forced_plan(pid)
+    except Exception:
+        pass
+    return out
+
+
+def _phase_index(phase: Any) -> int:
+    """The phase's index in the enum — the plan head's class order."""
+    from possession_phases import PossessionPhase
+
+    try:
+        return list(PossessionPhase).index(phase)
+    except ValueError:
+        return -1
+
+
+def _teacher_forced_plan(phase_id: int) -> np.ndarray:
+    """The plan block for a KNOWN phase: one-hot + confidence + a flag."""
+    from player_state import PLAN_COUNT
+
+    out = np.zeros(PLAN_COUNT + 2, dtype=np.float64)
+    if 0 <= phase_id < PLAN_COUNT:
+        out[phase_id] = 1.0
+    out[PLAN_COUNT] = 1.0
+    out[PLAN_COUNT + 1] = 1.0 if phase_id >= 0 else 0.0
+    return out
 
 
 def _install_collector():
@@ -882,9 +981,10 @@ def collect_from_matches(
     choice (the historical behaviour).  See ``_explore_intent``.
     """
     global _COLLECTOR, _EXPLORE_EPS, _EXPLORE_RNG, _EXPLORED
-    global _EXPLORE_SITUATIONAL
+    global _EXPLORE_SITUATIONAL, _SITUATIONAL_RECORDS
     # clear collector + install patch
     _COLLECTOR = []
+    _SITUATIONAL_RECORDS = []
     _EXPLORE_EPS = float(explore)
     _EXPLORE_RNG = random.Random(seed + 977)
     _EXPLORED = 0
@@ -931,6 +1031,7 @@ def collect_from_matches(
                     result.timeline, list(_COLLECTOR),
                     attacks_right_by_team=_ar)
             all_paired.extend(paired)
+            _SITUATIONAL_RECORDS.extend(_COLLECTOR)
             _COLLECTOR.clear()
             if verbose:
                 print(f"  match {m+1}: collected {len(paired)} pairs "
@@ -1343,6 +1444,90 @@ def load_raw_corpus(path: str) -> List[Tuple]:
     return out
 
 
+#: The longest run of touches one sequence may hold.  A possession is ~7
+#: events, so 12 steps covers a long one without crossing into the next.
+SEQUENCE_MAX_STEPS = 12
+
+#: How many OTHER decisions may happen between two touches of the same
+#: player before it counts as a new possession.  A possession is ~7 events,
+#: so a gap of 20 means something else happened in between.
+SEQUENCE_ORDER_GAP = 20
+
+
+def build_situational_sequences(records: List[DecisionRecord]
+                                ) -> List[Dict[str, Any]]:
+    """Group the collected decisions into BPTT sequences.
+
+    A sequence is a CONTIGUOUS run of touches by ONE player.  It is cut
+    when:
+
+      * another player has had more than ``SEQUENCE_ORDER_GAP`` decisions
+        in between (so this is a different possession — and the
+        recurrence and the plan both reset at a possession change), or
+      * it reaches ``SEQUENCE_MAX_STEPS`` (so the BPTT does not run
+        backwards over a whole half).
+
+    Records without the situational blocks are SKIPPED, not faked: a
+    sequence with a missing token set is not a sequence the network can be
+    trained on.
+    """
+    by_player: Dict[str, List[DecisionRecord]] = {}
+    for rec in records:
+        if rec.tokens is None or rec.memory is None or rec.role is None:
+            continue
+        by_player.setdefault(rec.player, []).append(rec)
+
+    sequences: List[Dict[str, Any]] = []
+    for player, recs in by_player.items():
+        recs = sorted(recs, key=lambda r: r.order)
+        chunk: List[DecisionRecord] = []
+        prev_order = None
+        for rec in recs:
+            if prev_order is not None:
+                gap = rec.order - prev_order
+                if gap > SEQUENCE_ORDER_GAP or len(chunk) >= SEQUENCE_MAX_STEPS:
+                    _emit_sequence(sequences, chunk, player)
+                    chunk = []
+            chunk.append(rec)
+            prev_order = rec.order
+        _emit_sequence(sequences, chunk, player)
+    return sequences
+
+
+def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
+                   player: str) -> None:
+    if len(chunk) < 2:
+        return
+    out.append({
+        "player": player,
+        "position": chunk[0].position,
+        "steps": [{
+            "tokens": [[round(float(v), 5) for v in row]
+                       for row in np.asarray(r.tokens)],
+            "token_mask": [float(v) for v in np.asarray(r.token_mask)],
+            "state": [round(float(v), 6) for v in np.asarray(r.sensors)],
+            "role": [round(float(v), 6) for v in np.asarray(r.role)],
+            "memory": [round(float(v), 6) for v in np.asarray(r.memory)],
+            "plan": [round(float(v), 6) for v in np.asarray(r.plan)]
+            if r.plan is not None else [],
+            "phase": int(r.phase),
+            "minute": round(float(r.minute), 2),
+        } for r in chunk],
+    })
+
+
+def save_situational_corpus(records: List[DecisionRecord], path: str) -> int:
+    """Write the situational corpus (the sequences the BPTT trains on)."""
+    sequences = build_situational_sequences(records)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"sequences": sequences}, f)
+    steps = sum(len(s["steps"]) for s in sequences)
+    print(f"Saved situational corpus ({len(sequences)} sequences, "
+          f"{steps} steps) to {path}")
+    return len(sequences)
+
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Build a fitness surrogate from real matches.")
@@ -1357,6 +1542,12 @@ if __name__ == "__main__":
                    help="On-ball policy that actually decides during collection. "
                         "'heuristic' is the documented default; 'neural' is an "
                         "on-policy run against whatever brains/ holds.")
+    p.add_argument("--situational-out", type=str, default=None,
+                   help="Also save the SITUATIONAL corpus: the entity tokens, "
+                        "the role block, the memory block and the possession "
+                        "phase for every decision, grouped into per-player "
+                        "SEQUENCES for BPTT.  This is the corpus the "
+                        "attention + recurrence + plan brain trains on.")
     p.add_argument("--raw-out", type=str, default=None,
                    help="Also save the RAW (sensors, intent, reward) pairs, so "
                         "the surrogate can be REFITTED without re-running the "
@@ -1381,7 +1572,7 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     styles = [s.strip() for s in args.styles.split(",") if s.strip()] if args.styles else None
-    if args.raw_out:
+    if args.raw_out or args.situational_out:
         raw = collect_from_matches(n_matches=args.matches, seed=args.seed,
                                    verbose=True, away_styles=styles,
                                    policy=args.policy, explore=args.explore,
@@ -1392,7 +1583,11 @@ if __name__ == "__main__":
         print(f"Surrogate: {surrogate.report()}")
         surrogate.save(args.out)
         print(f"Saved surrogate to {args.out}")
-        save_raw_corpus(raw, args.raw_out)
+        if args.raw_out:
+            save_raw_corpus(raw, args.raw_out)
+        if args.situational_out:
+            save_situational_corpus(list(_SITUATIONAL_RECORDS),
+                                    args.situational_out)
     else:
         surrogate = build_surrogate(n_matches=args.matches, seed=args.seed,
                                     save_path=args.out, away_styles=styles,

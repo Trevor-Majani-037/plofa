@@ -9233,3 +9233,208 @@ chronology, or anything that spreads events over time:**
   VARIED LENGTH ✓, not more of them ✓ — and a claim that the engine plays
   "2-4 possessions a minute where real football plays 10-12" was WRONG ✓
   (the real figure is ~3-4 ✓) and is corrected above ✓.
+
+## THE SITUATIONAL BRAIN — ATTENTION, RECURRENCE, MEMORY AND A PLAN (2026-10-22)
+
+**THE USER'S ASK, verbatim:** *"fix what you say is missing, no recurrence, no
+memory and no planning"* — and then *"and also attention is missing too"*.
+
+**WHAT WAS ACTUALLY MISSING, MEASURED (not asserted).** The shipped brain
+(`football_brain.FootballBrain`) is `relu(x@w1+b1) → relu(h@w2+b2) → h@w3+b3`:
+a PURE FUNCTION of a 24-ish dim sensor vector.  No recurrence (the same
+situation always gives the same answer), no memory (nothing about what just
+happened to this player is in the vector), no attention (the vector is a
+HAND-POOLED summary — "nearest defender", "best forward teammate" — so the
+network never sees WHO it is looking at), no planning.
+
+**AND THE STATE COULD NOT HAVE LIVED ON THE BRAIN.** `FootballBrain`
+instances are cached **per POSITION** (`brain_integration._pos_brain_cache`),
+so every centre-back in a match shares ONE brain object.  A recurrent state
+on the brain would be shared by eleven players and would hold whichever
+player's touch happened to be last.  **The state has to live with the
+PLAYER** — so `player_state.py` owns it and `PositionEngine` holds the
+container (a parallel dict to `self.states`, deliberately SEPARATE: a minute
+boundary resets position and must not wipe what the brain remembers).
+
+### THE FOUR MECHANISMS, AND WHERE EACH ONE LIVES
+
+| capability | mechanism | file |
+|---|---|---|
+| **RECURRENCE** | a GRU cell; `h` carried touch to touch | `situational_brain.py` + `player_state.py` |
+| **ATTENTION** | a learned query over an ENTITY SET (masked softmax) | `situational_brain.py` + `situation_tokens.py` |
+| **MEMORY** | the episodic memory as an 8-d INPUT block | `memory_features.py` |
+| **PLANNING** | a plan head + a team plan with HYSTERESIS | `situational_brain.py` + `player_state.py` |
+
+The architecture: 12-feature entity tokens → attention → a context vector;
+`[state(24), role(9), memory(8), plan(6)]` → GRU → **intent logits (10)** and
+**plan logits (4)**.  ~14k parameters (the shipped brain is 2,186).  Pure
+numpy forward AND backward — the project has no gradient library, so the
+backward pass is written out by hand, and that makes a finite-difference
+check MANDATORY rather than optional.
+
+### ⛔ THE GRADIENT CHECK CAUGHT THREE REAL BUGS, ALL SILENT
+
+A hand-written backward pass that is wrong does not crash — it trains
+badly and looks like "the network is hard to train".  Every one of these
+was found by `_diag_situational_gradcheck.py`, and every one would have
+shipped:
+
+1. **THE GRU's UPDATE-GATE SIGN.** `dh'/dz = h - n`, not `n - h`.  With the
+   sign backwards the update gate becomes an ANTI-update gate — and the
+   loss still falls, because the network can compensate.
+2. **THE SHORT SOFTMAX JACOBIAN.** `alpha*(1-alpha)*dalpha` is only valid
+   when `sum(alpha*dalpha) == 0`, i.e. when the loss depends on alpha only
+   through a shift-invariant function.  Here the loss depends on the
+   CONTEXT `ctx = alpha @ v`, so `sum(alpha*dalpha) = dctx·ctx`, which is
+   generally NOT zero.  The short form silently drops a term.
+3. **A TRANSPOSED WEIGHT-GRADIENT ORIENTATION.** For `v = e @ W`,
+   `dW = e.T @ dv` — the "obvious" `dv.T @ e` is the TRANSPOSE of the right
+   answer.  Because `W` is SQUARE (32×32) the shapes match perfectly and
+   numpy raises nothing.
+
+**The measured agreement after the fixes: worst relative error 1.2e-06**
+across all 17 weight tensors — finite-difference noise.  The check is now a
+PERMANENT test (`tests/test_situational_brain.py`), not a probe.
+
+### THE MEMORY HAD BARELY EXISTED OUTSIDE PRODUCTION — AND THAT WAS THE REAL FIX
+
+`engage_mind_observer()` was called from `auto_run_match.py` and
+`season_manager.py` only.  The scratch runner and every real-roster
+harness had **NO memory at all** — so "the memory is a sampling bias on a
+rarely-used layer" was the accurate description.  Three changes:
+
+1. **A mind exists for EVERY player, in EVERY runner** — provisioned in
+   `MatchEngine.set_squad`.
+2. **The memory tap is the match engine's DEFAULT observer** — the tap
+   itself moved to `cognition.mind.observe_event` so there is ONE
+   definition of "a match event becomes a memory", and `match_engine`
+   installs it by default.  `set_cognition_observer(None)` still disables
+   it, so the old behaviour is reachable.
+3. **The memory becomes an INPUT BLOCK**, so the network can LEARN from it
+   instead of a hand-written bias deciding what it means.
+
+**⚠️ PART 1 IS THE DANGEROUS ONE AND IT IS EXPLICIT.** `brain_integration.
+_maybe_cognition` routes to the mind path whenever a mind EXISTS, and
+`CognitionDecisionBrain.decide` is a DIFFERENT pipeline (FOV-gated scene,
+tempered sampling).  Auto-provisioning an ENGAGED mind would have silently
+changed every decision in every match.  **The provisioned minds are
+UNENGAGED**: they accumulate memory, they do NOT change the decision path.
+
+**MEASURED, THE PROOF THAT NOTHING SHIPPED CHANGED** (`tools/diag/
+_diag_memory_neutrality.py`, one real-roster match per PROCESS, the same
+seed, the shipped brains):
+
+| arm | events | goals | DIGEST | minds | memories observed |
+|---|---|---|---|---|---|
+| `off` (no provisioning, tap disabled) | 3710 | 1 | `976b615da5e1` | 0 | 0 |
+| `on` (the whole memory fix) | 3710 | 1 | **`976b615da5e1`** | 22 | 375 |
+
+**BYTE-IDENTICAL**, and the memory FILLS (all 22 players carry a non-zero
+memory block).  Both arms ran in separate processes because the mind
+registry is module state.
+
+### A MEASURED UNITS DISCREPANCY, RECORDED RATHER THAN WORKED AROUND
+
+`MemorySystem.DECAY_PER_SECOND` is documented as per-SECOND and
+`MemoryEvent.age` as "seconds since the event".  **In the live path
+neither is true**: the observer calls `mind.observe(event)` with
+`dt=1.0`, ONCE PER EVENT.  So `age` counts the player's **INVOLVEMENTS**,
+and the decay is 0.999 per involvement — within one match a memory
+essentially never fades (it would take ~2,300 involvements to fall below
+`FORGET_BELOW`).  The features are therefore computed from
+`memory.events` with an EXPLICIT recency weight rather than from
+`recall()`.  **The docstrings are NOT corrected here** — changing the decay
+constant changes every mind's behaviour and is a separate calibration.
+
+### THE PLAN IS TEAM STATE, AND IT IS STICKY ON PURPOSE
+
+`TeamPlan.plan_id` indexes `possession_phases.PossessionPhase` — the
+engine's OWN phase machine — so the plan head's supervision signal is the
+thing the engine already does, not a new hand-written table.  Adoption is
+a **HYSTERESIS**: a proposed plan must be proposed twice in a row at or
+above 0.6 confidence.  A plan that flickered every touch would be noise
+dressed as a plan.  The plan does **NOT** survive a turnover: a team that
+loses the ball mid-attack is not still "attacking the box".
+
+**THE PLAN IS ADVISORY, NOT AUTHORITATIVE.** The engine's phase machine is
+NOT overridden.  The plan is an INPUT that conditions the players'
+decisions.  Making it authoritative is a separate, deliberate decision with
+its own gate.
+
+**THE PLAN INPUT IS TEACHER-FORCED IN THE CORPUS, and that has a price.**
+The shipped brains have no plan head, so during collection there is no
+proposed plan — the corpus records the engine's OWN phase as the plan
+input, and keeps the ground truth alongside it.  At inference the plan
+input is the head's own adopted proposal.  That is the standard
+teacher-forcing exposure gap, and it is measured rather than hidden: the
+agreement between the head's proposal and the phase the engine is really
+in IS the number that says whether the learned plan is real.
+
+### THE SHIPPED SET IS UNTOUCHED, BY CONSTRUCTION
+
+The new brain is a SEPARATE class with its own schema, and the router
+chooses by the brain's TYPE (`_maybe_situational` in `brain_integration.py`):
+**an ordinary `FootballBrain` never enters this path.**  There is no flag
+to forget to turn off.  The shipped `brains/` set is 31/32/33-wide MLP
+brains and stays exactly that.
+
+### THE GATES
+
+- **`tests/test_situational_brain.py` (16 tests, NEW file)** — the finite-
+  difference gradient check (the load-bearing class), the attention mask, a
+  masked-token weight check, determinism, the plan's hysteresis, the
+  memory block (zeros without memory, changed with it), the provisioned
+  mind being UNENGAGED, an existing mind being left alone, the SHIPPED
+  path not routing into any of this, the corpus shape, and a trainer that
+  must REDUCE the loss and land on the target intent (non-vacuity).
+- **`tools/diag/_diag_situational_brain_guard.py` — 8/8 CAUGHT**, files restored
+  byte-identically (sha256), baseline green before and after: M1 the GRU
+  gate sign, M2 the short softmax Jacobian, M3 the transposed orientation,
+  M4 the attention mask ignored, M5 the plan hysteresis removed, M6 the
+  memory block zeroed, M7 the provisioned mind engaged, M8 an ordinary
+  brain routed situationally.  Every mutant must still **COMPILE** — a
+  syntax error counted as a caught mutation proves nothing.
+- **PROBES:** `_diag_state_smoke.py` (the state and the plan's hysteresis),
+  `_diag_situational_gradcheck.py` (the finite differences),
+  `_diag_situational_smoke.py` (all four mechanisms connected to a live
+  decision, and the shipped path untouched),
+  `tools/diag/_diag_memory_neutrality.py` (the byte-identical A/B).
+- **⚠️ A FILENAME COLLISION ALMOST COST A COMMITTED PROBE.** The negative
+  control for this work was first written to
+  `tools/diag/_diag_situational_guard.py` — **a name a PRIOR session had
+  already committed** (it is the negative control for
+  `tests/test_situational_exploration.py`, the corpus-coverage work).  The
+  write silently OVERWROTE it; `git status` showed the file as `M`, not
+  `??`, and that was the only clue.  It was restored from `HEAD` and this
+  work's control was renamed to `_diag_situational_brain_guard.py`.
+  **A `M` on a file you believe is NEW means you have overwritten
+  somebody's work — check `git log -- <path>` before you commit.**
+- **EXISTING SUITES GREEN:** `test_football_brain` + `test_decision_brain`
+  + `test_cognition_brain` + `test_determinism` = **66 passed** (including
+  a full real match); `test_brain_schema`, `test_role_features`,
+  `test_brain_schema_alignment` (39) all pass.
+
+### WHAT IS NOT DONE, AND WHAT IT COSTS
+
+**THE BRAIN IS UNTRAINED.**  The plumbing, the objective and the trainer
+exist; the CORPUS does not.  The chain is:
+
+1. **COLLECT** — `surrogate_collect.py --situational-out` now records the
+   entity tokens, the role block, the memory block and the possession
+   phase for every decision, and groups them into per-player SEQUENCES for
+   BPTT (a sequence is cut at a possession change, because both the
+   recurrence and the plan reset there).  **12 matches ≈ 25–30 min.**
+2. **RETRAIN** — `situational_distill.distill_situational` per position.
+   The objective is UNCHANGED (the surrogate's own per-bucket argmax over
+   the role's vocabulary), so the CENSUS comparison stays apples-to-apples.
+3. **CENSUS** — `≤3 intents`, any action over 40%, or a role-specific
+   action out of role = REJECTED, regardless of fitness.
+4. **REAL-MATCH GATE** — pass maps and the eye, never fitness.
+
+**TWO HONEST LIMITS, STATED NOW RATHER THAN AFTER THE RETRAIN:**
+- the teacher-forcing exposure gap in the plan input (above);
+- the plan head's supervision is the engine's own phase, so the learned
+  plan can at best REPRODUCE the engine's plan — it is a learned read-out
+  of the phase machine, not an emergent plan.  Making it a genuine plan
+  needs a target that is NOT the engine's own phase, and that is a
+  separate design question.

@@ -257,3 +257,40 @@ def clear_minds() -> None:
 def new_mind(**kwargs) -> PlayerMind:
     """Convenience factory for a fresh, engaged mind."""
     return PlayerMind(**kwargs)
+
+
+# ─────────────────────────────────────────────────────────────
+# THE MEMORY TAP — one event in, the involved players' minds grow
+# ─────────────────────────────────────────────────────────────
+# WHY IT LIVES HERE AND NOT IN ``cognition_brain``
+# -----------------------------------------------
+# The tap is the ONE definition of "a match event becomes a memory".  It
+# used to live in ``cognition_brain._observe_event`` and be installed by
+# ``engage_mind_observer()`` — which ONLY the production runner calls, so a
+# memory in the scratch runner or a real-roster harness was always empty.
+# A memory that only exists in production is not a memory.
+#
+# ``match_engine`` now installs this tap as its DEFAULT observer, so every
+# runner has one.  It is a no-op for any player with no mind, so a match
+# that provisions no minds costs one dict lookup per absorbed event.
+
+def observe_event(event: Any) -> None:
+    """Feed one match event into the minds of the players involved.
+
+    ``MatchEvent.player`` / ``.secondary_player`` are NAME STRINGS, not
+    profiles, so the dispatcher matches on the name either way.  A mind
+    with ``engaged=False`` still ACCUMULATES memory here — ``engaged``
+    gates the DECISION path, not the memory.
+    """
+    for actor in (
+        getattr(event, "player", None),
+        getattr(event, "secondary_player", None),
+    ):
+        if actor is None:
+            continue
+        name = actor if isinstance(actor, str) else getattr(actor, "name", None)
+        if not name:
+            continue
+        mind = _minds.get(name)
+        if mind is not None:
+            mind.observe(event)
