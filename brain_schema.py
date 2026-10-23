@@ -35,18 +35,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 
 # ─────────────────────────────────────────────────────────────
 # REGISTRY
 # ─────────────────────────────────────────────────────────────
 
 BRAIN_FORMAT_VERSION = 2          # meta-aware file format
-ARCH_VERSION = 1                  # architecture family version (weights layout)
+ARCH_VERSION = 3                  # architecture family version (weights layout)
 SENSOR_SCHEMAS = (
     "v1_24d",             # shared 24-d vector (all legacy brains)
     "v2_role_features",   # 24-d shared + role-family block (7 or 8 dims)
     "v3_tactics_context", # 24-d + role block (7/8) + tactics-context block (12)
     "v4_offball_cert",    # off-ball 24-d + ball-certainty slot (25-d, press gate)
+    "v5_situational",     # 24-d + role (9) + memory (8) + plan (6) = 47-d, attention + GRU + plan head
 )
 NORMALIZATION_VERSIONS = ("v1",)  # input normalization families
 DNA_SCHEMAS = ("v1",)             # DNA attribute families
@@ -67,14 +70,19 @@ BRAIN_KINDS = (
     "offball_press_gate",     # OffBallBrain
     "team_press_engagement",  # TeamPressBrain
     "defensive_action",       # DefensiveActionBrain
+    "situational",            # SituationalBrain (attention + recurrence + memory + plan)
 )
 
-# Expected architecture (in, h1, h2, out) per kind at ARCH_VERSION 1.
+# Expected architecture per kind at each ARCH_VERSION.
+# ARCH_VERSION 1: MLP brains (24, 32, 32, 10) etc.
+# ARCH_VERSION 2: not used (reserved)
+# ARCH_VERSION 3: SituationalBrain (attention + GRU + plan head) - completely different layout
 ARCH_BY_KIND: Dict[Tuple[int, str], Tuple[int, int, int, int]] = {
     (1, ""):                      (24, 32, 32, 10),
     (1, "offball_press_gate"):    (24, 32, 32, 1),
     (1, "team_press_engagement"): (24, 32, 32, 1),
     (1, "defensive_action"):      (24, 32, 32, 4),
+    (3, "situational"):           (47, 79, 32, 14),  # (situation_in, U_D, HIDDEN_D, OUT_D+PLAN_OUT_D)
 }
 
 # Default scratch namespace for meta-aware (v2) files — production ``brains/``
@@ -161,9 +169,12 @@ def validate(data: Dict[str, Any]) -> BrainMeta:
 
     meta, is_v1 = _resolve_meta(data)
 
-    _check(meta.arch_version == ARCH_VERSION,
+    # Support multiple arch_versions: 1 (legacy MLP brains), 3 (situational brain)
+    SUPPORTED_ARCH_VERSIONS = (1, 3)
+    
+    _check(meta.arch_version in SUPPORTED_ARCH_VERSIONS,
            f"incompatible arch_version {meta.arch_version!r}; "
-           f"this loader supports only {ARCH_VERSION!r}")
+           f"this loader supports only {SUPPORTED_ARCH_VERSIONS}")
     _check(meta.sensor_schema in SENSOR_SCHEMAS,
            f"incompatible sensor_schema {meta.sensor_schema!r}; "
            f"known: {SENSOR_SCHEMAS}")
@@ -219,10 +230,39 @@ def validate(data: Dict[str, Any]) -> BrainMeta:
                    f"arch {actual} incompatible with sensor_schema "
                    f"'v4_offball_cert' at arch_version "
                    f"{meta.arch_version} (expected [25, 32, 32, 1])")
-        else:
-            _check(actual == expected,
-                   f"arch {actual} incompatible with kind {kind!r} at "
-                   f"arch_version {meta.arch_version} (expected {expected})")
+        elif meta.sensor_schema == "v5_situational" and kind == "situational":
+            # SituationalBrain: attention + GRU + plan head.
+            # Input: 47-d (24+9+8+6), embed 32, GRU 32, dual heads (10+4).
+            # Weight layout is completely different from MLP brains.
+            # We validate by checking the expected weight matrix shapes.
+            expected_shapes = {
+                "w_e": (12, 32),   # token embedding
+                "w_q": (47, 32),   # query projection
+                "w_k": (32, 32),   # key projection
+                "w_v": (32, 32),   # value projection
+                "w_z": (79, 32),   # GRU update gate input
+                "u_z": (32, 32),   # GRU update gate recurrent
+                "b_z": (32,),
+                "w_r": (79, 32),   # GRU reset gate input
+                "u_r": (32, 32),
+                "b_r": (32,),
+                "w_n": (79, 32),   # GRU new gate input
+                "u_n": (32, 32),
+                "b_n": (32,),
+                "w_o": (32, 10),   # intent output
+                "b_o": (10,),
+                "w_p": (32, 4),    # plan output
+                "b_p": (4,),
+            }
+            for name, expected_shape in expected_shapes.items():
+                _check(name in data.get("weights", {}),
+                       f"situational brain missing weight {name!r}")
+                actual_shape = tuple(data["weights"][name].shape
+                                    if hasattr(data["weights"][name], "shape")
+                                    else np.asarray(data["weights"][name]).shape)
+                _check(actual_shape == expected_shape,
+                       f"situational brain weight {name!r} has shape "
+                       f"{actual_shape}, expected {expected_shape}")
 
     return meta
 

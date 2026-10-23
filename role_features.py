@@ -262,6 +262,19 @@ def _role_family(position: str) -> Optional[str]:
     return ROLE_FAMILY.get(position.strip().rstrip("0123456789"))
 
 
+#: A canonical position for each role family (used when a family needs
+#: to be represented by a single position name).
+FAMILY_CANONICAL_POS: Dict[str, str] = {
+    "GK": "GK", "CB": "CB", "FB": "LB", "DM": "CDM", "CM": "CM",
+    "AM": "CAM", "WING": "LW", "ST": "ST",
+}
+
+
+def canonical_position(family: str) -> str:
+    """Return a canonical position name for a role family."""
+    return FAMILY_CANONICAL_POS.get(family, family)
+
+
 # ─────────────────────────────────────────────────────────────
 # GEOMETRY CONTEXT
 # ─────────────────────────────────────────────────────────────

@@ -47,6 +47,9 @@ def main() -> int:
     # memory + plan brain).  The router in brain_integration chooses by
     # the brain's TYPE, so this is all that differs between the arms.
     brain_kind = sys.argv[5] if len(sys.argv) > 5 else "mlp"
+    # Perception regime: "on" = production (150° cone, range limit, noise),
+    # "off" = identity regime (default, matches heuristic arm)
+    perception = sys.argv[6] if len(sys.argv) > 6 else "off"
 
     import numpy as np
     from _diag_v7_export_real import run_real_match
@@ -55,7 +58,7 @@ def main() -> int:
     np.random.seed(seed)
     out = os.path.join(OUT_DIR, f"seed{seed}_{os.path.basename(brains_dir)}")
     result, bound, _out = run_real_match(brains_dir, home, away, seed, out,
-                                         brain_kind=brain_kind)
+                                         brain_kind=brain_kind, perception=perception)
 
     import glob
     jsons = glob.glob(os.path.join(out, "*.json"))

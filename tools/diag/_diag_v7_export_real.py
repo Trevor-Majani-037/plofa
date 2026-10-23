@@ -61,7 +61,7 @@ def _load_brain(path: str, kind: str = "mlp"):
 
 def run_real_match(brains: str, home: str, away: str, seed: int,
                    out: str, matchday: int = 3, date_str: str = "2026-09-06",
-                   brain_kind: str = "mlp"):
+                   brain_kind: str = "mlp", perception: str = "off"):
     """A real-roster match with the CHALLENGER bound to the home XI only.
 
     The auto-load stays on the shipped set (so the away side is the control
@@ -116,6 +116,15 @@ def run_real_match(brains: str, home: str, away: str, seed: int,
     prs._apply_starting_stamina(all_players, {**home_avail, **away_avail},
                                 season_state, match_date)
     prs._attach_souls(all_players)
+
+    # PERCEPTION: enable or disable the perception layer
+    from perception import set_perception, PerceptionConfig
+    if perception == "on":
+        set_perception(PerceptionConfig(enabled=True, role_blocks=True,
+                                        ball_vision=True, ball_vision_movement=True,
+                                        offball_actor_perception=True))
+    else:
+        set_perception(PerceptionConfig(enabled=False))
 
     clear_registry()
     bound = 0

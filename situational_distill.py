@@ -59,7 +59,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from decision_brain import PlayerIntent
-from role_features import ROLE_INTENTS, _role_family
+from role_features import ROLE_INTENTS, _role_family, ROLE_FAMILY, canonical_position
 from situational_brain import (
     HIDDEN_D, MEMORY_D, OUT_D, PLAN_D, PLAN_OUT_D, ROLE_D, STATE_D,
     TOKEN_D, SituationalBrain,
@@ -471,7 +471,7 @@ def distill_all(
                 continue
             train, eval_ = split_sequences(seqs, seed=seed, holdout=holdout)
             brain, report = distill_situational(
-                family, surrogate, train, epochs=epochs,
+                canonical_position(family), surrogate, train, epochs=epochs,
                 learning_rate=learning_rate, seed=seed, verbose=verbose)
 
             mix = _mix_over(brain, eval_ or train)

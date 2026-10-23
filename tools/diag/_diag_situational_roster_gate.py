@@ -51,10 +51,11 @@ if not os.path.exists(PY):
     PY = sys.executable
 
 
-def run_one(brains: str, seed: int, kind: str, home: str, away: str) -> dict:
+def run_one(brains: str, seed: int, kind: str, home: str, away: str,
+            perception: bool) -> dict:
     """One match, in its OWN process."""
     proc = subprocess.run(
-        [PY, RUNNER, brains, str(seed), home, away, kind],
+        [PY, RUNNER, brains, str(seed), home, away, kind, "on" if perception else "off"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
         timeout=1800)
     if proc.returncode != 0:
@@ -140,16 +141,19 @@ def main() -> int:
     ap.add_argument("--home", default="Natrican")
     ap.add_argument("--away", default="Tryox City")
     ap.add_argument("--control-dir", default="brains")
+    ap.add_argument("--perception", choices=("off", "on"), default="off",
+                    help="'off' = identity regime (default), 'on' = production condition")
     A = ap.parse_args()
 
     seeds = [int(s) for s in A.seeds.split(",") if s.strip()]
     out_dir = os.path.join(ROOT, "plofa_output", "_roster_gate")
 
     rows = []
+    perception = A.perception == "on"
     for seed in seeds:
         for label, brains, kind in (("control", A.control_dir, "mlp"),
                                     ("challenger", A.brains, "situational")):
-            res = run_one(brains, seed, kind, A.home, A.away)
+            res = run_one(brains, seed, kind, A.home, A.away, perception)
             geo = read_geometry(
                 os.path.join(out_dir, f"seed{seed}_{os.path.basename(brains)}"),
                 A.home)
