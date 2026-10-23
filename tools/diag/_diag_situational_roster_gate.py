@@ -151,7 +151,7 @@ def main() -> int:
     rows = []
     perception = A.perception == "on"
     for seed in seeds:
-        for label, brains, kind in (("control", A.control_dir, "mlp"),
+        for label, brains, kind in (("control", "brains_backup_validated_20260911_084143", "mlp"),
                                     ("challenger", A.brains, "situational")):
             res = run_one(brains, seed, kind, A.home, A.away, perception)
             geo = read_geometry(
