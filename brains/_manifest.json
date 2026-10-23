@@ -1,23 +1,30 @@
 {
-  "positions": [
-    "RW"
-  ],
-  "generations": 80,
-  "population": 32,
-  "states": 300,
-  "role_features": true,
-  "tactics_context": false,
-  "perception": true,
-  "perception_roles": true,
-  "results": {
-    "RW": {
-      "best_fitness": 0.8211,
-      "generations": 80,
-      "seed": 123,
-      "elapsed_s": 323.2,
-      "saved_to": "brains_switchfix\\RW.json",
-      "input_size": 32,
-      "sensor_schema": "v2_role_features"
-    }
+  "created": "2026-10-23T10:54:02.025087",
+  "surrogate": "brains/surrogate_pos_v8_situational.json",
+  "corpus": "brains/surrogate_pos_v8_situational.sequences.json",
+  "brains_dir": "brains/",
+  "brains": {
+    "CAM.json": 468805,
+    "CB.json": 468441,
+    "CDM.json": 468616,
+    "CF.json": 468390,
+    "CM.json": 468694,
+    "GK.json": 469008,
+    "LB.json": 468730,
+    "LW.json": 468372,
+    "RB.json": 468730,
+    "RW.json": 468372,
+    "ST.json": 468390,
+    "_distill_report.json": 9794,
+    "_manifest.json": 467,
+    "_manifest_all.json": 2328
+  },
+  "config": {
+    "architecture": "situational",
+    "params_per_brain": 14000,
+    "epochs": 80,
+    "seed": 123,
+    "sensor_schema": "v5_situational",
+    "arch_version": 3
   }
 }
