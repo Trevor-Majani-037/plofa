@@ -347,6 +347,19 @@ def run():
     else:
         print("  ⚠️  Percy not found in squads — chosen-one brain not wired.")
 
+    # ── Zachery Worth — The Neymar ──
+    # Wire Zachery's situational brain (defender-prediction WING features)
+    # and never-forgetting mind so he's active in this runner for testing.
+    from zachery_the_chosen import wire_zachery
+    zachery_player = next(
+        (p for p in all_players_flat if p.name in ("Zachery Worth", "Zachery")),
+        None,
+    )
+    if zachery_player is not None:
+        wire_zachery(player=zachery_player, train_if_missing=False)
+    else:
+        print("  ⚠️  Zachery not found in squads — chosen-one brain not wired.")
+
     # ── Match config ──────────────────────────────────────────
     config = MatchConfig(
         home_team=HOME_TEAM,

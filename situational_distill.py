@@ -71,7 +71,9 @@ PLAN_LOSS_W = 0.35
 
 
 def _vocabulary(position: str) -> List[PlayerIntent]:
-    fam = _role_family(position) or ""
+    # Handle both position names (RW, LW, CB, etc.) and family names (WING, FB, etc.)
+    # First try to get family from position name
+    fam = _role_family(position) or position
     names = ROLE_INTENTS.get(fam, frozenset())
     return [i for i in PlayerIntent if i.value in names]
 
@@ -207,6 +209,9 @@ def distill_situational(
     seed: int = 123,
     plan_loss_w: float = PLAN_LOSS_W,
     verbose: bool = False,
+    brain: Optional[SituationalBrain] = None,
+    hidden_size: int = 32,
+    input_size: int = 51,
 ) -> Tuple[SituationalBrain, Dict[str, Any]]:
     """Fit one position's situational brain by BPTT over its sequences.
 
@@ -216,7 +221,8 @@ def distill_situational(
     if not sequences:
         raise ValueError("no sequences to train on")
     rng = np.random.default_rng(seed)
-    brain = SituationalBrain.random(seed=seed)
+    if brain is None:
+        brain = SituationalBrain.random(seed=seed, hidden_size=hidden_size, input_size=input_size)
 
     params = [brain.w[k] for k in sorted(brain.w)]
     keys = sorted(brain.w)

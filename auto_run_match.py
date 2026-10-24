@@ -1257,6 +1257,22 @@ def run(force_replay: bool = False):
         wire_percy(player=percy_player, train_if_missing=False)
     else:
         print("  ⚠️  Percy not found in squads — chosen-one brain not wired.")
+    # ── Zachery Worth — The Neymar ──
+    # Wire Zachery's situational brain (defender-prediction WING features:
+    # marker_approach_speed, marker_commitment, escape_lane_left/right)
+    # and his never-forgetting mind under his exact roster name so
+    # NeuralDecisionBrain serves him before any position-file auto-load.
+    # No other player is affected.
+    from zachery_the_chosen import wire_zachery
+    zachery_player = next(
+        (p for p in all_players_flat if p.name in ("Zachery Worth", "Zachery")),
+        None,
+    )
+    if zachery_player is not None:
+        wire_zachery(player=zachery_player, train_if_missing=False)
+    else:
+        print("  ⚠️  Zachery not found in squads — chosen-one brain not wired.")
+
     engine = MatchEngine(config, HOME_STYLE, AWAY_STYLE)
     # Live brain-manager (since 2026-09-20 wired by default): the club's
     # persisted mind/memory drives posture/pressing/urgency via the engine's

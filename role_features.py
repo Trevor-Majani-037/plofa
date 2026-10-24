@@ -152,6 +152,11 @@ MENU_NAMES: Dict[str, List[str]] = {
         "box_arrival",          # teammates arriving in the opponent box
         "cover_behind",         # 1 - proximity of cover behind (high = stranded)
         "pass_lane_open",       # openness of the BEST forward teammate (see _forward_options)
+        # ── Neymar defender-prediction features (2026-10-24) ──────────────
+        "marker_approach_speed",  # how fast the nearest defender is closing (0=static, 1=sprinting)
+        "marker_commitment",      # defender's lateral shift (high = committed, feint opportunity)
+        "escape_lane_left",      # openness of the lane to the carrier's left
+        "escape_lane_right",     # openness of the lane to the carrier's right
     ],
     "ST": [
         "cb_room",              # room to the nearest CB (high = unmarked)
@@ -637,8 +642,56 @@ def _wing_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
 
     _, pass_lane_open = _forward_options(x, y, tms_n, defs, pe, ar)
 
+    # ── Neymar defender-prediction features ──────────────────────────────
+    # marker_approach_speed: how fast the nearest defender is closing on
+    # the carrier. 0 = static, 1 = sprinting (7+ m/s). The brain learns
+    # "when the marker is closing fast, dribble early; when static, hold".
+    marker_approach_speed = 0.0
+    marker_commitment = 0.0
+    if mdist is not None and corridor:
+        # find the nearest defender in the corridor
+        nearest_def = None
+        nearest_d = 999.0
+        for d in corridor:
+            dx, dy = _pos(pe, d.name, (x, y))
+            dist = math.hypot(dx - x, dy - y)
+            if dist < nearest_d:
+                nearest_d = dist
+                nearest_def = d
+        if nearest_def is not None:
+            try:
+                st = pe.states.get(nearest_def.name)
+                if st is not None:
+                    # velocity toward the carrier
+                    vx = getattr(st, "velocity_x", 0.0) or 0.0
+                    vy = getattr(st, "velocity_y", 0.0) or 0.0
+                    # component of velocity pointing at the carrier
+                    if nearest_d > 1e-6:
+                        dx_n = (x - _pos(pe, nearest_def.name, (x, y))[0]) / nearest_d
+                        dy_n = (y - _pos(pe, nearest_def.name, (x, y))[1]) / nearest_d
+                        closing = -(vx * dx_n + vy * dy_n)  # positive = closing
+                        marker_approach_speed = _clamp(closing / 7.0)
+                    # commitment: lateral velocity relative to the defender's
+                    # facing direction (high = shifting weight, feint opportunity)
+                    lateral = abs(vy) if ar else abs(vx)
+                    marker_commitment = _clamp(lateral / 3.0)
+            except Exception:
+                pass
+
+    # escape_lane_left/right: openness of the lanes to the carrier's left
+    # and right. The brain learns "when one side is more open, dribble that
+    # way" — the core of Neymar's decision-making.
+    escape_left_x = x + (8 if ar else -8)
+    escape_left_y = y + (12 if y < 34 else -12)  # toward the flank
+    escape_right_x = x + (8 if ar else -8)
+    escape_right_y = y + (-12 if y < 34 else 12)  # toward the center
+    escape_lane_left = _openness(escape_left_x, escape_left_y, defs, pe)
+    escape_lane_right = _openness(escape_right_x, escape_right_y, defs, pe)
+
     return [marker_dist, one_v_one, inside_channel, overlap_option, cross_zone,
-            cross_target_open, box_arrival, cover_behind, pass_lane_open]
+            cross_target_open, box_arrival, cover_behind, pass_lane_open,
+            marker_approach_speed, marker_commitment, escape_lane_left,
+            escape_lane_right]
 
 
 def _st_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],

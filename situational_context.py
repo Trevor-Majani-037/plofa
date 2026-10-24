@@ -93,9 +93,14 @@ def situation_blocks(player: Any, x: float, y: float,
 def assemble(state: np.ndarray, role: np.ndarray, memory: np.ndarray,
              plan: np.ndarray) -> np.ndarray:
     """Concatenate the four blocks into the network's situation vector."""
+    role_arr = np.asarray(role, dtype=np.float64).reshape(-1)
+    if role_arr.shape[0] < ROLE_D:
+        role_arr = np.pad(role_arr, (0, ROLE_D - role_arr.shape[0]))
+    elif role_arr.shape[0] > ROLE_D:
+        role_arr = role_arr[:ROLE_D]
     return np.concatenate([
         np.asarray(state, dtype=np.float64).reshape(STATE_D),
-        np.asarray(role, dtype=np.float64).reshape(ROLE_D),
+        role_arr.reshape(ROLE_D),
         np.asarray(memory, dtype=np.float64).reshape(MEMORY_D),
         np.asarray(plan, dtype=np.float64).reshape(PLAN_D),
     ])
