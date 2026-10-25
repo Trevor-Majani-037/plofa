@@ -1,92 +1,37 @@
 {
-  "surrogate": "brains_trainer/surrogate_switchfix.json",
-  "states": 300,
+  "architecture": "situational",
+  "sensor_schema": "v5_situational",
+  "training_method": "bptt_situational",
   "generations": 80,
   "population": 32,
+  "states": 300,
   "seed": 123,
-  "goal_bias": 0.0,
-  "role_features": true,
-  "tactics_context": false,
-  "perception": true,
-  "perception_roles": true,
-  "total_elapsed_s": 1113.8,
-  "results": {
-    "CB": {
-      "pos": "CB",
-      "ok": true,
-      "elapsed_s": 350.8,
-      "summary": "CB: fitness=0.7785 (349.5s) -> brains_switchfix\\CB.json",
-      "err": ""
-    },
-    "LB": {
-      "pos": "LB",
-      "ok": true,
-      "elapsed_s": 362.3,
-      "summary": "LB: fitness=0.7375 (361.1s) -> brains_switchfix\\LB.json",
-      "err": ""
-    },
-    "RB": {
-      "pos": "RB",
-      "ok": true,
-      "elapsed_s": 363.2,
-      "summary": "RB: fitness=0.9386 (362.0s) -> brains_switchfix\\RB.json",
-      "err": ""
-    },
-    "GK": {
-      "pos": "GK",
-      "ok": true,
-      "elapsed_s": 371.9,
-      "summary": "GK: fitness=0.6948 (370.7s) -> brains_switchfix\\GK.json",
-      "err": ""
-    },
-    "LW": {
-      "pos": "LW",
-      "ok": true,
-      "elapsed_s": 417.1,
-      "summary": "LW: fitness=0.8187 (416.3s) -> brains_switchfix\\LW.json",
-      "err": ""
-    },
-    "CAM": {
-      "pos": "CAM",
-      "ok": true,
-      "elapsed_s": 430.7,
-      "summary": "CAM: fitness=0.8728 (429.7s) -> brains_switchfix\\CAM.json",
-      "err": ""
-    },
-    "CDM": {
-      "pos": "CDM",
-      "ok": true,
-      "elapsed_s": 446.8,
-      "summary": "CDM: fitness=0.7166 (445.2s) -> brains_switchfix\\CDM.json",
-      "err": ""
-    },
-    "CM": {
-      "pos": "CM",
-      "ok": true,
-      "elapsed_s": 437.6,
-      "summary": "CM: fitness=0.7541 (436.7s) -> brains_switchfix\\CM.json",
-      "err": ""
-    },
-    "ST": {
-      "pos": "ST",
-      "ok": true,
-      "elapsed_s": 301.5,
-      "summary": "ST: fitness=0.7862 (300.5s) -> brains_switchfix\\ST.json",
-      "err": ""
-    },
-    "CF": {
-      "pos": "CF",
-      "ok": true,
-      "elapsed_s": 303.4,
-      "summary": "CF: fitness=0.7294 (302.3s) -> brains_switchfix\\CF.json",
-      "err": ""
-    },
-    "RW": {
-      "pos": "RW",
-      "ok": true,
-      "elapsed_s": 324.3,
-      "summary": "RW: fitness=0.8211 (323.2s) -> brains_switchfix\\RW.json",
-      "err": ""
-    }
-  }
+  "surrogate": "brains/surrogate_pos_v8_situational.json",
+  "role_families": [
+    "GK",
+    "CB",
+    "FB",
+    "DM",
+    "CM",
+    "AM",
+    "WING",
+    "ST"
+  ],
+  "position_files": {
+    "GK": "brains/GK.json",
+    "CB": "brains/CB.json",
+    "LB": "brains/LB.json",
+    "RB": "brains/RB.json",
+    "CDM": "brains/CDM.json",
+    "CM": "brains/CM.json",
+    "CAM": "brains/CAM.json",
+    "LW": "brains/LW.json",
+    "RW": "brains/RW.json",
+    "ST": "brains/ST.json",
+    "CF": "brains/CF.json"
+  },
+  "hidden_size": 32,
+  "input_size": 47,
+  "params_per_position": 14000,
+  "timestamp": "2026-10-23T14:54:34.448149"
 }

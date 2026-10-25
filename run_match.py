@@ -193,7 +193,7 @@ HOME_STARTERS = [
     ("Mateo Sanz",    "CDM", ["anchor_man", "interceptor"],         28),
     ("Luca Ferrini",  "CM",  ["box_box", "engine"],                 26),
     ("Kofi Mensah",   "CAM", ["creator", "sup_vision"],             24),
-    ("Adri Vela",     "LW",  ["dribbler", "speedster"],             22),
+    ("Zachery Worth", "LW",  ["grand_dribbler", "creator", "foul_drawer"],  23),
     ("Dragan Novak",  "ST",  ["clinical_finisher", "aerial_threat"],29),
     ("Percy",         "RW",  ["grand_dribbler", "inverted",
                                "clinical_finisher", "speedster"],   24),  # ← SOUL PLAYER

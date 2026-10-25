@@ -6,17 +6,17 @@
     "('level', '75-90', 'DEFEND')": {
       "wins": 1,
       "draws": 0,
-      "losses": 0,
-      "xg_for": 2.24,
-      "xg_against": 0.23,
+      "losses": 1,
+      "xg_for": 2.8600000000000003,
+      "xg_against": 0.63,
       "count": 0
     },
     "('level', '75-90', 'BALANCED')": {
       "wins": 1,
       "draws": 0,
-      "losses": 0,
-      "xg_for": 2.24,
-      "xg_against": 0.23,
+      "losses": 1,
+      "xg_for": 2.8600000000000003,
+      "xg_against": 0.63,
       "count": 1
     }
   }

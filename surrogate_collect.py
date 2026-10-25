@@ -1325,7 +1325,9 @@ class FitnessSurrogate:
         row = self.table.get(pos, {}).get(key, {})
         if ik in row:  # exact position cell first
             return row[ik]
-        _fam = _role_family(pos)
+        # If pos is already a family name (e.g., "WING", "FB"), use it directly.
+        # Otherwise, derive family from position name.
+        _fam = pos if pos in self.family_table else _role_family(pos)
         # A ROLE-SPECIFIC action the role cannot perform is FORBIDDEN, and
         # the check comes FIRST: it must not be readable from the position,
         # from the family, or from the global row.  The forbidden value sits

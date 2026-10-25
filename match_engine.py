@@ -1,18 +1,18 @@
 """
 PLOFA 26/27 SEASON ENGINE
 =========================
-Match Simulation Engine — Core Module
+Match Simulation Engine -- Core Module
 
 Philosophy:
     The match PLAYS ITSELF. The score is a RESULT, not an input.
     Every stat is a CONSEQUENCE of simulated events, not a random draw.
 
 Architecture:
-    MatchEngine         — The simulation timeline (this file)
-    player_dna.py       — Player archetypes & attribute system
-    event_chain.py      — Causal event chains (dribble→carry→shot)
-    stat_accumulator.py — Converts events into stats
-    exporter.py         — Excel/CSV/JSON/SQLite output
+    MatchEngine         -- The simulation timeline (this file)
+    player_dna.py       -- Player archetypes & attribute system
+    event_chain.py      -- Causal event chains (dribble->carry->shot)
+    stat_accumulator.py -- Converts events into stats
+    exporter.py         -- Excel/CSV/JSON/SQLite output
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from set_piece_routines import SetPieceRoutine
 from ball_vision import movement_ball
 from run_tracking import IntendedRunRecorder, RunTracker
 
-# Phase 2 — Manager trigger events (duplicated here to avoid circular import)
+# Phase 2 -- Manager trigger events (duplicated here to avoid circular import)
 MANAGER_TRIGGER_EVENTS = frozenset({
     "GOAL", "OWN_GOAL", "PENALTY_SCORED", "PENALTY_MISSED",
     "RED_CARD", "INJURY", "SUBSTITUTION",
@@ -58,7 +58,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 # ─────────────────────────────────────────────────────────────
-# MANAGER BRAINS — MASTER SWITCH (Phase 6 → default since Phase 10)
+# MANAGER BRAINS -- MASTER SWITCH (Phase 6 -> default since Phase 10)
 # ─────────────────────────────────────────────────────────────
 # Since 2026-09-20 the live brain-manager (manager_profile.Manager with
 # .decide) is the DEFAULT: when a real Manager is injected via set_managers
@@ -66,21 +66,21 @@ for _stream in (sys.stdout, sys.stderr):
 # target, formation stance and sub urgency.  Every engine hook guards on
 # isinstance(., Manager), so runners that inject NO manager (custom gates,
 # probes, validate harnesses) are byte-identical to the pre-Phase-6 static
-# logic — this flag only changes behaviour for managers that are wired.
+# logic -- this flag only changes behaviour for managers that are wired.
 USE_MANAGER_BRAIN = True
 
-# Phase 10 — position off-ball press-gate brains (brains_offball/*.json).
+# Phase 10 -- position off-ball press-gate brains (brains_offball/*.json).
 # True by default; a per-player Bernoulli uses the LW/RW/CM evolved brains
 # when present and falls back to the static role rate otherwise.
 _OFFBALL_POS_BRAIN_WIRED = True
 
 
 def _brain_possession_profiles(home_prof, away_prof, home_mgr, away_mgr):
-    """Phase 8 — coach's say on ball share (opt-in, flag-gated).
+    """Phase 8 -- coach's say on ball share (opt-in, flag-gated).
 
     When the brain path is on and a live Manager is wired, wrap each raw
     profile in a proxy carrying the coach's CURRENT possession target
-    (stored posture/pressing — no decide() poll). ``style`` and
+    (stored posture/pressing -- no decide() poll). ``style`` and
     ``has_identity`` pass through untouched so the philosophy feedback
     (Lever A) and style premiums behave exactly as before. Flag OFF (or
     static managers) returns the raw profiles unchanged.
@@ -183,7 +183,7 @@ def _apply_perception_seed(seed: Optional[int]) -> None:
 
     Perception is a process-wide global (``get_perception_config``), so a naive
     "set it and move on" would leak one match's seed into every later match in
-    the same process — exactly the kind of cross-match contamination this whole
+    the same process -- exactly the kind of cross-match contamination this whole
     investigation is about.
 
     Only this function's own change is ever undone. ``seed=None`` restores the
@@ -242,21 +242,72 @@ def _team_press_g(engine: Any, team: str, ball_x: float, ball_y: float,
     except Exception:
         return 1.0
 
+# GAME STATE MIND WIRING
+_GAME_STATE_MIND = None
+_GAME_STATE_MIND_AUTO = True
+_GAME_STATE_MIND_DIR = 'brains'
+_GAME_STATE_MIND_LOADED = False
 
+def set_game_state_mind_dir(path):
+    global _GAME_STATE_MIND_DIR, _GAME_STATE_MIND_LOADED
+    _GAME_STATE_MIND_DIR = path
+    _GAME_STATE_MIND_LOADED = False
+
+def set_game_state_mind_auto(auto_load):
+    global _GAME_STATE_MIND_AUTO
+    _GAME_STATE_MIND_AUTO = bool(auto_load)
+
+def set_game_state_mind(mind):
+    global _GAME_STATE_MIND
+    _GAME_STATE_MIND = mind
+
+def load_game_state_mind(path):
+    from gamestate_mind import GameStateMind
+    mind = GameStateMind.load(path)
+    set_game_state_mind(mind)
+    global _GAME_STATE_MIND_LOADED
+    _GAME_STATE_MIND_LOADED = True
+    return mind
+
+def _ensure_game_state_mind_loaded():
+    global _GAME_STATE_MIND, _GAME_STATE_MIND_LOADED
+    if _GAME_STATE_MIND_LOADED:
+        return
+    _GAME_STATE_MIND_LOADED = True
+    if _GAME_STATE_MIND_AUTO and _GAME_STATE_MIND is None:
+        import os
+        _path = os.path.join(_GAME_STATE_MIND_DIR, 'gamestate_mind.json')
+        if os.path.exists(_path):
+            try:
+                load_game_state_mind(_path)
+            except Exception:
+                pass
+
+def _game_state_mods(engine, team, minute, scorediff, possession_pct, xg_diff):
+    _ensure_game_state_mind_loaded()
+    mind = _GAME_STATE_MIND
+    if mind is None:
+        return {'press_mult': 1.0, 'risk_tol': 1.0, 'def_urgency': 1.0, 'att_direct': 1.0}
+    try:
+        from gamestate_mind import GameStateMind
+        feat = GameStateMind.extract_features(minute, scorediff, possession_pct, xg_diff, 0, 0, team == engine.state.home_team)
+        return mind.modulate(feat)
+    except Exception:
+        return {'press_mult': 1.0, 'risk_tol': 1.0, 'def_urgency': 1.0, 'att_direct': 1.0}
 # ─────────────────────────────────────────────────────────────
 # COGNITION OBSERVER (episodic-memory feed)
 # ─────────────────────────────────────────────────────────────
 # The TOLAND merge's memory tap.  When engaged, every absorbed match event
 # is handed to the PlayerMinds of the players involved (cognition_brain
 # installs its dispatcher here) so episodic memory fills from real match
-# facts with no parallel simulation.  Disabled by default — zero cost and
+# facts with no parallel simulation.  Disabled by default -- zero cost and
 # zero behaviour change until engaged.
 _COGNITION_OBSERVER = None
 
 #: The memory tap is the DEFAULT observer (2026-10-22).
 #:
 #: It used to be installed ONLY by ``cognition_brain.engage_mind_observer()``,
-#: which only ``auto_run_match.py`` and ``season_manager.py`` call — so the
+#: which only ``auto_run_match.py`` and ``season_manager.py`` call -- so the
 #: scratch runner and every real-roster harness had NO memory at all.  A
 #: memory that exists only in production is not a memory.
 #:
@@ -272,7 +323,7 @@ _DEFAULT_MEMORY_OBSERVER = None
 def set_cognition_observer(fn) -> None:
     """Engage a per-event cognition observer (None disables).
 
-    ``None`` disables the DEFAULT memory tap as well — that is the old
+    ``None`` disables the DEFAULT memory tap as well -- that is the old
     behaviour and it is still reachable.
     """
     global _COGNITION_OBSERVER, _COGNITION_OBSERVER_DEFAULT
@@ -318,7 +369,7 @@ def _cognition_observe(event) -> None:
 # Default: auto-load brains_def/ACTION.json on first use; disabled ->
 # the heuristic selection acts as the baseline.  A PHYSICS safety grip stays:
 # clearance/block far from our goal is refused (a "clearance" 60 m from your
-# own line is just a turnover) — feasibility is also a sensor (s[19]) so the
+# own line is just a turnover) -- feasibility is also a sensor (s[19]) so the
 # net learns to stay out of that zone on its own.
 _DEF_ACTION_BRAIN = None           # shared DefensiveActionBrain or None
 _DEF_ACTION_AUTO = True            # auto-load BRAINS_DEF_DIR/ACTION.json
@@ -404,7 +455,7 @@ def _def_action_choice(engine: Any, defending_team: str, attacking_team: str,
     hardcoded sites).  A PHYSICS grip refuses clearance/block far from our
     goal (feasibility); if refused, the pick narrows to tackle/interception.
     ``site`` labels the call origin ("contest", "direct_clearance",
-    "recovery") for collector probes — not a decision input.
+    "recovery") for collector probes -- not a decision input.
     """
     _ensure_def_action_loaded()
     feasible_fn = _DEF_ACTION_FEASIBLE.get(bool(attacks_right))
@@ -459,7 +510,7 @@ def _danger_scaled_action_weights_static(danger: float) -> List[float]:
 #
 # Checkpoint 37: this must be SEEDED. An unseeded instance drew from
 # OS entropy, so the celebration length added into state.match_clock_s
-# diverged run-to-run even under a fixed match seed — the clock shift then
+# diverged run-to-run even under a fixed match seed -- the clock shift then
 # cascaded into minute/phase/added-time logic and broke seeded match
 # reproduction. A fixed seed keeps celebration lengths deterministic (and
 # still decoupled from the global football stream).
@@ -467,17 +518,17 @@ _COSMETIC_RNG = random.Random(0x5EEDC05)
 
 
 # ─────────────────────────────────────────────
-# ENUMS — The language of the simulation
+# ENUMS -- The language of the simulation
 # ─────────────────────────────────────────────
 
 class MatchPhase(Enum):
     """A match has psychological phases, not just minutes."""
-    OPENING        = "opening"        # 1–15:  Feeling out, cautious
-    FIRST_SPELL    = "first_spell"    # 16–30: First real pressure
-    FIRST_HALF_END = "first_half_end" # 31–45: Late first-half push
-    SECOND_OPEN    = "second_open"    # 46–60: Second half reset
-    PEAK_INTENSITY = "peak_intensity" # 61–75: Match decided here most often
-    FINAL_PUSH     = "final_push"     # 76–90: Desperation or control
+    OPENING        = "opening"        # 1-15:  Feeling out, cautious
+    FIRST_SPELL    = "first_spell"    # 16-30: First real pressure
+    FIRST_HALF_END = "first_half_end" # 31-45: Late first-half push
+    SECOND_OPEN    = "second_open"    # 46-60: Second half reset
+    PEAK_INTENSITY = "peak_intensity" # 61-75: Match decided here most often
+    FINAL_PUSH     = "final_push"     # 76-90: Desperation or control
     ADDED_TIME     = "added_time"     # 90+:   Chaos or calm
 
 class GameState(Enum):
@@ -632,8 +683,8 @@ class MatchEvent:
     player: str                          # Primary actor
     secondary_player: Optional[str] = None  # Receiver, fouled player, etc.
     situation: SituationType = SituationType.OPEN_PLAY
-    location_x: float = 50.0            # 0–105 (meters from home goal line)
-    location_y: float = 34.0            # 0–68 (meters from left touchline)
+    location_x: float = 50.0            # 0-105 (meters from home goal line)
+    location_y: float = 34.0            # 0-68 (meters from left touchline)
     end_x: Optional[float] = None       # Where event ended (passes, carries)
     end_y: Optional[float] = None
     xg: float = 0.0                     # xG value if shot/chance
@@ -702,7 +753,7 @@ class MatchEvent:
 # additive layer records the exact clock span each possession chain occupied,
 # then stamps the timeline events with their TRUE match-second (the "minute" is
 # only a bucket; most chain events carry a placeholder random second). Reading
-# only — it changes no outcome and mutates nothing.
+# only -- it changes no outcome and mutates nothing.
 
 @dataclass
 class ChainClockMark:
@@ -718,7 +769,7 @@ class ChainClockMark:
 class TimedEvent:
     """A timeline event stamped with its real match-second from the global clock."""
     minute: int
-    second: float                   # 0–59.9 within the minute bucket
+    second: float                   # 0-59.9 within the minute bucket
     match_clock_s: float            # seconds from kickoff (true global clock)
     duration: float                 # measured spacing to the next chain event (0 for last)
     event_type: str
@@ -759,8 +810,7 @@ class MatchChronology:
 
 @dataclass
 class TeamProfile:
-    """
-    A team's identity for this match.
+    """A team identity for this match.
     DNA that shapes HOW they play, not just what numbers they produce.
     """
     name: str
@@ -770,7 +820,7 @@ class TeamProfile:
 
     uses_false_nine: bool = False
 
-    # Tactical DNA (0.0–1.0 scales)
+    # Tactical DNA (0.0-1.0 scales)
     press_intensity: float = 0.5        # How aggressively they press
     defensive_line: float = 0.5         # 0=deep, 1=high line
     width: float = 0.5                  # 0=narrow, 1=wide
@@ -787,7 +837,7 @@ class TeamProfile:
     # ── Club Philosophy layer (Checkpoint 30) ───────────────────────
     # When a ClubPhilosophy is attached, _apply_philosophy() pulls the
     # style DNA knobs toward the philosophy's targets (weighted by
-    # identity_strength = magnitude × adherence).  None-safe: when
+    # identity_strength = magnitude x adherence).  None-safe: when
     # philosophy is None every new field stays neutral and no existing
     # behaviour changes.
     philosophy: Optional[Any] = None     # ClubPhilosophy or None
@@ -802,7 +852,7 @@ class TeamProfile:
         # CALIBRATION (2026-09-17): funnel shot volume calibrated AFTER the
         # punchy per-style profiles: the style DNA + philosophy mix already
         # scale shotgun intent by style, and the AttackChain range-settle +
-        # geometry selector now land the REAL mix mix. A ×0.82 trim brings
+        # geometry selector now land the REAL mix mix. A x0.82 trim brings
         # the volume (14.7 shots/team measured) down to the real band
         # (12.1) without touching per-style differentiation. Distance
         # discipline lives in the chain, so the trim sheds mostly
@@ -923,15 +973,15 @@ class TeamProfile:
     def _apply_philosophy(self):
         """Blend the attached ClubPhilosophy into the style DNA (Checkpoint 30).
 
-        Pulls every tactical knob toward the philosophy's target by a weight
-        of ``identity_strength = magnitude × adherence``.  Completely inert
-        when ``philosophy`` is None — the profile is byte-for-byte the
+        Pulls every tactical knob toward the philosophy target by a weight
+        of ``identity_strength = magnitude x adherence``.  Completely inert
+        when ``philosophy`` is None -- the profile is byte-for-byte the
         style-default it would have been before this layer existed.
 
         The mapped knobs (README of what a philosophy "owns"):
-          * hunger      → possession_target (Cruyff: we must have the ball)
-          * patience    → shots_per_sequence, recovery willingness
-          * starve      → opponent sequence-length squeeze (Lever B)
+          * hunger      -> possession_target (Cruyff: we must have the ball)
+          * patience    -> shots_per_sequence, recovery willingness
+          * starve      -> opponent sequence-length squeeze (Lever B)
         """
         phi = self.philosophy
         if phi is None:
@@ -967,7 +1017,7 @@ class TeamProfile:
         self.directness = round(min(1.0, max(0.05, _mix(
             self.directness, getattr(phi, "directness_target", 0.5)))), 4)
 
-        # Cruyff conversion: hunger → possession_target (18 at 0 → ~75 at 1)
+        # Cruyff conversion: hunger -> possession_target (18 at 0 -> ~75 at 1)
         hunger_target = min(76.0, 18.0 + self.hunger * 58.0)
         self.possession_target = round(_mix(self.possession_target, hunger_target), 1)
         self.shots_per_sequence = round(max(0.03, _mix(
@@ -995,7 +1045,7 @@ class MatchConfig:
     start_time: Optional[str] = None   # Kickoff time (e.g. "12:30", "15:00", "20:00")
     weather_enabled: bool = False      # Toggle physics effects (default False for zero regression)
 
-    # ── Competition context (Phase 2–3 world layer additions) ──────────
+    # ── Competition context (Phase 2-3 world layer additions) ──────────
     # Everything below is additive metadata: defaults reproduce today's
     # 26/27 behaviour exactly, and no engine logic reads these fields yet.
     competition_id: Optional[str] = None      # world-level competition identity
@@ -1013,7 +1063,7 @@ class MatchConfig:
     # ── Perception seeding (opt-in; None = exactly today's behaviour) ──────
     # ``PerceptionConfig.seed`` is 0 by default and nothing changed it, so the
     # noise a player gets from misreading the ball is byte-identical in every
-    # match of every season — the same striker at the same minute produced the
+    # match of every season -- the same striker at the same minute produced the
     # same misread against every opponent. Setting this seeds perception from
     # the fixture instead: the same fixture replays identically, different
     # fixtures differ. ``None`` leaves the legacy behaviour untouched, which is
@@ -1023,7 +1073,7 @@ class MatchConfig:
     # ── Continuous physics (opt-in; False = exactly today's behaviour) ────
     # The physics layer lives in ``physics/`` and is purely additive: it answers
     # "how long does this physically take?" and never decides what should
-    # happen. Defaulting to False is what keeps 26/27 output byte-identical —
+    # happen. Defaulting to False is what keeps 26/27 output byte-identical --
     # with this off the engine never constructs a PhysicsWorld and never calls
     # the adapter, so there is nothing to change the existing code path.
     physics_enabled: bool = False
@@ -1033,7 +1083,7 @@ class MatchConfig:
 
 
 # ─────────────────────────────────────────────
-# MATCH STATE — Live state during simulation
+# MATCH STATE -- Live state during simulation
 # ─────────────────────────────────────────────
 
 @dataclass
@@ -1049,7 +1099,7 @@ class MatchState:
     home_xg: float = 0.0
     away_xg: float = 0.0
 
-    # Momentum (−100 to +100: negative=away dominant, positive=home dominant)
+    # Momentum (-100 to +100: negative=away dominant, positive=home dominant)
     momentum: float = 0.0
 
     # Manager Brains (Phase 6): the team credited with the MOST RECENT goal
@@ -1062,7 +1112,7 @@ class MatchState:
     # Who has the ball right now
     possession_team: str = ""
 
-    # Feature #1/#2 — the live per-team formation stance (chasing shape, see-
+    # Feature #1/#2 -- the live per-team formation stance (chasing shape, see-
     # it-out block ...) and attack pattern (overload side, box midfield ...)
     # for THIS minute. Set once per minute by _run_minute()/_simulate_minute(),
     # consumed by the possession/off-ball layers and read in exports/analytics.
@@ -1088,14 +1138,14 @@ class MatchState:
     weather: Optional[WeatherCondition] = None
     weather_enabled: bool = False
 
-    # Possession-time tracking (Checkpoint — measured seconds held, vs the
+    # Possession-time tracking (Checkpoint -- measured seconds held, vs the
     # probabilistic possession split used to award sequences). Drives real
     # possession % and per-player possession minutes.
     home_possession_s: float = 0.0
     away_possession_s: float = 0.0
     possession_time_by_player: Dict[str, float] = field(default_factory=dict)
 
-    # Causal possession rights (Checkpoint — possession is not a memoryless
+    # Causal possession rights (Checkpoint -- possession is not a memoryless
     # coin flip). When a team WINS the ball in open play it is OWED the next
     # open-play sequence; only a restart (kickoff / corner / penalty / goal
     # kick / throw-in / offside free kick) redirects the ball away from them.
@@ -1103,7 +1153,7 @@ class MatchState:
     # carry never stacks across turnovers.
     possession_winner: str = ""
 
-    # Global continuous match timeline (Checkpoint — the macro loop is still
+    # Global continuous match timeline (Checkpoint -- the macro loop is still
     # event/sequence-driven, but every chain's per-tick ball_path is offset
     # onto ONE monotonic 90' clock here, so the whole match reads as one
     # continuous, time-ordered ball trajectory instead of disconnected episodes.
@@ -1133,10 +1183,10 @@ class MatchState:
     shootout_winner: str = ""      # "" until decided; then a team NAME
     shootout_rounds: List[Dict[str, Any]] = field(default_factory=list)
 
-    # Checkpoint 6 — corner consistency: how many corners each team has won
+    # Checkpoint 6 -- corner consistency: how many corners each team has won
     # and is owed the next set-piece sequence. Incremented by _absorb_chain()
     # when a ChainResult reports corner_won=True, decremented-and-consumed by
-    # _simulate_minute() before the normal situation roll — this is what
+    # _simulate_minute() before the normal situation roll -- this is what
     # makes corners an actual CONSEQUENCE of a blocked shot / clearance
     # rather than an independent random draw that happened to coincide.
     #
@@ -1148,7 +1198,7 @@ class MatchState:
     pending_corners_home: int = 0
     pending_corners_away: int = 0
 
-    # Checkpoint X — penalty causality: a foul the defending team commits
+    # Checkpoint X -- penalty causality: a foul the defending team commits
     # inside its OWN box is a spot-kick offence. When a DisciplineChain
     # reports penalty_won=True, the fouled team is owed the turn penalty
     # sequence and it is consumed (queued -> PenaltyChain) exactly like a
@@ -1161,15 +1211,15 @@ class MatchState:
     # Per-defending-team tally of spot-kicks actually taken this match. Keeps
     # the box-penalty physics realistic: a siege can produce one, occasionally
     # two, but never a deluge (otherwise a single match turns into a spot-kick
-    # carnival). MatchEngine refuses the box-foul→penalty conversion once a
+    # carnival). MatchEngine refuses the box-foul->penalty conversion once a
     # team has already conceded this many.
     penalties_taken: Dict[str, int] = field(default_factory=dict)
     PENALTY_CAP_PER_TEAM: int = 2
 
-    # Checkpoint 7 — persistent ball-state: the last REAL location the ball
+    # Checkpoint 7 -- persistent ball-state: the last REAL location the ball
     # was seen at (from an actual event's end_x/end_y, or location_x/y if no
     # end coords exist). Every new possession sequence anchors its starting
-    # position off THIS instead of drawing an independent random zone —
+    # position off THIS instead of drawing an independent random zone --
     # this is what stops the ball "teleporting" between sequences. Defaults
     # to the center circle, which is also what it resets to after a goal
     # (kickoff) and at kickoff itself.
@@ -1180,13 +1230,13 @@ class MatchState:
     first_half_kickoff_team: str = ""
     pending_second_half_kickoff: bool = False
 
-    # Checkpoint 8 — restart causality: goal kicks and throw-ins
+    # Checkpoint 8 -- restart causality: goal kicks and throw-ins
     pending_goal_kick_for: str = ""
     pending_throw_in_for: str = ""
     pending_restart_x: float = 0.0
     pending_restart_y: float = 0.0
 
-    # Checkpoint 19 — offside free kicks: placed at the offside location
+    # Checkpoint 19 -- offside free kicks: placed at the offside location
     pending_offside_fk_for: str = ""
     pending_offside_fk_x: float = 0.0
     pending_offside_fk_y: float = 0.0
@@ -1196,8 +1246,8 @@ class MatchState:
     # an offside restart and ordinary fouls (~22/match) awarded cards and
     # penalties but never a kick. Measured (_diag_fk_site.py): 13 of 13 free
     # kicks came from the offside queue, 0 from open play, 0 reached the
-    # direct branch. That left the whole direct-free-kick path — and any wall
-    # built on it — unreachable. A counter rather than a single slot, so two
+    # direct branch. That left the whole direct-free-kick path -- and any wall
+    # built on it -- unreachable. A counter rather than a single slot, so two
     # fouls in one minute cannot overwrite each other (the same reasoning as
     # pending_corners_*).
     pending_foul_fk_home: int = 0
@@ -1209,7 +1259,7 @@ class MatchState:
     booked_players: Dict[str, int] = field(default_factory=lambda: {})
     sent_off_players: List[str] = field(default_factory=lambda: [])
 
-    # Checkpoint 11 — cross situations: when a delivery is detected (a
+    # Checkpoint 11 -- cross situations: when a delivery is detected (a
     # CROSS_ATTEMPT/CROSS_SUCCESS/corner, OR any pass stamped `cross: true`
     # by the geometric CrossDetector), the attacking team's off-ball players
     # crash the box (PositionEngine.attacking_crash) and the defending
@@ -1224,7 +1274,7 @@ class MatchState:
     # Realistic corner causality (not a random draw): whether a live cross
     # this minute has ALREADY been turned into a corner by the defender /
     # keeper putting the delivery behind. Guards so one uncontested cross
-    # can only ever concede at most one corner — no double-counting.
+    # can only ever concede at most one corner -- no double-counting.
     cross_corner_done: bool = False
 
     # ── Counterpress burst (P2) ────────────────────────────────────────
@@ -1281,11 +1331,11 @@ class MatchState:
 
     @property
     def score_str(self) -> str:
-        return f"{self.home_goals}–{self.away_goals}"
+        return f"{self.home_goals}-{self.away_goals}"
 
 
 # ─────────────────────────────────────────────
-# PHASE ENGINE — Defines the psychological arc
+# PHASE ENGINE -- Defines the psychological arc
 # ─────────────────────────────────────────────
 
 class PhaseEngine:
@@ -1363,7 +1413,7 @@ class PhaseEngine:
 
 
 # ─────────────────────────────────────────────
-# MOMENTUM ENGINE — The heart of realism
+# MOMENTUM ENGINE -- The heart of realism
 # ─────────────────────────────────────────────
 
 class MomentumEngine:
@@ -1374,16 +1424,16 @@ class MomentumEngine:
     A near-miss builds it. A poor pass bleeds it.
     Crowd noise (home advantage) sustains it.
 
-    Range: −100 (away dominance) to +100 (home dominance)
+    Range: -100 (away dominance) to +100 (home dominance)
     Neutral: 0
     """
 
     @staticmethod
     def after_goal(state: MatchState, scoring_team: str, home_team: str) -> float:
-        """Goal dramatically shifts momentum — with diminishing returns when already dominant.
+        """Goal dramatically shifts momentum -- with diminishing returns when already dominant.
 
-        The 1st goal in a level match causes a full swing. But a 4th consecutive goal
-        when momentum is already pinned near ±80 adds little extra — the dominance is
+        The first goal in a level match causes a full swing. But a 4th consecutive goal
+        when momentum is already pinned near +/-80 adds little extra -- the dominance is
         already fully priced in. This prevents the momentum snowball from permanently
         locking out the losing team's attacking numbers.
         """
@@ -1430,8 +1480,8 @@ class MomentumEngine:
 
         NOTE: the decay baseline is kept at 0 so the two teams are treated
         symmetrically. A previous version hard-seeded the baseline at +3.0
-        (a permanent home pull), which — combined with the goal-driven
-        momentum snowball — made home teams win almost every match and left
+        (a permanent home pull), which -- combined with the goal-driven
+        momentum snowball -- made home teams win almost every match and left
         away teams (and draws) statistically unable to happen. Any genuine
         home advantage should come from `config.home_advantage`, not from a
         one-sided momentum seed.
@@ -1453,7 +1503,7 @@ class MomentumEngine:
         else:
             raw = -state.momentum / 100.0
 
-        # Scale: momentum gives max ±25% probability boost
+        # Scale: momentum gives max +/-25% probability boost
         return 1.0 + (raw * 0.25)
 
     @staticmethod
@@ -1464,14 +1514,14 @@ class MomentumEngine:
         Losing teams push forward (↑ attack chance), winning teams hold (↓ attack chance).
 
         Collapse penalty: a team losing 3+ goals doesn't get an ever-growing desperate
-        boost — in real football their shape breaks down, morale collapses, and they
+        boost -- in real football their shape breaks down, morale collapses, and they
         create FEWER chances despite opening up. Each extra goal beyond -2 chips away
         at the desperation boost.
 
         `composure` (default 1.0): a manager's man-management fingerprint. A
         strong man-manager (>1.0) lifts a side that's behind so they don't
         collapse as fast; a weak one (<1.0) lets heads drop sooner. Applied
-        only when the team is losing — a manager's steadiness matters most
+        only when the team is losing -- a manager's steadiness matters most
         exactly when a team is on the ropes.
         """
         gd = state.goal_difference if team == home_team else -state.goal_difference
@@ -1480,26 +1530,26 @@ class MomentumEngine:
 
         # Base modifiers by goal difference
         if gd >= 2:
-            # Cruising — conservative
+            # Cruising -- conservative
             base = 0.75 if not late_game else 0.65
         elif gd == 1:
             # Protecting lead
             base = 0.88 if not late_game else 0.80
         elif gd == 0:
-            # Level — normal
+            # Level -- normal
             base = 1.00
         elif gd == -1:
-            # Chasing — push forward
+            # Chasing -- push forward
             base = 1.12 if late_game else 1.05
             base *= composure   # man-management steadies a chasing side
         else:
-            # Desperate — but cap the boost based on how badly they're losing.
+            # Desperate -- but cap the boost based on how badly they're losing.
             # A team down 3+ has a broken shape and collapsing morale; they are
-            # NOT generating 35% more creative chances — they're scrambling.
+            # NOT generating 35% more creative chances -- they're scrambling.
             deficit = abs(gd)
             boost = 1.35 if late_game else 1.15
             # Each extra goal beyond -2 reduces the desperate boost
-            # -2: full boost (1.35), -3: ×0.88, -4: ×0.76, -5: ×0.64, -6: ×0.65 floor
+            # -2: full boost (1.35), -3: x0.88, -4: x0.76, -5: x0.64, -6: x0.65 floor
             collapse_penalty = max(0.65, 1.0 - (deficit - 2) * 0.12)
             base = boost * collapse_penalty
             # A great man-manager holds the structure together and softens the
@@ -1510,7 +1560,7 @@ class MomentumEngine:
 
 
 # ─────────────────────────────────────────────
-# XG ENGINE — Shot quality calculation
+# XG ENGINE -- Shot quality calculation
 # ─────────────────────────────────────────────
 
 class XGEngine:
@@ -1614,7 +1664,7 @@ class XGEngine:
         Calculate xG for a shot.
         
         The zone xG values (e.g. 0.59 for six_yard_box) are the AVERAGE
-        conversion rate for ALL shots from that zone — they already include
+        conversion rate for ALL shots from that zone -- they already include
         fast breaks, big chances, first-time shots, etc. Multiplying by
         situation, big_chance, or first_time again would be double-counting
         the quality of the position.
@@ -1641,7 +1691,7 @@ class XGEngine:
         # ── GOAL POST GEOMETRIC AWARENESS ──────────────────────────
         # The goal is 7.32m wide (y=30.34 to y=37.66).
         # A shot from wide y-values at close range has a very narrow
-        # angle to the goal — the posts block most of the opening.
+        # angle to the goal -- the posts block most of the opening.
         goal_x = 105.0 if attacks_right else 0.0
         if shot_x is not None and shot_y is not None:
             dx = max(1.0, abs(goal_x - shot_x))
@@ -1659,12 +1709,12 @@ class XGEngine:
                 base *= angle_penalty
 
         # ── DISTANCE SHARPENING (CALIBRATION 2026-09-17) ──────────────
-        # PLOFA's zone bands are coarse — "inside_box" spans 6-22m and
-        # "edge_of_box" 22-35m — so the SAME zone price is applied to a
+        # PLOFA's zone bands are coarse -- "inside_box" spans 6-22m and
+        # "edge_of_box" 22-35m -- so the SAME zone price is applied to a
         # 9m tap-in and a 21m pile-driver. Real conversion decays steadily
         # with distance, so once the exact anchor is known we re-sharpen:
-        #   >27m  → ×0.22    22-27m → ×0.41
-        #   17-22m→ ×0.57     ≤17m   → unchanged
+        #   >27m  -> x0.22    22-27m -> x0.41
+        #   17-22m-> x0.57     <=17m   -> unchanged
         if shot_x is not None and shot_y is not None:
             sx = abs(goal_x - shot_x)
             sy = abs(shot_y - 34.0)
@@ -1676,7 +1726,7 @@ class XGEngine:
             elif sdist >= 17.0:
                 base *= 0.57
 
-        # Small random variation (±5% instead of ±10%) — keeps xG realistic
+        # Small random variation (+/-5% instead of +/-10%) -- keeps xG realistic
         noise = random.uniform(0.95, 1.05)
         base *= noise
 
@@ -1693,7 +1743,7 @@ class XGEngine:
 
 
 # ─────────────────────────────────────────────
-# POSSESSION ENGINE — Who has the ball and for how long
+# POSSESSION ENGINE -- Who has the ball and for how long
 # ─────────────────────────────────────────────
 
 class PossessionEngine:
@@ -1713,7 +1763,7 @@ class PossessionEngine:
     ) -> Tuple[float, float]:
         """
         Calculate current possession probability for each team.
-        This is DYNAMIC — it changes with game state and momentum.
+        This is DYNAMIC -- it changes with game state and momentum.
         """
         home_base = home_profile.possession_target / 100.0
         away_base = away_profile.possession_target / 100.0
@@ -1736,12 +1786,12 @@ class PossessionEngine:
         home_base /= total
         away_base /= total
 
-        # ── LEVER A — CLOSED-LOOP OWNERSHIP (Checkpoint 30) ─────────
+        # ── LEVER A -- CLOSED-LOOP OWNERSHIP (Checkpoint 30) ─────────
         # When at least one side carries a club philosophy, the split is no
         # longer an open-loop starter prior: it feeds the ACTUAL measured
         # possession time back in, so a team that genuinely holds the ball
-        # longer gets reinforced — real possession is a feedback loop
-        # ("we have it → we keep it").  trust ramps up as the match wears
+        # longer gets reinforced -- real possession is a feedback loop
+        # ("we have it -> we keep it").  trust ramps up as the match wears
         # on (more measured samples), so the early game leans on the prior
         # and the identity converges the measured outcome onto its target.
         # Fully inert when no philosophy is present (byte-compatible).
@@ -1768,7 +1818,7 @@ class PossessionEngine:
             # Away trailing late = they push, get more ball
             home_base = max(0.30, home_base * 0.90)
 
-        # Momentum modifier (max ±8% swing)
+        # Momentum modifier (max +/-8% swing)
         momentum_effect = state.momentum / 100.0 * 0.08
         home_base = max(0.20, min(0.80, home_base + momentum_effect))
         away_base = 1.0 - home_base
@@ -1794,14 +1844,14 @@ class PossessionEngine:
         Tiki-taka teams have long sequences, route one teams have short ones.
         Accepts both TeamProfile and EffectiveTactics (which has a .style attr).
 
-        Checkpoint 30 — two philosophy levers ride on top of the style roll:
+        Checkpoint 30 -- two philosophy levers ride on top of the style roll:
           * Lever C (patience): a patient identity keeps the ball longer,
             stretching its own sequences (up to ~+45%).
           * Lever B (starve): the OPPONENT's hunger squeezes our retention
-            (up to −35% from a maximal-starve defender, e.g. Gegenpressing).
+            (up to -35% from a maximal-starve defender, e.g. Gegenpressing).
         Both are inert when the profiles carry no philosophy (0.0 knobs).
         """
-        # Resolve style from profile — TeamProfile has .style, EffectiveTactics
+        # Resolve style from profile -- TeamProfile has .style, EffectiveTactics
         # stores it as an attribute if created from adjust().
         style = getattr(team_profile, "style", None)
         # Owner-side patience + opponent-side starve (None-safe)
@@ -1813,7 +1863,7 @@ class PossessionEngine:
             # Fallback for EffectiveTactics: use possession_target as proxy
             return max(1, int(round(random.randint(3, 8) * scale)))
         # Checkpoint 23: ranges for possession-capable styles sit slightly
-        # higher than they historically did. That is only realistic NOW —
+        # higher than they historically did. That is only realistic NOW --
         # the tempo-circulation directive lets a long sequence hover in the
         # middle third instead of marching box-to-box, so a 14-pass spell
         # looks like City circulating rather than a conveyor belt to a shot.
@@ -1846,7 +1896,7 @@ class PossessionEngine:
 
 
 # ─────────────────────────────────────────────
-# THE MATCH ENGINE — The simulation core
+# THE MATCH ENGINE -- The simulation core
 # ─────────────────────────────────────────────
 
 class MatchEngine:
@@ -1868,7 +1918,7 @@ class MatchEngine:
     # Declared here rather than only in _init_physics because
     # _initialize_simulation() runs from simulate(), not __init__. Without a
     # class-level default, `engine.physics` would raise AttributeError on a
-    # freshly constructed engine — and "physics is off" must be a value you can
+    # freshly constructed engine -- and "physics is off" must be a value you can
     # ask about, not an absence you have to guard.
     physics = None
     physics_unavailable = False
@@ -1877,7 +1927,7 @@ class MatchEngine:
     # Causal possession carry (Checkpoint): how often a team that just WON
     # the ball gets the next open-play sequence. Probabilistic (not absolute)
     # so the engine still exercises its possession-target weighting and the
-    # calibrated split (test_calibration 20-80%) stays enforceable — the carry
+    # calibrated split (test_calibration 20-80%) stays enforceable -- the carry
     # hands the ball back to the recovering side in real life, but a loose
     # challenge / second ball can still flip it straight back.
     POSSESSION_CARRY_PROB: float = 0.90
@@ -1894,8 +1944,8 @@ class MatchEngine:
 
         # ── Which block does each team hold? ──────────────────────
         # EVERY team gets a defensive block; only the AREA differs. The
-        # discipline is one rule — "if you do not have the ball, do not leave a
-        # space you can be put into" — expressed as three lines with explicit
+        # discipline is one rule -- "if you do not have the ball, do not leave a
+        # space you can be put into" -- expressed as three lines with explicit
         # depths, so the gaps between them are named numbers rather than
         # whatever the shape engine happens to produce.
         #
@@ -1904,7 +1954,7 @@ class MatchEngine:
         # source of truth for "how deep does this team sit". An earlier
         # version of this work gated the shape on a boolean that was true only
         # for LOW_BLOCK_CONTAIN, which meant a mid-block or high-block team
-        # defended with the generic 7%-lateral shape — i.e. with no shape at
+        # defended with the generic 7%-lateral shape -- i.e. with no shape at
         # all, and with both half-spaces open.
         self._defensive_block: Dict[str, str] = {}
         try:
@@ -1936,7 +1986,7 @@ class MatchEngine:
 
         # Reseed the cosmetic RNG per match. _COSMETIC_RNG is a module-level
         # singleton seeded only at import, and celebration_s (line ~4382) is
-        # ADDED to match_clock_s — so without a per-match reseed, celebration
+        # ADDED to match_clock_s -- so without a per-match reseed, celebration
         # lengths drawn during match N leak into match N+1's clock inside the
         # same process and break deterministic replay for any harness that
         # runs several matches in one process (gate_xl, validate_neural_xl,
@@ -1946,7 +1996,7 @@ class MatchEngine:
         # in-process repeats.
         _COSMETIC_RNG.seed(0x5EEDC05)
 
-        # Phase 2 — manager trigger events
+        # Phase 2 -- manager trigger events
         self.manager_last_trigger: str = ""
 
         self.state = MatchState(
@@ -1974,7 +2024,7 @@ class MatchEngine:
         # Chronography substrate: the exact global-clock span of every absorbed
         # possession chain. Read by MatchEngine.chronograph() after the whistle.
         self._chain_clock_marks: List[ChainClockMark] = []
-        # Feature #1/#2 — match-clock instant each team's shape (stance or
+        # Feature #1/#2 -- match-clock instant each team's shape (stance or
         # pattern) last changed, so the off-ball integrator can animate the
         # actual RESHAPE instead of teleporting bodies at a minute boundary.
         self._shape_apply_clock: Dict[str, float] = {}
@@ -1983,7 +2033,7 @@ class MatchEngine:
 
         # Accumulators (filled during simulation, read during export)
         self.event_counts: Dict[str, Dict] = {}
-        # Checkpoint 39 — off-ball run tracking (six Gradient-style types:
+        # Checkpoint 39 -- off-ball run tracking (six Gradient-style types:
         # advance/overlap/underlap/far_side/forward/support), sampled at the
         # 10 Hz integrator from both live and dead possession windows.
         self.run_tracker = RunTracker()
@@ -1996,10 +2046,10 @@ class MatchEngine:
         self.cards: List[MatchEvent] = []
         self.subs: List[MatchEvent] = []
 
-        # Squad manager — wired in via set_stamina_controller()
+        # Squad manager -- wired in via set_stamina_controller()
         self.sub_controller = None   # SubstitutionController or None
 
-        # Managers (optional bias layer) — wired in via set_managers().
+        # Managers (optional bias layer) -- wired in via set_managers().
         self.home_manager = None
         self.away_manager = None
 
@@ -2007,18 +2057,18 @@ class MatchEngine:
         # sub lines). Keeps seeded multi-sim verification logs parseable.
         self.quiet = False
 
-        # Checkpoint 5 — Position Engine: persistent per-player spatial state,
+        # Checkpoint 5 -- Position Engine: persistent per-player spatial state,
         # causal drift, zone-grounded selection. One instance per match.
         self.position_engine = PositionEngine()
 
-        # Checkpoint 9 — Threat Engine: live per-team danger level driven by
+        # Checkpoint 9 -- Threat Engine: live per-team danger level driven by
         # ball↔defended-goal geometry. Wired into _absorb_chain (live danger),
         # _simulate_minute (danger-scaled defensive contests) and _run_minute
         # (defensive_block coordination). Home defends x=0, away defends x=105.
         from threat_engine import ThreatEngine
         self.threat = ThreatEngine(config.home_team, config.away_team)
 
-        # Opta telemetry — per-minute spatial + momentum logs filled during
+        # Opta telemetry -- per-minute spatial + momentum logs filled during
         # _run_minute and consumed by the post-match analytics module.
         self.position_log: List[Dict] = []
         self.momentum_log: List[Dict] = []
@@ -2059,7 +2109,7 @@ class MatchEngine:
         self._striker_run_cache: Dict[Tuple[str, int, int],
                                       Dict[str, Tuple[float, float, float]]] = {}
 
-        # Virtual GPS recorder — a 10 Hz per-tick position log that the
+        # Virtual GPS recorder -- a 10 Hz per-tick position log that the
         # off-ball integrator feeds for verification/visualisation. Disabled
         # by default (zero overhead); turn on via enable_virtual_gps().
         self.gps: Optional[VirtualGPS] = None
@@ -2073,7 +2123,7 @@ class MatchEngine:
 
     def _update_block_shapes(self, minute: int):
         """
-        Checkpoint 29 — refresh both teams' defensive BlockShapes from their
+        Checkpoint 29 -- refresh both teams' defensive BlockShapes from their
         live spatial states. Called every minute before sequences run so pass
         selection can navigate around or through the opponent block.
         Home defends x=0 (deep = low x -> attacks_right=False),
@@ -2120,7 +2170,7 @@ class MatchEngine:
 
         Suppressed inside a low block, where the anchor substitution upstream
         already puts the entire unit behind the ball and the invariant cannot
-        be violated. The block is a shape, and the block wins — the same
+        be violated. The block is a shape, and the block wins -- the same
         precedence CK35's pitch-stretch rule gives it.
         """
         if not has_ball:
@@ -2208,7 +2258,7 @@ class MatchEngine:
 
     def _sp_routine(self, team_name: str, situation: SituationType,
                     minute: int, players: list, fk_context=None):
-        """Feature #3 — the committing-side's set-piece routine for a dead
+        """Feature #3 -- the committing-side's set-piece routine for a dead
         ball. Emergent from manager identity + squad aerial profile + score.
         Corner/crossed dead balls pick a corner routine; direct-range free
         kicks pick a free-kick scheme. Penalties and out-of-range kicks are
@@ -2307,7 +2357,7 @@ class MatchEngine:
     def set_managers(self, home_manager=None, away_manager=None):
         """Wire in a manager for the bias / brain layer.
 
-        Phase 0–5 behaviour: ``ManagerProfile`` objects (duck-typing
+        Phase 0-5 behaviour: ``ManagerProfile`` objects (duck-typing
         ``stubbornness()``, ``risk_tolerance``, ``chase_shift()``,
         ``protect_shift()``, ``man_management``).
 
@@ -2329,7 +2379,7 @@ class MatchEngine:
 
         Called after each possession sequence resolves. `seconds` is the
         episode's continuous 0.1 s clock elapsed during that team's spell on
-        the ball — a real measure, not the probabilistic split used to decide
+        the ball -- a real measure, not the probabilistic split used to decide
         who gets the next sequence.
         """
         if not seconds or seconds <= 0:
@@ -2347,7 +2397,7 @@ class MatchEngine:
         """Causal possession carry (Checkpoint).
 
         A clean open-play turnover hands the ball to the recovering team for
-        the NEXT sequence. Restart-bound losses don't arm a carry — the ball
+        the NEXT sequence. Restart-bound losses don't arm a carry -- the ball
         is dead, and the restart obligation consumed at the top of the next
         sequence (corner / penalty / goal kick / throw-in / offside free
         kick) redirects possession instead.
@@ -2367,7 +2417,7 @@ class MatchEngine:
 
         Causal possession carry first: a team that just WON the ball in open
         play is OWED the sequence (~POSSESSION_CARRY_PROB), and the carry is
-        single-shot — consumed and cleared here. Otherwise fall back to the
+        single-shot -- consumed and cleared here. Otherwise fall back to the
         possession-target weighted flip (home_poss is the home share, 0-1).
 
         Returns (attacking_team, defending_team).
@@ -2414,7 +2464,7 @@ class MatchEngine:
             "BALL_RECEIPT",
         }
         # Restarts re-spot the ball (no connecting segment from the previous
-        # action — the ball is physically placed at the restart coordinate).
+        # action -- the ball is physically placed at the restart coordinate).
         _RESTART = {
             "KICKOFF", "GOAL_KICK", "THROW_IN", "CORNER_TAKEN",
             "CORNER_WON", "FREEKICK_WON",
@@ -2458,7 +2508,7 @@ class MatchEngine:
                 # Real event geometry: a ball-moving event travels FROM its
                 # own location (passer/carrier/shooter) TO its end coords
                 # (receiver/box). We draw origin->destination, NOT
-                # carried->destination — otherwise a pass whose origin is far
+                # carried->destination -- otherwise a pass whose origin is far
                 # from the previous chain's end would draw a spurious
                 # cross-pitch segment. Falls back to the carried position when
                 # the event carries no usable coordinates.
@@ -2492,7 +2542,7 @@ class MatchEngine:
 
                 # Ball continuity within a chain: per-event coordinates come
                 # from player positions that can drift a few metres from the
-                # live ball — bridge the drift with a short carry so the ball
+                # live ball -- bridge the drift with a short carry so the ball
                 # travels to its next passer rather than jumping on the log.
                 carry_gap = math.hypot(start[0] - cx, start[1] - cy)
                 if carry_gap > 1.5:
@@ -2542,12 +2592,12 @@ class MatchEngine:
 
     def _absorb_motion(self, chain_result) -> None:
         """Fold a chain's per-tick ``ball_path`` onto the SINGLE global match
-        clock (Checkpoint — #1). Every possession/attack/defensive/set-piece
+        clock (Checkpoint -- #1). Every possession/attack/defensive/set-piece
         chain emits its own continuously-timed ball_path; here we offset it by
         the running match clock and append to ``state.match_ball_path``, then
         advance the clock by the chain's measured (or synthesized) duration.
         The result is one monotonic, time-ordered ball trajectory for the whole
-        match — the "broadcast replay" spine — even though the macro loop is
+        match -- the "broadcast replay" spine -- even though the macro loop is
         still event/sequence-driven between chains.
 
         Chains that don't yet export a ``ball_path`` (shots, defensive actions,
@@ -2585,7 +2635,7 @@ class MatchEngine:
         prepend = 0.0
         if bp:
             base = self.state.match_clock_s
-            # Continuity bridge — applied to EVERY consecutive gap in this
+            # Continuity bridge -- applied to EVERY consecutive gap in this
             # chain's ball path (the seam from the last chain's end AND any
             # internal jumps where a discrete action re-spots the ball): if
             # the ball would teleport farther than the fetch trigger, log it
@@ -2644,7 +2694,7 @@ class MatchEngine:
             # still advance the clock monotonically by event volume.
             dur = max(0.0, len(getattr(chain_result, "events", [])) * 1.1)
         # THE DECISION TIME (2026-10-21).  The window above is the BALL's
-        # motion — the flight and the carry — and it does not contain the
+        # motion -- the flight and the carry -- and it does not contain the
         # time the ball's carrier spends between receiving the ball and
         # playing it.  Real football's possession is flight + control +
         # decision + execution, and without the decision the exported
@@ -2655,7 +2705,7 @@ class MatchEngine:
         #
         # THE CLOCK FIXES ITSELF: the dead-time phase is
         # `60.0 - (the clock's elapsed time in this minute)`, so the chains
-        # eating football-real time leaves proportionally less dead time —
+        # eating football-real time leaves proportionally less dead time --
         # the match still totals 90 minutes plus the added time, and the
         # silences become 10-20 second ones.
         #
@@ -2687,7 +2737,7 @@ class MatchEngine:
 
     # Ball-path fluidity: a chain whose ball starts farther than this from
     # where the last one ended (a restart re-spot, a set-piece placement) is
-    # bridged by a 'fetch' segment — the ball physically travels back into
+    # bridged by a 'fetch' segment -- the ball physically travels back into
     # play at a ball-boy/roll-up pace instead of teleporting on the match log.
     _FETCH_TRIGGER = 8.0
     _FETCH_SPEED = 4.0
@@ -2758,13 +2808,13 @@ class MatchEngine:
     # The generic jog ladder cannot express that: with the ball on the far side
     # it gives 0.54 m/s, which is fine for *holding* a shape you are already in
     # and useless for *reaching* one. Measured, the unit assembled 44 m from
-    # its own goal when the block slot was 19 m — the approach never completed,
+    # its own goal when the block slot was 19 m -- the approach never completed,
     # and then the hold-slot rule locked in whatever distance it had reached.
     #
     # Speed is proportional to the distance still owed and capped at a
     # fraction of the player's own top speed, so he eases in and stops rather
     # than jogging past the slot. Both numbers are fractions of his own pace
-    # because this is a recovery run, not a sprint — 0.75 of top speed is a
+    # because this is a recovery run, not a sprint -- 0.75 of top speed is a
     # strong jog back, not a burst.
     # Set-piece approach to a PENDING SLOT. Same reasoning and the same
     # shape as the low-block recovery below, because it is the same
@@ -2851,7 +2901,7 @@ class MatchEngine:
         standing AT his shape target was discarded before any measurement.
         `_offball_move_player` has an `arrive` dead band, so a settled player
         moves 0 m on the tick and his time vanished. Measured on a real match
-        that dropped **306,504 of 666,476 stepped ticks — 46% — about 1,533 s
+        that dropped **306,504 of 666,476 stepped ticks -- 46% -- about 1,533 s
         per player, 26.6% of a nominal match.**
 
         That is not a cosmetic gap. It is *why* the published activity seconds
@@ -2879,8 +2929,8 @@ class MatchEngine:
         hi_inc = 0
         in_sprint = speed >= 7.0
         in_hi = speed >= 8.5
-        # Sprint (>=7 m/s): count only after ≥3 consecutive ticks (0.3 s)
-        # and only if cooldown has expired (≥5 ticks below threshold).
+        # Sprint (>=7 m/s): count only after >=3 consecutive ticks (0.3 s)
+        # and only if cooldown has expired (>=5 ticks below threshold).
         if in_sprint:
             st["sprint_cooldown"] = 0
             st["sprint_run"] += 1
@@ -2951,7 +3001,7 @@ class MatchEngine:
         anchor + ball-side compression, plus defensive-block squeeze and
         attacking box-crash nudges). A sustained jog (with press-sprints when
         the ball is live and near while defending, and a small orbit once the
-        shape is reached) means REAL ground is covered every tick — genuine
+        shape is reached) means REAL ground is covered every tick -- genuine
         physics integration, not a once-per-minute net delta.
 
         ON-BALL PLAYERS are skipped during the LIVE window, because that same
@@ -3021,7 +3071,7 @@ class MatchEngine:
             ax, ay = self._minute_start_snapshot.get(pname, (st.current_x, st.current_y))
         pos = getattr(st, "position", "")
         # OFF-BALL MOVEMENT HONESTY (2026-09-20): this player's INDIVIDUAL
-        # physic-y read — the chase trigger + involvement gate — acts on
+        # physic-y read -- the chase trigger + involvement gate -- acts on
         # where HE believes the ball is, not the omniscient truth.  The
         # team's SHAPE compaction below keeps the true ball (a real team
         # shifts shape by voice, but the player who THINKS the ball is
@@ -3030,7 +3080,7 @@ class MatchEngine:
         bx, by = movement_ball(
             self, pname, pos, _attacks_right, ball_x, ball_y,
             float(self.state.minute))
-        # Feature #1/#2 — RESHAPE WINDOW: when a formation stance or attack
+        # Feature #1/#2 -- RESHAPE WINDOW: when a formation stance or attack
         # pattern was just applied to this team, the off-ball anchor migrates
         # onto the player's NEW home post over ~90 s of match clock instead of
         # the team teleporting at a minute boundary. Weight decays to zero, so
@@ -3046,8 +3096,8 @@ class MatchEngine:
         # A block is a SHAPE, and a shape is decided by the anchor, not by a
         # correction bolted on at the end. `tx = ax + (ball_x - ax) * 0.14`
         # compacts the team's home anchor toward the ball. Swapping the anchor
-        # for the block position means the whole existing chain — including the
-        # compaction, the danger pull and the live-spacing guard — then operates
+        # for the block position means the whole existing chain -- including the
+        # compaction, the danger pull and the live-spacing guard -- then operates
         # on a block instead of fighting one.
         #
         # The first attempt steered the finished target by 0.85 at the end of
@@ -3058,7 +3108,7 @@ class MatchEngine:
         #
         # Only while OUT of possession. In possession the team attacks with its
         # normal shape, which is what makes a block a platform rather than a
-        # retreat — and the front two of a low block exist precisely to be the
+        # retreat -- and the front two of a low block exist precisely to be the
         # outlet when it wins it back.
         _block = self._defensive_block.get(team) if not has_ball else None
         _in_block = _block is not None
@@ -3115,7 +3165,7 @@ class MatchEngine:
             if p_sr > 0.0:
                 tx += (srx - tx) * p_sr
                 ty += (sry - ty) * p_sr
-        # Checkpoint 35 — PITCH-STRETCH RULE: wide roles (LW/RW/LB/RB) are the
+        # Checkpoint 35 -- PITCH-STRETCH RULE: wide roles (LW/RW/LB/RB) are the
         # team's width providers. When the live ball sits on the central spine
         # (packed middle), steer the off-ball shape target toward the player's
         # touchline channel so width is actively re-asserted every tick
@@ -3163,8 +3213,8 @@ class MatchEngine:
             pname, ball_y)
         if stretch_w > 0.0:
             ty += (getattr(st, "home_y", ty) - ty) * stretch_w
-        # Checkpoint 36 — TRIANGLE SUPPORT RULE: while the team holds the ball,
-        # midfielders steer their shape target into a passing-triangle socket —
+        # Checkpoint 36 -- TRIANGLE SUPPORT RULE: while the team holds the ball,
+        # midfielders steer their shape target into a passing-triangle socket --
         # a half-space support off the wide cluster on flank play (near-side CM
         # joins winger + full-back), or split around the ball with the CDM
         # pivot behind on central play. TARGET steer only: the jog integrator
@@ -3177,11 +3227,11 @@ class MatchEngine:
             if p_tri > 0.0:
                 tx += (trix - tx) * p_tri
                 ty += (triy - ty) * p_tri
-        # Checkpoint 37 — BACK-LINE BUILD-UP DROP: while the team builds from
+        # Checkpoint 37 -- BACK-LINE BUILD-UP DROP: while the team builds from
         # the back, the ball-side CB sags toward a goal-side socket so the
         # pressed midfield has a short 8-15m reset instead of the 25-40m
         # heave to the keeper. TARGET steer only (jog integrator pace-caps).
-        # Checkpoint 37/38 — BACK-LINE BUILD-UP DROP and PRESSURE-AWARE
+        # Checkpoint 37/38 -- BACK-LINE BUILD-UP DROP and PRESSURE-AWARE
         # BACK-LINE SPREAD.
         #
         # CK38 is NOT suppressed inside a low block, despite appearances.
@@ -3213,7 +3263,7 @@ class MatchEngine:
         tx = max(0.0, min(105.0, tx))
         ty = max(0.0, min(68.0, ty))
         cx, cy = st.current_x, st.current_y
-        # Checkpoint 38 — LIVE-TICK SPACING GUARD: redirect this runner's
+        # Checkpoint 38 -- LIVE-TICK SPACING GUARD: redirect this runner's
         # target away from any teammate currently inside LIVE_SEP_MIN of him,
         # so two players never stack on the same socket during a build-up
         # sequence (the per-minute graph repel is too slow at 10Hz).
@@ -3227,7 +3277,7 @@ class MatchEngine:
         # unreachable.
         #
         # Applied LAST, after every other rule has had its say, because a
-        # constraint has to be evaluated against the final target — clamping
+        # constraint has to be evaluated against the final target -- clamping
         # earlier would just be undone by CK37/CK38/triangle support, which all
         # steer the same depth axis. A depth clamp, not a blend: blending
         # would let a preference outvote an invariant.
@@ -3262,7 +3312,7 @@ class MatchEngine:
             # Applied AFTER every preference above, for the same reason rest
             # defence is: these are CONSTRAINTS, not preferences, and a blend
             # would let CK38's "spread the pitch under pressure" outvote them.
-            # That conflict is the whole point — when our CB is the ball
+            # That conflict is the whole point -- when our CB is the ball
             # carrier and is pressed, CK38 sends his partner DEEPER AND WIDER
             # (a 26 m lateral split), while the football says the second
             # defender is ~6 m away, inside the presser.  The cover wins,
@@ -3292,7 +3342,7 @@ class MatchEngine:
         # ~11.5-12.5 km/90 instead of 16+.
         # OFF-BALL MOVEMENT HONESTY (2026-09-20): both this gate and the
         # chase trigger/resustain act on the PHYSICAL perceived ball (bx,
-        # by) — honest effort: a player who believes the ball is far holds
+        # by) -- honest effort: a player who believes the ball is far holds
         # his trot, a wrong belief wastes (or forfeits) the sprint.
         involved = abs(bx - self._minute_start_snapshot.get(pname, (cx, cy))[0]) < 30.0
         if not involved:
@@ -3307,7 +3357,7 @@ class MatchEngine:
                     g = _team_press_g(self, team, ball_x, ball_y, danger_t)
                     self._team_press_g_cache[_g_key] = g
                 prob = self._PRESS_PROB.get(pos, 0.60) * g
-                # Phase 10 — position off-ball brain: a LW/RW/CM runner with
+                # Phase 10 -- position off-ball brain: a LW/RW/CM runner with
                 # an evolved press-gate brain replaces the static role rate
                 # with its own p(press) over the same off-ball vector it was
                 # trained on, still scaled by the team commitment.  Missing
@@ -3346,7 +3396,7 @@ class MatchEngine:
             #
             # A real team that loses the ball drops into its block within a few
             # seconds. Speed is scaled by how far the player still is from his
-            # slot, so he covers the last long way and eases in — and, because
+            # slot, so he covers the last long way and eases in -- and, because
             # it decays to zero at the slot, he still arrives and STOPS rather
             # than jogging past it.
             _recover = min(tgt * self._LB_RECOVER_TOP_FRAC,
@@ -3393,7 +3443,7 @@ class MatchEngine:
             # A low block must not ORBIT ON THE WAY IN: "positions are held,
             # not players tracked, so movement does not break the shape." An
             # orbit from 40 m away means every player is permanently out of
-            # position, so the block can never actually assemble — measured,
+            # position, so the block can never actually assemble -- measured,
             # the unit sat 53 m from its own goal when the block slot was 19 m,
             # not because the target was wrong but because nobody ever stopped
             # moving to reach it. That is why the block RECOVERY above runs
@@ -3443,7 +3493,7 @@ class MatchEngine:
         # ── CONTINUOUS PHYSICS: physical movement (opt-in) ───────────
         # Everything above is the engine's own step, and it is left exactly as
         # it was. This block REPLACES the resulting position with a kinematic
-        # one when — and only when — physics is switched on.
+        # one when -- and only when -- physics is switched on.
         #
         # Why replace rather than adjust: the step above assigns a scalar speed
         # and displaces the player along the straight line to his target, so
@@ -3454,9 +3504,9 @@ class MatchEngine:
         # reachable by tweaking a coefficient, because the missing quantity is
         # *velocity state*, not a gain.
         #
-        # The target itself is untouched. All that shaping — the shape engine,
+        # The target itself is untouched. All that shaping -- the shape engine,
         # wide stretch, triangle support, build-up drop, backline spread,
-        # live-spacing redirect — still decides WHERE the player is trying to
+        # live-spacing redirect -- still decides WHERE the player is trying to
         # be. The physics only decides how his body gets there. That split is
         # the reason this is safe to enable: the tuned shape logic is not
         # re-tuned, it is obeyed.
@@ -3502,7 +3552,7 @@ class MatchEngine:
             return None
 
     def _sample_run_tracking(self, t: float, home_has_ball: bool) -> None:
-        """Checkpoint 39 — feed the run tracker one 10 Hz sample of every
+        """Checkpoint 39 -- feed the run tracker one 10 Hz sample of every
         in-possession outfield player (the tracker itself resets segments
         across possession flips and sample gaps)."""
         if self.run_tracker is None or self.position_engine is None:
@@ -3516,7 +3566,7 @@ class MatchEngine:
         # shuffled to his marker" as a support run is precisely how
         # `support` became 95% of every run before.
         #
-        # Distance is deliberately NOT suppressed — it accrues through
+        # Distance is deliberately NOT suppressed -- it accrues through
         # `record_physics_distance` in `_offball_move_player`, which
         # runs regardless. So a corner approach counts as distance
         # covered and NOT as a run, which is the answer.
@@ -3536,13 +3586,13 @@ class MatchEngine:
                 attacks_right, team, True)
 
     def get_run_profile(self) -> Dict[str, Dict[str, int]]:
-        """Checkpoint 39 — per-player off-ball run counts, six types:
+        """Checkpoint 39 -- per-player off-ball run counts, six types:
         advance / overlap / underlap / far_side / forward / support."""
         return self.run_tracker.profile() if self.run_tracker else {}
 
     def _offball_run(self, duration_s: float, home_has_ball: bool) -> None:
         """Jog every off-ball player for ``duration_s`` of LIVE play (during an
-        episode), without advancing the global clock — the episode already did.
+        episode), without advancing the global clock -- the episode already did.
         This is what makes off-ball distance real during possession/duels, not
         just during dead time."""
         if duration_s <= 0:
@@ -3592,7 +3642,7 @@ class MatchEngine:
                     self._offball_move_player(
                         pname, team, ball_x, ball_y, has_ball,
                         danger.get(team, 0.0), cross_team, DT)
-                # Checkpoint 37 — SWEEPER-KEEPER BUILD-OUT: while this team
+                # Checkpoint 37 -- SWEEPER-KEEPER BUILD-OUT: while this team
                 # possesses inside its own two-thirds the keeper slides to a
                 # ~24m socket so the CB/CDM/FB always has a genuinely SHORT
                 # back bump (the 30m gate keeps feeding healthy and short).
@@ -3609,7 +3659,7 @@ class MatchEngine:
                             _gs.current_x += (_gk_t[0] - _gs.current_x) * _gxp
                             _gs.current_y += (_gk_t[1] - _gs.current_y) * _gxp
                             break
-            # Checkpoint 39 — OFF-BALL RUN TRACKING: sample the possessing
+            # Checkpoint 39 -- OFF-BALL RUN TRACKING: sample the possessing
             # team's outfield players once per tick (classification happens
             # inside RunTracker against the previous sample).
             self._sample_run_tracking(t0 + (i + 1) * DT, home_has_ball)
@@ -3662,7 +3712,7 @@ class MatchEngine:
                         pname, team, ball_x, ball_y, has_ball,
                         danger.get(team, 0.0), cross_team, DT,
                         include_on_ball=self._DEAD_TIME_ON_BALL)
-            # Checkpoint 39 — keep run segments alive through dead-time
+            # Checkpoint 39 -- keep run segments alive through dead-time
             # possession too (the tracker's GAP_S guard bridges any break).
             self._sample_run_tracking(self.state.match_clock_s, home_has_ball)
             self.state.match_clock_s += DT
@@ -3684,7 +3734,7 @@ class MatchEngine:
         self, minute, shot_result, attacking_team, defending_team,
         att_players, def_players, attacks_right,
     ) -> None:
-        """#4 — after a saved/blocked shot the ball is a LIVE loose entity that
+        """#4 -- after a saved/blocked shot the ball is a LIVE loose entity that
         nearby players race for on the continuous clock (resolve_loose_ball).
         We resolve who wins it and fold the scramble onto the global timeline
         + possession clock, so second balls are no longer teleported away.
@@ -3753,12 +3803,12 @@ class MatchEngine:
     #
     # 1. The shootout draws from `_COSMETIC_RNG`, the dedicated cosmetic
     #    stream, NOT the football RNG. A penalty shootout is the resolution of a
-    #    tie, not part of the football — if it consumed the seeded sequence it
+    #    tie, not part of the football -- if it consumed the seeded sequence it
     #    would change every event after it and destroy reproducibility. This is
     #    the same discipline already used for goal-celebration durations.
     #
     # 2. Extra time runs through the SAME `_run_minute` closure as the first 90.
-    #    There is no second, simplified "cup mode" — the same brains, chains,
+    #    There is no second, simplified "cup mode" -- the same brains, chains,
     #    physics and substitutions play out, on tired legs.
 
     #: Real extra time is two 15-minute periods with a short break between.
@@ -3852,7 +3902,7 @@ class MatchEngine:
                 scored[team] += 1
             self.state.match_clock_s += 25  # ~25s per penalty, incl. the run-up
             minute, second = divmod(int(self.state.match_clock_s), 60)
-            # A penalty is taken from the SPOT, 11 m from the goal line — not
+            # A penalty is taken from the SPOT, 11 m from the goal line -- not
             # from the centre circle this event used to inherit by default
             # (`MatchEvent.location_x` defaults to 50.0). Which end is a
             # convention here: the engine models no shootout goal, because a
@@ -3957,7 +4007,7 @@ class MatchEngine:
         """Running two-legged aggregate, or None for a single match.
 
         ``MatchContextFragment.aggregate`` carries the score BEFORE this leg, so
-        the total is prior + this leg's goals (a shootout does not count — the
+        the total is prior + this leg's goals (a shootout does not count -- the
         modern UEFA convention, and the away-goals rule is dead anyway).
         """
         if not self.config.aggregate:
@@ -3978,7 +4028,7 @@ class MatchEngine:
             self.state.minute = minute
             # Extra time plays under the ADDED_TIME phase (minutes past 90 are
             # the highest-tension phase in the model). The guard is written so
-            # that with `in_extra_time` False — i.e. every 26/27 match — this
+            # that with `in_extra_time` False -- i.e. every 26/27 match -- this
             # evaluates to exactly the expression it always did.
             self.state.phase  = (MatchPhase.ADDED_TIME if self.state.in_extra_time
                                  else PhaseEngine.get_phase(minute))
@@ -4000,9 +4050,9 @@ class MatchEngine:
 
             # ── SUBSTITUTION CHECK (before the minute plays out) ──
             if self.sub_controller is not None:
-                # Phase 6 — push brain-manager sub urgency into the controller
+                # Phase 6 -- push brain-manager sub urgency into the controller
                 # so check_stamina_sub can modulate. At flag-off or when no
-                # brain-manager is wired the dict stays empty → urgency_for
+                # brain-manager is wired the dict stays empty -> urgency_for
                 # returns the neutral 0.5 (factor 1.0) so the base sub
                 # probability is unchanged.
                 if USE_MANAGER_BRAIN:
@@ -4056,7 +4106,7 @@ class MatchEngine:
                                 # the fact by reading back the player's
                                 # CUMULATIVE "standing" drain-to-date and
                                 # subtracting a fraction of that whole total,
-                                # every minute — a compounding loop (bigger
+                                # every minute -- a compounding loop (bigger
                                 # cumulative total -> bigger top-up -> even
                                 # bigger cumulative total next minute) that
                                 # produced >1000% "Total Drained" figures for
@@ -4075,7 +4125,7 @@ class MatchEngine:
             # spatial states (as of the end of the previous minute) so
             # pass selection this minute can navigate the block.
             self._update_block_shapes(minute)
-            # Feed the same shapes to the drift engine — the in-possession
+            # Feed the same shapes to the drift engine -- the in-possession
             # team's CAMs/CMs/CFs occupy the block's half-space channels
             # (HalfSpaceMagnet) while pass selection orbits them.
             self.position_engine.set_block_context(
@@ -4153,9 +4203,9 @@ class MatchEngine:
                     self._shape_apply_clock[_team] = self.state.match_clock_s
                 self.state.team_patterns[_team] = _pattern
 
-                # Phase 8 v1 — coach width instruction ("stay wide" /
+                # Phase 8 v1 -- coach width instruction ("stay wide" /
                 # "tuck in", stored-posture read). Static / BALANCED /
-                # flag OFF yields width 0 → apply_coach_width is a no-op.
+                # flag OFF yields width 0 -> apply_coach_width is a no-op.
                 if USE_MANAGER_BRAIN:
                     from coach_instructions import instructions_for_manager as _instr_for
                     _ci = _instr_for(_mgr, _pattern)
@@ -4217,11 +4267,11 @@ class MatchEngine:
             self._continuous_offball_phase(minute, home_has_ball, gd_home_now, _danger)
 
             # ── DEFENSIVE BLOCK COORDINATION (Checkpoint defensive-awareness) ──
-            # The out-of-possession team with a live threat (danger ≥ 25, ball in
+            # The out-of-possession team with a live threat (danger >= 25, ball in
             # its own half) pulls its GK/CB/LB/RB/CDM line into a compact
-            # goal-side block — ball-side CBs shift hardest, so the right/left
+            # goal-side block -- ball-side CBs shift hardest, so the right/left
             # centre-back naturally covers the channel the ball is being played
-            # into. No-op at low danger → baseline drift is untouched.
+            # into. No-op at low danger -> baseline drift is untouched.
             blocking_team = (
                 self.config.away_team if home_has_ball else self.config.home_team
             )
@@ -4248,7 +4298,7 @@ class MatchEngine:
                     attacking_team=attacking_team,
                 )
 
-            # Checkpoint 26 — refresh the velocity-aware pitch-control
+            # Checkpoint 26 -- refresh the velocity-aware pitch-control
             # cache from the just-updated drift velocities. Consumers
             # (e.g. winger half-space openness) read it via
             # position_engine.pitch_control_result/field.
@@ -4275,9 +4325,9 @@ class MatchEngine:
             # the scoreline. Feeds the post-match analytics module (distance
             # covered, line positions, game-state minutes, momentum series).
             # Each player's row now also carries this minute's REAL movement
-            # (touch + drift distance, touch count, peak touch jump) —
+            # (touch + drift distance, touch count, peak touch jump) --
             # genuinely derived from the simulation, not an authored
-            # baseline — which opta_analytics.py uses as its primary
+            # baseline -- which opta_analytics.py uses as its primary
             # distance/sprint signal.
             frame = {
                 "minute": minute,
@@ -4361,11 +4411,11 @@ class MatchEngine:
                 # break so the second half starts from clean shapes.
                 self._reset_positions_to_halves()
 
-            # Phase 2 — synthetic HALF_TIME trigger at minute 46
+            # Phase 2 -- synthetic HALF_TIME trigger at minute 46
             if minute == 46:
                 self.manager_last_trigger = "HALF_TIME"
 
-            # Phase 2 — synthetic HOUR_MARK trigger at minute 60
+            # Phase 2 -- synthetic HOUR_MARK trigger at minute 60
             if minute == 60:
                 self.manager_last_trigger = "HOUR_MARK"
 
@@ -4385,13 +4435,13 @@ class MatchEngine:
                     and self.state.home_goals == self.state.away_goals):
                 self._run_penalty_shootout()
 
-        # Final whistle — any possession carry armed by the LAST sequence (a
+        # Final whistle -- any possession carry armed by the LAST sequence (a
         # turnover in the closing seconds that the next sequence never got to
         # consume) is moot: the match is over. Clear it so no dangling carry
         # leaks past full-time.
         self.state.possession_winner = ""
 
-        # Final whistle — set minutes for everyone still on pitch.
+        # Final whistle -- set minutes for everyone still on pitch.
         # Extra time counts towards minutes played, so a player who survives to
         # the end of a shootout-tied match is credited for it.
         total_mins = 90 + added + self.state.extra_time_minutes
@@ -4403,7 +4453,7 @@ class MatchEngine:
 
         # Also finalise substitutes who came on. Bench players carry a
         # pre-planned sub_in_minute from the roster (the "sub ~65'" tag),
-        # so only credit minutes to those who actually entered the pitch —
+        # so only credit minutes to those who actually entered the pitch --
         # otherwise unused bench players get phantom minutes and all-zero
         # statlines.
         for team_squad in self.squads.values():
@@ -4467,8 +4517,8 @@ class MatchEngine:
         # see when the numbers look wrong.
         result.intended_run_diagnostics = self.intended_runs.diagnostics()
 
-        # Phase 6 — Manager Brains end-of-match callback (opt-in): each wired
-        # brain-manager closes its loop here — the mind updates composure/
+        # Phase 6 -- Manager Brains end-of-match callback (opt-in): each wired
+        # brain-manager closes its loop here -- the mind updates composure/
         # stress from the final result and the episodic memory records the
         # conviction it committed to (see manager_profile.Manager.end_of_match).
         if USE_MANAGER_BRAIN:
@@ -4493,7 +4543,7 @@ class MatchEngine:
         window each chain actually occupied (recorded as ``_chain_clock_marks``).
 
         Purely additive: reads marks + timeline, mutates nothing, changes no
-        outcome — a goal chain collapses to its chain-start clock because its
+        outcome -- a goal chain collapses to its chain-start clock because its
         motion was never folded (``motion_folded=False``).
         """
         idx_by_id = {id(e): i for i, e in enumerate(self.timeline)}
@@ -4507,8 +4557,8 @@ class MatchEngine:
             # EVENLY across the chain's window, which put a possession's
             # twenty-six actions inside seven seconds and then left the
             # next fifty seconds empty.  They are now placed by the
-            # FOOTBALL's own weights — a long pass occupies more of the
-            # sequence than a short one, and a decision takes time — so the
+            # FOOTBALL's own weights -- a long pass occupies more of the
+            # sequence than a short one, and a decision takes time -- so the
             # timeline reads like a possession rather than a burst.
             #
             # The first event still sits at the chain's start and the last
@@ -4532,19 +4582,19 @@ class MatchEngine:
                     dur = 0.0
                 # WRITE THE TRUTH BACK ONTO THE EVENT (2026-10-20).  The
                 # chronology already knows each event's real time; stamping
-                # it here makes it available to EVERY consumer — the JSON
+                # it here makes it available to EVERY consumer -- the JSON
                 # timeline, the provider-style export (which already prefers
                 # `match_clock_s`), and the shot map (which sorts and
                 # positions shots by `minute * 60 + second`, i.e. it was
                 # placing them at random positions inside the minute).
-                # The event's `second` stays as it was — it is the minute
-                # bucket the chain was in — so nothing that reads it changes
+                # The event's `second` stays as it was -- it is the minute
+                # bucket the chain was in -- so nothing that reads it changes
                 # behaviour; the true time is ADDED, never substituted.
                 #
                 # ONE number, used for BOTH the event and the TimedEvent.
                 # The first version stamped `round(at, 3)` while the
                 # chronology carried `round(at, 2)`, so the two disagreed on
-                # 2,648 of 3,052 events — and on the events that sit on a
+                # 2,648 of 3,052 events -- and on the events that sit on a
                 # minute boundary the disagreement moved the SECOND from
                 # 0.0 to 59.999, i.e. a floating-point hair decided which
                 # minute an event belonged to.  The stamp and the chronology
@@ -4592,7 +4642,7 @@ class MatchEngine:
         """The centre of the goal `team` attacks, in the home-attacks-right frame.
 
         Needed because `MatchEvent.location_x`/`location_y` DEFAULT to
-        (50.0, 34.0) (`MatchEvent`, below) — the CENTRE SPOT. So an event built
+        (50.0, 34.0) (`MatchEvent`, below) -- the CENTRE SPOT. So an event built
         with no location does not read as absent, it reads as a measurement of
         the centre circle. A goal celebration or a goal ruled out for offside,
         recorded at the centre spot, is football nonsense that exports as
@@ -4635,7 +4685,7 @@ class MatchEngine:
                     if getattr(p, "name", "") == name_off), None)
         if idx is not None:
             active[idx] = player_on_obj
-            # Mark actual pitch entry — the roster's pre-planned
+            # Mark actual pitch entry -- the roster's pre-planned
             # sub_in_minute alone does NOT mean the player came on,
             # so final-whistle minutes must key off this flag.
             player_on_obj._entered_pitch = True
@@ -4662,11 +4712,11 @@ class MatchEngine:
         # ── WHERE the outgoing player was standing ──────────────────
         # Both the INJURY and the SUBSTITUTION event used to be built with no
         # location at all. That is NOT the same as "no location": `MatchEvent`
-        # defaults `location_x`/`location_y` to (50.0, 34.0) — the CENTRE SPOT —
+        # defaults `location_x`/`location_y` to (50.0, 34.0) -- the CENTRE SPOT --
         # and nothing downstream can tell a default from a measurement. So
         # every substitution in a match was exported as having happened on the
         # centre circle. `tracked_position` rather than `get_position`, because
-        # the latter answers (50.0, 34.0) for an untracked player — the same
+        # the latter answers (50.0, 34.0) for an untracked player -- the same
         # value, for the same reason, one layer down.
         #
         # Computed BEFORE the injury block: the INJURY event is emitted first
@@ -4733,7 +4783,7 @@ class MatchEngine:
             "injury": "🤕", "game_state": "♟️",
         }.get(sub.get("reason", "tactical"), "🔄")
         if not self.quiet:
-            print(f"  {reason_icon} SUB {minute}' — {name_off} → {name_on} ({team}) "
+            print(f"  {reason_icon} SUB {minute}' -- {name_off} -> {name_on} ({team}) "
               f"[{sub.get('reason','tactical')}]")
 
     def _initialize_simulation(self):
@@ -4748,7 +4798,7 @@ class MatchEngine:
 
         # Opt-in continuous physics. Constructed here so the adapter's clock can
         # be seeded from the engine's own continuous clock (MatchState already
-        # carries one), and only when asked for — with physics_enabled False the
+        # carries one), and only when asked for -- with physics_enabled False the
         # engine never touches physics/ at all.
         self._init_physics()
 
@@ -4767,8 +4817,8 @@ class MatchEngine:
     # ── CONTINUOUS PHYSICS (opt-in) ─────────────────────────────────────
     #
     # Everything below is additive and inert unless MatchConfig.physics_enabled
-    # is True. With it False — the default, and what the live 26/27 season uses
-    # — ``self.physics`` stays None and none of this is reachable, so the
+    # is True. With it False -- the default, and what the live 26/27 season uses
+    # -- ``self.physics`` stays None and none of this is reachable, so the
     # existing code path is unchanged.
     #
     # The physics layer answers "how long does this physically take?" and
@@ -4782,12 +4832,12 @@ class MatchEngine:
         self.physics_unavailable = False
         # Clear the module slot FIRST, unconditionally. The possession chains
         # read it, and a stale adapter from the previous match would apply that
-        # match's stamina and clock to this one — the id()-reuse class of bug,
+        # match's stamina and clock to this one -- the id()-reuse class of bug,
         # in a single global.
         #
         # Looked up in sys.modules rather than imported. An earlier version did
         # `from physics.adapter import set_active_adapter` here, which meant the
-        # DISABLED path imported the whole package — quietly breaking the
+        # DISABLED path imported the whole package -- quietly breaking the
         # additive guarantee this engine relies on to leave 26/27 untouched.
         # If the module was never loaded there is no slot to clear, so there is
         # no reason to load it.
@@ -4804,7 +4854,7 @@ class MatchEngine:
             from physics.adapter import EngineAdapter
         except Exception:
             # Physics is an enhancement. If the package is unavailable the match
-            # still plays — losing the layer is strictly better than losing a
+            # still plays -- losing the layer is strictly better than losing a
             # season.
             self.physics_unavailable = True
             return
@@ -4829,7 +4879,7 @@ class MatchEngine:
                                  names=None):
         """Plan a pass in real coordinates and resolve it by arrival time.
 
-        Returns the ``PassResolution``, or ``None`` when physics is disabled —
+        Returns the ``PassResolution``, or ``None`` when physics is disabled --
         so a caller can write the same code either way and let the flag decide.
         The engine does not yet route its own passes through here; this is the
         seam a caller uses, and the hook the internal routing will call.
@@ -4895,7 +4945,7 @@ class MatchEngine:
                     state.current_x = 42.0 + random.uniform(-4.0, 4.0)
                     state.current_y = 34.0 + random.uniform(-10.0, 10.0)
                 else:
-                    # Defenders and fullbacks stay deep — the safety valve.
+                    # Defenders and fullbacks stay deep -- the safety valve.
                     state.current_x = state.home_x
                     state.current_y = state.home_y
 
@@ -4903,7 +4953,7 @@ class MatchEngine:
         """Pick a realistic kickoff taker from the active squad.
         
         Real football: the player who steps up is almost always an
-        attacker or midfielder (CAM, CM, LW, RW, CDM) — the same
+        attacker or midfielder (CAM, CM, LW, RW, CDM) -- the same
         players who naturally stand closest to the centre circle
         after the teams reset. CBs and fullbacks do not take kickoffs.
         """
@@ -4947,7 +4997,7 @@ class MatchEngine:
         Real football generates 22-28 events per minute (StatsBomb standard).
         This method runs 2-4 possession sequences per minute, each generating
         8-15 events through the full causal chain:
-            carry → pass → ball_receipt → pressure → carry → pass...
+            carry -> pass -> ball_receipt -> pressure -> carry -> pass...
 
         Target: 1,500-3,400 total events per match.
         """
@@ -4957,18 +5007,18 @@ class MatchEngine:
         home_team = self.config.home_team
         away_team = self.config.away_team
 
-        # Checkpoint 6.1 — possession-share tracking for THIS minute.
+        # Checkpoint 6.1 -- possession-share tracking for THIS minute.
         # Used by _run_minute (after this method returns) to decide each
         # team's attacking/defensive SHAPE for the drift that precedes the
         # next minute. Previously that decision used self.state.possession_team
-        # captured BEFORE this method ran — i.e. whoever last had the ball at
-        # the END of the PREVIOUS minute — even though possession flips 2-4
+        # captured BEFORE this method ran -- i.e. whoever last had the ball at
+        # the END of the PREVIOUS minute -- even though possession flips 2-4
         # times inside this very method. Counting actual sequences here closes
         # that staleness gap.
         self._minute_home_seq = 0
         self._minute_away_seq = 0
 
-        # Checkpoint 11 — a cross situation only shapes the current minute.
+        # Checkpoint 11 -- a cross situation only shapes the current minute.
         self.state.cross_active = False
         self.state.cross_corner_done = False
 
@@ -5032,7 +5082,7 @@ class MatchEngine:
                 # goal-sequence tail.
                 self._reset_positions_to_halves()
 
-                # Checkpoint 9 — ball back at centre circle: both teams'
+                # Checkpoint 9 -- ball back at centre circle: both teams'
                 # danger returns to the low kickoff baseline.
                 self.threat.on_kickoff(minute)
                 
@@ -5045,7 +5095,7 @@ class MatchEngine:
                     # the chronology cannot stamp it.  Without this the
                     # event had NO clock, the exporter fell back to
                     # `minute * 60 + second` (= 60 s), and the exported
-                    # timeline went BACKWARDS at the first event — the
+                    # timeline went BACKWARDS at the first event -- the
                     # kickoff at "60 s" followed by a pass at 0.0 s.
                     match_clock_s=round(float(self.state.match_clock_s), 2),
                     event_type=EventType.KICKOFF,
@@ -5071,7 +5121,7 @@ class MatchEngine:
                 
             # ── CHECKPOINT 6: CONSUME A PENDING CORNER FIRST ──────────
             # If a chain earlier this minute reported corner_won, that
-            # team is OWED this sequence as an actual corner — not a
+            # team is OWED this sequence as an actual corner -- not a
             # fresh random roll of possession/situation. This is what
             # makes corners a genuine consequence of a blocked shot or
             # defensive clearance rather than an independently-drawn
@@ -5093,7 +5143,7 @@ class MatchEngine:
                     self._minute_home_seq += 1
                 else:
                     self._minute_away_seq += 1
-                # Anchor corner to last ball position — a corner doesn't
+                # Anchor corner to last ball position -- a corner doesn't
                 # teleport the ball; it was won from a blocked shot/clearance
                 # right there, and the set piece delivery is from that context.
                 #
@@ -5147,7 +5197,7 @@ class MatchEngine:
                 else:
                     self._minute_away_seq += 1
                 # The conceding (defending/fouling) side is charged with the
-                # spot — this is what the per-team CAP reads so a siege can't
+                # spot -- this is what the per-team CAP reads so a siege can't
                 # cascade into a string of penalties against the same defence.
                 self.state.penalties_taken[pen_opponent] = self.state.penalties_taken.get(pen_opponent, 0) + 1
                 pen_result = ChainDispatcher.set_piece(
@@ -5208,7 +5258,7 @@ class MatchEngine:
                 if self._absorb_chain(throw_result, minute): break
                 continue
 
-            # Checkpoint 19 — offside free kicks: when a pass in open play
+            # Checkpoint 19 -- offside free kicks: when a pass in open play
             # is detected as offside, the defending team gets a free kick
             # at the offside location (not a random zone).
             if self.state.pending_offside_fk_for:
@@ -5298,7 +5348,7 @@ class MatchEngine:
             # with the kicking team (set above) and is NOT re-rolled here.
             if not kickoff_this_seq:
                 # Causal possession carry (Checkpoint): a team that just WON
-                # the ball in open play is OWED this sequence — real possession
+                # the ball in open play is OWED this sequence -- real possession
                 # chains are causal, not a memoryless coin flip. Applied
                 # ~POSSESSION_CARRY_PROB of the time so the possession-target
                 # weighting and calibrated split stay enforceable.
@@ -5386,7 +5436,7 @@ class MatchEngine:
                 )
                 if self._absorb_chain(trans_result, minute): break
                 if trans_result.possession_lost:
-                    # Ball changes hands — the team that just lost it arms a
+                    # Ball changes hands -- the team that just lost it arms a
                     # counterpress burst at the recovery zone for the next few
                     # seconds of match clock. The recovering team is OWED the
                     # next sequence (real possession is causal), barring a
@@ -5422,10 +5472,10 @@ class MatchEngine:
                 poss_cp = {"active": True,
                            "x": self.state.counterpress_x,
                            "y": self.state.last_ball_y}
-            # Phase 8 v1 — coach-to-player instructions (opt-in): the
+            # Phase 8 v1 -- coach-to-player instructions (opt-in): the
             # attacking team's live manager speaks to this sequence's
-            # carriers (stored posture read — no decide() poll). Static /
-            # BALANCED / flag OFF yields None → chain byte-identical.
+            # carriers (stored posture read -- no decide() poll). Static /
+            # BALANCED / flag OFF yields None -> chain byte-identical.
             _coach_instr = None
             if USE_MANAGER_BRAIN:
                 from coach_instructions import instructions_for_manager as _instr_for
@@ -5456,7 +5506,7 @@ class MatchEngine:
             if poss_result.possession_lost:
                 # Turnover: the attacking team just lost the ball. The
                 # recovering (defending) team is OWED the next open-play
-                # sequence — real possession chains are causal. Arm their
+                # sequence -- real possession chains are causal. Arm their
                 # counterpress burst anchored at the recovery zone (where the
                 # ball ended) so the NEXT sequence's defending pressures spike
                 # around that zone instead of reverting to the static line.
@@ -5478,7 +5528,7 @@ class MatchEngine:
             # carrier's touch already set the shot anchor. Dispatch the existing
             # AttackChain shot pipeline anchored at that position (reusing its
             # xG / body-part / angle-difficulty / GK / woodwork / corner /
-            # restart logic unchanged), then hand control back to the loop —
+            # restart logic unchanged), then hand control back to the loop --
             # the attack chain's outcome (goal / save / miss / block) already
             # determined possession for the next sequence. `continue` also
             # guarantees the independent shot_prob block below never fires a
@@ -5498,12 +5548,12 @@ class MatchEngine:
                     # play: the pass that delivered the ball is then the key
                     # pass and its passer the assist. It used to be dropped
                     # here, so the shooter was re-drawn by role weight and
-                    # distance to the ball — which is how a goal ended up
+                    # distance to the ball -- which is how a goal ended up
                     # scored from 25 m by a man who never touched the ball.
                     shooter_name=poss_result.shoot_player,
                     # ...and the real passer, so the assist is TRUE TRACKING
                     # instead of a role-weighted random draw. "" means nobody
-                    # passed to him, i.e. an UNASSISTED goal — which is a real
+                    # passed to him, i.e. an UNASSISTED goal -- which is a real
                     # and common outcome, and is recorded as absent rather than
                     # filled with a plausible name.
                     assister_name=poss_result.shoot_assister,
@@ -5519,27 +5569,27 @@ class MatchEngine:
             # ── DEFENSIVE CONTEST (Checkpoint 6 + Checkpoint 9) ─────────
             # Causal gating fix: standalone tackles/interceptions/clearances/
             # blocks (DefensiveChain) previously never fired in open play at
-            # all — this is what "a tackle = pressure but not vice versa"
+            # all -- this is what "a tackle = pressure but not vice versa"
             # actually requires. A defensive action here is now GATED behind
             # a real PRESS event having occurred earlier in this same
             # possession sequence (PossessionChain's embedded pressure
             # checks), and its frequency scales directly with the defending
-            # team's press_intensity — a high-press side genuinely racks up
+            # team's press_intensity -- a high-press side genuinely racks up
             # more tackles/clearances/blocks, not just more presses.
             #
-            # Checkpoint 9 — the DANGER LEVEL now steers WHICH action the
+            # Checkpoint 9 -- the DANGER LEVEL now steers WHICH action the
             # defence reaches for: when the ball is close to their goalpost
             # xy, they get it away (clearance/block bias); when danger is
             # low they win it back (tackle/interception bias). The defender
             # picks the action closest to the ball, and clears an AERIAL
             # ball with a headed clearance vs a low ball with a foot one.
-            # Checkpoint — TACKLE VOLUME fix (why teams were seeing too few
+            # Checkpoint -- TACKLE VOLUME fix (why teams were seeing too few
             # tackles):
             # Defensive contests were GATED behind a PRESS event having
             # happened in this exact sequence (the `pressure_occurred` guard
             # below). But a press is a narrow, probabilistically-scored event
             # (engagement range x zone prob x intensity), so many possessions
-            # produced NO press roll at all — silently starving the entire
+            # produced NO press roll at all -- silently starving the entire
             # defensive chain (tackles + interceptions + blocks) of chances to
             # fire. That is precisely "a tackle = pressure but not vice versa":
             # proactive defending should generate its own contests, not wait
@@ -5547,8 +5597,8 @@ class MatchEngine:
             #
             # Fix: the defensive contest now fires on its OWN probability,
             # proportional to the defending team's press_intensity (how
-            # engaged the whole team is) and the phase multiplier — 
-            # INDEPENDENT of whether a PRESS event happened to roll — so a
+            # engaged the whole team is) and the phase multiplier -- 
+            # INDEPENDENT of whether a PRESS event happened to roll -- so a
             # pressing side records tackles at realistic volume. A press event
             # in the sequence still nudges the chance up (pressing player IS
             # closer to the ball), but it is no longer a hard pre-requisite.
@@ -5604,7 +5654,7 @@ class MatchEngine:
                     if self._absorb_chain(def_result, minute): break
                     if def_result.possession_lost:
                         self._arm_possession_winner(defending_team, def_result)
-                        continue  # Defense won the ball — next sequence is theirs
+                        continue  # Defense won the ball -- next sequence is theirs
 
             # ── DIRECT CLEARANCE (even without press) ─────────────
             if not poss_result.possession_lost:
@@ -5668,7 +5718,7 @@ class MatchEngine:
                 #
                 # FIX (scoreline realism): the divisor was `n_sequences * 0.7`,
                 # which under-divided and let an Attacking/High-Press team
-                # (0.18-0.22 shots/sequence) rack up 40-55 shots/team/game —
+                # (0.18-0.22 shots/sequence) rack up 40-55 shots/team/game --
                 # far above the realistic 12-18 band. Raising it to
                 # `n_sequences * 1.0` pulls per-sequence shot probability down
                 # proportionally so total shots land in the real-football range.
@@ -5682,15 +5732,15 @@ class MatchEngine:
                 shot_prob *= 1.15
                 _xg_quality_mult = 0.90
             elif att_gd >= 4:
-                # Parking the bus — winning comfortably, barely attacking
+                # Parking the bus -- winning comfortably, barely attacking
                 shot_prob *= 0.45
                 _xg_quality_mult = 1.20
             elif att_gd == 3:
-                # Well ahead — sitting deep, occasional break
+                # Well ahead -- sitting deep, occasional break
                 shot_prob *= 0.55
                 _xg_quality_mult = 1.18
             elif att_gd >= 2:
-                # Comfortable — conservative but not passive
+                # Comfortable -- conservative but not passive
                 shot_prob *= 0.65
                 _xg_quality_mult = 1.15
             elif att_gd == 1 and minute >= 75:
@@ -5700,12 +5750,12 @@ class MatchEngine:
                 _xg_quality_mult = 1.0
 
             # FIX (scoreline realism): the scoreline governor `_xg_quality_mult`
-            # was computed in every branch above but NEVER applied — grep showed
+            # was computed in every branch above but NEVER applied -- grep showed
             # zero usages. This is what let a 6-0 runaway keep producing
             # high-quality chances at full volume, inflating scorelines to
             # 8-8 / 10-4. It is now multiplied into shot_prob so the scoreline
             # feeds back: a team 2+ down (0.80) creates fewer chances, a team
-            # cruising 2+ up (1.15) creates more but is already ahead — this
+            # cruising 2+ up (1.15) creates more but is already ahead -- this
             # compresses runaway scorelines toward realistic 2-3 goal margins.
             shot_prob *= _xg_quality_mult
 
@@ -5717,14 +5767,14 @@ class MatchEngine:
             # ── CHANCE / SHOT ────────────────────────────────────────
             # shot_taken guards against double-firing a shot in the same
             # sequence if the attacking matrix already resolved one (it would
-            # normally be skipped via the continue above — this is belt and
+            # normally be skipped via the continue above -- this is belt and
             # braces).
             #
             # CALIBRATION (real-football shot origination): the per-minute
             # shot_prob funnel may only dispatch a shot when the ball is
             # INSIDE the attacking third (within ~42m of the goal it attacks).
             # Previously a team in midfield possession would fire the attack
-            # chain from its own half and release 35-68m pot-shots at volume —
+            # chain from its own half and release 35-68m pot-shots at volume --
             # real teams take ~95% of their shots from the final third. The
             # distance propensity AT the contact point is then handled by the
             # AttackChain geometry selector (_select_action_from_position).
@@ -5739,7 +5789,7 @@ class MatchEngine:
 
                 if situation in (SituationType.CORNER, SituationType.DIRECT_FREEKICK,
                                   SituationType.CROSSED_FREEKICK, SituationType.PENALTY):
-                    # Fix: anchor set piece to last ball state — the situation
+                    # Fix: anchor set piece to last ball state -- the situation
                     # was generated from the ball's actual location, not a new
                     # independent random zone. Free kicks and corners happen
                     # where the ball was, not where a separate random draw lands.
@@ -5773,7 +5823,7 @@ class MatchEngine:
                 else:
                     # This funnel produced the BULK of the match's shots and it
                     # used to pass no names at all, so AttackChain drew the
-                    # shooter by role weight and distance — a player who may
+                    # shooter by role weight and distance -- a player who may
                     # never have touched the ball, shooting from a position he
                     # was not at. The possession episode that just ran knows
                     # exactly who holds the ball and who gave it to him, so
@@ -5785,7 +5835,7 @@ class MatchEngine:
                     # `ball_carrier` is empty when the possession did not end
                     # with the ball at a player's feet (a turnover, a throw-in, a
                     # goal kick). `_named_shooter` resolves "" to None, so the
-                    # chain falls back exactly as it did before — we do not
+                    # chain falls back exactly as it did before -- we do not
                     # invent a name to fill the slot.
                     att_result = ChainDispatcher.attack(
                         minute, attacking_team, defending_team,
@@ -5810,7 +5860,7 @@ class MatchEngine:
         # or how often possession changes hands. Real football: ~20-30
         # fouls and ~3-5 yellows per match (~0.25-0.3 fouls/minute).
         # The referee's strictness shapes how often a foul becomes a
-        # card — a lenient ref doesn't make players foul less, he just
+        # card -- a lenient ref doesn't make players foul less, he just
         # books fewer of them.
         last_attacker = self.state.possession_team or home_team
         fouling_team = away_team if last_attacker == home_team else home_team
@@ -5821,8 +5871,8 @@ class MatchEngine:
         )
         if random.random() < foul_prob:
             # PHYSICS-ANCHORED FOUL LOCATION.
-            # A defensive foul happens at the live engagement point — where
-            # the defending team is actually challenging the ball — NOT at an
+            # A defensive foul happens at the live engagement point -- where
+            # the defending team is actually challenging the ball -- NOT at an
             # arbitrary random spot. We anchor to the ball; the foul drifts a
             # few metres around that contest (striker checked, second ball,
             # shoulder in the channel).
@@ -5834,7 +5884,7 @@ class MatchEngine:
             # PHYSICS-GROUNDED PENALTY CONVICTION.
             # A foul inside the box is NOT automatically a spot-kick. The ref
             # only gives one when the defending team's lunge actually denied a
-            # clear scoring opportunity — i.e. the ball really was deep in its
+            # clear scoring opportunity -- i.e. the ball really was deep in its
             # OWN box and live danger was high (defenders scrambling). We drive
             # that straight off the ThreatEngine's pure ball↔goal geometry, and
             # keep it deliberately scarce: a real penalty roughly every 3-5
@@ -5869,7 +5919,7 @@ class MatchEngine:
             # `pending_offside_fk_for` was the only thing that ever fed
             # `_freekick_chain`. Queued (not taken inline) so it is consumed
             # at the top of the next minute's sequence loop, exactly like the
-            # corner and penalty awards at 5637 / 5649 — an immediate restart
+            # corner and penalty awards at 5637 / 5649 -- an immediate restart
             # would restart play inside the same sequence that produced the
             # foul.
             #
@@ -5879,8 +5929,8 @@ class MatchEngine:
             #
             # Nor is a foul INSIDE the box given a direct free kick when the
             # referee declined to award a penalty. Measured on a real match,
-            # this was awarding "direct free kicks" from x=101.0 — 4 m from
-            # the goal line — because `foul_x` is clamped to 101.0 above and a
+            # this was awarding "direct free kicks" from x=101.0 -- 4 m from
+            # the goal line -- because `foul_x` is clamped to 101.0 above and a
             # box foul that fails the conviction test still falls through
             # here. A dead ball 4 m out is a tap-in, not a free kick, and it
             # dragged the keeper to the goal line and dragged the wall on top
@@ -5902,8 +5952,8 @@ class MatchEngine:
 
             # Only SOME fouls are awarded as a free kick. Awarding every one
             # produced 40 free kicks a match (22 fouls + 21 offside
-            # restarts), and that volume — not the wall, and not the keeper
-            # placement — is what broke
+            # restarts), and that volume -- not the wall, and not the keeper
+            # placement -- is what broke
             # `tests.py::test_pass_network_positions_stay_realistic`: the home
             # keeper's average x rose to 27.6 against an asserted ceiling of
             # 25. Each awarded kick is a full restart that costs a sequence,
@@ -5915,7 +5965,7 @@ class MatchEngine:
             # Real football does not restart for every foul: many are played
             # on as an advantage, and the ones that do stop play tend to be in
             # the attacking half, where the restart actually matters. Keeping
-            # the award to those is the honest restriction — it is a
+            # the award to those is the honest restriction -- it is a
             # consequence of where fouls happen, not a rate invented to make
             # a number fit.
             worth_restarting = (foul_x >= 63.0) if att_right else (foul_x <= 42.0)
@@ -5933,13 +5983,13 @@ class MatchEngine:
 
     def _danger_scaled_action_weights(self, danger: float) -> List[float]:
         """
-        Checkpoint 9 — how the live danger level steers which defensive
+        Checkpoint 9 -- how the live danger level steers which defensive
         action the team reaches for:
 
-            danger 0        → unchanged baseline (tackle-heavy)
-            danger ≥ 30     → mild shift toward clearances
-            danger ≥ 60     → clear the lines (clearance/block heavy)
-            danger ≥ 85     → six-yard scramble: bodies on everything
+            danger 0        -> unchanged baseline (tackle-heavy)
+            danger >= 30     -> mild shift toward clearances
+            danger >= 60     -> clear the lines (clearance/block heavy)
+            danger >= 85     -> six-yard scramble: bodies on everything
 
         The danger-0 branch is byte-for-byte the pre-feature weights, which
         is what keeps the no-threat baseline statistically unchanged.
@@ -5955,7 +6005,7 @@ class MatchEngine:
     def _defensive_recovery(self, minute, poss_result, attacking_team,
                             defending_team, att_players, def_players,
                             attacks_right: bool, def_avg_stamina) -> bool:
-        """Checkpoint 29 — defensive wins inside PossessionChain (physics
+        """Checkpoint 29 -- defensive wins inside PossessionChain (physics
         race-to-ball interceptions, miscontrols, lost duels) previously died
         at the possession_lost continue and never reached the DefensiveChain
         dispatcher, so deep clearances/blocks collapsed to ~1/match. When a
@@ -5982,7 +6032,7 @@ class MatchEngine:
         # Same learned action controller as the open-play contest: the deep
         # recovery is a genuine "get it away" moment, but the act (clearance
         # vs block vs winning it with a tackle/interception) is the brain's
-        # call — not a hardcoded clearance-heavy table.
+        # call -- not a hardcoded clearance-heavy table.
         action_type = _def_action_choice(
             self, defending_team, attacking_team,
             danger, ctx_x, ctx_y,
@@ -6020,12 +6070,12 @@ class MatchEngine:
 
     def _infer_aerial_ball(self, events, last_evt) -> bool:
         """
-        Checkpoint 9 — is the ball currently in the air when the defence
+        Checkpoint 9 -- is the ball currently in the air when the defence
         has to react? A cross / corner / free-kick cross / aerial duel /
         headed touch just before the defensive action means the defender
         clears with their HEAD; a low ball is cleared with the FOOT.
 
-        Checkpoint 11 — the geometric CrossDetector's `is_airborne` stamp
+        Checkpoint 11 -- the geometric CrossDetector's `is_airborne` stamp
         (set on every qualifying cross) is authoritative when present; a
         low driven cross is correctly routed to a FOOT clearance.
         """
@@ -6057,7 +6107,7 @@ class MatchEngine:
 
     def _near_ball_counts(self, bx: float, by: float) -> Dict[str, int]:
         """
-        Checkpoint 9 — how many outfield bodies from each team are within
+        Checkpoint 9 -- how many outfield bodies from each team are within
         ~8m of the ball right now. Feeds the danger assessment's pressure
         factor (a striker unmarked at the penalty spot is worse than a
         5-on-1 scramble). Reads the Position Engine's live spatial state.
@@ -6076,7 +6126,7 @@ class MatchEngine:
 
     def _infer_ball_height(self, events, last_evt) -> float:
         """
-        Checkpoint 10 — the Z-AXIS. A ball the defence has to react to that
+        Checkpoint 10 -- the Z-AXIS. A ball the defence has to react to that
         came from a cross / corner / free-kick cross / aerial duel / headed
         touch is above hip height; a low ball is on the deck or a low bounce.
         This height (metres) is what picks the headed vs foot clearance tool
@@ -6089,11 +6139,11 @@ class MatchEngine:
     def _defender_facing_at(self, def_team: str, bx: float, by: float,
                             own_goal_x: float) -> Tuple[float, float]:
         """
-        Checkpoint 10 — which way is the nearest defender facing when they
+        Checkpoint 10 -- which way is the nearest defender facing when they
         react to the ball? A defender still goal-side of the ball faces the
         ball (Optimal zone). A defender who has been BEATEN (ball closer to
         their own goalpost xy than they are) is sprinting back and faces their
-        own goal — the Blind/Panic zone where sliced clearances and own goals
+        own goal -- the Blind/Panic zone where sliced clearances and own goals
         live.
         """
         from threat_engine import defender_facing_point
@@ -6112,7 +6162,7 @@ class MatchEngine:
     def _contest_distance(self, def_team: str, att_team: str,
                           bx: float, by: float) -> Optional[float]:
         """
-        Checkpoint 10 — how CONTESTED is the clearing defender? The distance
+        Checkpoint 10 -- how CONTESTED is the clearing defender? The distance
         (metres) from the defender nearest the ball to the nearest attacking
         player. 0.5m = fully contested (spec); under ~2m it starts amplifying
         P_fail. None when there's no attacker near enough to care.
@@ -6175,10 +6225,10 @@ class MatchEngine:
         Also drains stamina from every player involved in each event.
         """
         from squad_manager import get_stamina_action
-        # Phase 6 — Manager Brains: reset the "most recent goal" stamp, then
+        # Phase 6 -- Manager Brains: reset the "most recent goal" stamp, then
         # credit it from this chain BEFORE the event feed below so managers
         # can attribute GOAL/PENALTY_SCORED/OWN_GOAL events to the right
-        # side (goal_team is the CREDITED team — for an own goal that is the
+        # side (goal_team is the CREDITED team -- for an own goal that is the
         # attacker, not the defender whose error put it in). A VAR-disallowed
         # goal (delayed_offside) is cancelled: no stamp.
         self.state.last_goal_team = None
@@ -6191,7 +6241,7 @@ class MatchEngine:
         # Track which players were actually ON THE BALL this chain so the
         # continuous off-ball integrator skips them (they're already moved by
         # the episode). NOTE: we use the chain's ball-action EVENTS, NOT the
-        # episode's distance-stats dict — the episode traces every registered
+        # episode's distance-stats dict -- the episode traces every registered
         # player (both teams), so the stats dict would flag ~all 22 and freeze
         # the off-ball integrator for everyone.
         for ev in chain_result.events:
@@ -6212,7 +6262,7 @@ class MatchEngine:
             # carry the defending profile's stamina_tax multiplier; a
             # gegenpress team pays 1.35x per press while a low block pays
             # 1.0x. That tax drains team stamina faster, TacticalAI lowers
-            # the effective press intensity, and the press weakens — the
+            # the effective press intensity, and the press weakens -- the
             # "press yourself into exhaustion" loop.
             press_tax = float(
                 (getattr(event, "metadata", None) or {}).get("press_tax", 1.0)
@@ -6224,11 +6274,11 @@ class MatchEngine:
             # burned 2x the designed per-event drain, and because roll_injury
             # and check_stamina_sub both live inside process_action, every
             # physical event also rolled TWO injury draws and TWO stamina-sub
-            # draws — so the effective in-match injury rate was double the
+            # draws -- so the effective in-match injury rate was double the
             # table in squad_manager.roll_injury.
             #
             # One site now, and press_tax applies to the primary actor (it is
-            # the whole point of the variable — the Checkpoint 15 press tax
+            # the whole point of the variable -- the Checkpoint 15 press tax
             # is what stops a press from exhausting itself).
             if self.sub_controller is not None:
                 action_key = get_stamina_action(event.event_type.name)
@@ -6241,7 +6291,7 @@ class MatchEngine:
                             event.player, action_key, event.team, minute,
                             drain_mult=press_tax,
                         )
-                    # Secondary actors get reduced drain — they are involved
+                    # Secondary actors get reduced drain -- they are involved
                     # (a duel, a challenge) but not the actor who chose it.
                     if event.secondary_player:
                         self.sub_controller.process_action(
@@ -6249,7 +6299,7 @@ class MatchEngine:
                             drain_mult=press_tax, is_secondary=True,
                         )
 
-            # Checkpoint 6.3 — pass energy cost: long/difficult passes drain
+            # Checkpoint 6.3 -- pass energy cost: long/difficult passes drain
             # extra mental/physical energy from the passer. A 40m diagonal
             # under pressure costs more than a 5m safe pass, modelling the
             # real-life "mental battery" drain Enzo/Rice-level midfielders
@@ -6265,7 +6315,7 @@ class MatchEngine:
                     state.update_performance_mult()
 
             # Checkpoint 5: keep the Position Engine's live spatial state
-            # truthful — every event with real coordinates updates the
+            # truthful -- every event with real coordinates updates the
             # involved player(s)' current position, not just the ball's.
             if event.location_x is not None and event.location_y is not None:
                 self.position_engine.record_touch(
@@ -6280,7 +6330,7 @@ class MatchEngine:
                         event.secondary_player, sx, sy, minute
                     )
 
-            # DELETED 2026-10-14 — the second drain site for the same event.
+            # DELETED 2026-10-14 -- the second drain site for the same event.
             # It charged event.player the full STAMINA_COSTS entry with no
             # press_tax, immediately after the block above had already
             # charged him once WITH press_tax, and re-charged the secondary
@@ -6291,7 +6341,7 @@ class MatchEngine:
             # injury rolls and two sub-checks. The unified block above is
             # now the only drain site in _absorb_chain.
 
-            # Checkpoint 7 — persistent ball-state: keep state.last_ball_x/y
+            # Checkpoint 7 -- persistent ball-state: keep state.last_ball_x/y
             # truthful to whatever actually just happened, in event order,
             # so the LAST event of this chain is what the NEXT sequence's
             # starting position anchors off. Prefer end_x/end_y (where the
@@ -6327,7 +6377,7 @@ class MatchEngine:
 
                 # Realistic corner causality (not a random draw): a live cross
                 # into the box that is NOT converted is regularly put behind by
-                # the defender/keeper for a corner — the single most common
+                # the defender/keeper for a corner -- the single most common
                 # corner origin in real football. Only awarded when the cross
                 # is genuinely delivered (CROSS_SUCCESS) or contested, capped
                 # at one per minute so an uncontested delivery can't pile up
@@ -6350,7 +6400,7 @@ class MatchEngine:
                         chain_result.corner_team = event.team
                         self.state.cross_active = False
 
-            # Checkpoint 9 — Threat Engine: keep both teams' live danger level
+            # Checkpoint 9 -- Threat Engine: keep both teams' live danger level
             # truthful to the ball's actual position every single event. Near-
             # ball player counts (who has bodies on the ball) feed the pressure
             # factor of the danger assessment.
@@ -6359,7 +6409,7 @@ class MatchEngine:
                 near_counts=self._near_ball_counts(bx, by),
             )
 
-            # Phase 6 — Manager Brains event feed (opt-in). After EACH event
+            # Phase 6 -- Manager Brains event feed (opt-in). After EACH event
             # the wired brain-managers (if any) are told what happened. The
             # mind ignores everything except goal outcomes, which it uses to
             # update composure/stress via Manager.on_event. Cheap no-op for
@@ -6374,25 +6424,25 @@ class MatchEngine:
                     if _mgr is not None and isinstance(_mgr, _BrainManager):
                         _mgr.on_event(_etype_name, self, _team)
 
-            # Phase 2 — Manager trigger event stamping
+            # Phase 2 -- Manager trigger event stamping
             _etype_name = getattr(event.event_type, "name", "")
             if _etype_name in MANAGER_TRIGGER_EVENTS:
                 self.manager_last_trigger = _etype_name
 
 
-        # Checkpoint 6 — corner causality: a chain reporting corner_won is
+        # Checkpoint 6 -- corner causality: a chain reporting corner_won is
         # no longer a discarded flag. It queues the ACTUAL next set-piece
         # sequence for the team that won it, consumed at the top of
         # _simulate_minute's sequence loop. Turned into a per-team COUNTER so
         # corners won in the SAME sequence can never overwrite (drop) each
-        # other — each win survives until the loop takes it.
+        # other -- each win survives until the loop takes it.
         if chain_result.corner_won and chain_result.corner_team:
             if chain_result.corner_team == self.config.home_team:
                 self.state.pending_corners_home += 1
             else:
                 self.state.pending_corners_away += 1
 
-        # Checkpoint X — penalty causality: a foul a defending team committed
+        # Checkpoint X -- penalty causality: a foul a defending team committed
         # inside its OWN box is a spot-kick offence. The fouling team's box
         # foul means the FOULED side takes the kick, so we queue the fouled
         # team. The PENALTY_WON event's `.team` is the fouled (attacking)
@@ -6410,7 +6460,7 @@ class MatchEngine:
                 else:
                     self.state.pending_penalty_away += 1
 
-        # Checkpoint 8 — restart causality: goal kicks and throw-ins
+        # Checkpoint 8 -- restart causality: goal kicks and throw-ins
         # When a chain reports restart_required, queue the actual restart
         # chain (in _simulate_minute) rather than emitting a stub event.
         # This lets GoalKickChain and ThrowInChain model their full logic
@@ -6432,9 +6482,9 @@ class MatchEngine:
             self.state.pending_restart_x = chain_result.restart_x
             self.state.pending_restart_y = chain_result.restart_y
 
-        # Checkpoint 19 — offside detection: queue a free kick at the
+        # Checkpoint 19 -- offside detection: queue a free kick at the
         # offside location for the defending team. The free kick is NOT
-        # placed in a random zone — it is placed exactly where the
+        # placed in a random zone -- it is placed exactly where the
         # offside occurred, which is what the real laws of the game prescribe.
         if getattr(chain_result, 'offside_detected', False):
             offside_attacking_team = getattr(chain_result, 'offside_team', self.state.possession_team)
@@ -6453,7 +6503,7 @@ class MatchEngine:
                 # VAR DISALLOWED GOAL
                 var_x, var_y = self._goal_mouth(chain_result.goal_team)
                 if not self.quiet:
-                    print(f"  ❌ GOAL RULED OUT (VAR/Offside)! {minute}' — {chain_result.goal_scorer}")
+                    print(f"  ❌ GOAL RULED OUT (VAR/Offside)! {minute}' -- {chain_result.goal_scorer}")
                 self.timeline.append(MatchEvent(
                     minute=minute, second=0,
                     event_type=EventType.VAR_DISALLOWED_GOAL,
@@ -6471,13 +6521,13 @@ class MatchEngine:
                               "offside_y": getattr(chain_result, 'offside_y', None)},
                 ))
                 # The restart is the offside free kick queued by the
-                # offside_detected block above — clear any kickoff so that
+                # offside_detected block above -- clear any kickoff so that
                 # free kick is the only restart on the ball.
                 self.state.pending_kickoff_for = ""
             else:
                 # Find the goal event already in timeline (including an
-                # own goal — a critical clearance failure redirects the
-                # ball into the defender's own net — and penalties, which
+                # own goal -- a critical clearance failure redirects the
+                # ball into the defender's own net -- and penalties, which
                 # also set goal_scored but emit PENALTY_SCORED).
                 goal_events = [e for e in chain_result.events
                                if e.event_type in (EventType.GOAL, EventType.OWN_GOAL,
@@ -6493,11 +6543,11 @@ class MatchEngine:
                 )
                 if getattr(chain_result, "own_goal", False):
                     if not self.quiet:
-                        print(f"  🥅 OWN GOAL! {minute}' — {chain_result.goal_scorer} "
+                        print(f"  🥅 OWN GOAL! {minute}' -- {chain_result.goal_scorer} "
                               f"({chain_result.goal_team}) [{self.state.score_str}]")
                 else:
                     if not self.quiet:
-                        print(f"  ⚽ GOAL! {minute}' — {chain_result.goal_scorer} "
+                        print(f"  ⚽ GOAL! {minute}' -- {chain_result.goal_scorer} "
                               f"({chain_result.goal_team}) [{self.state.score_str}]")
                 # Set up Kickoff for conceding team
                 conceding_team = self.config.away_team if chain_result.goal_team == self.config.home_team else self.config.home_team
@@ -6506,7 +6556,7 @@ class MatchEngine:
                 # begins from clean defensive shapes rather than a scrambled
                 # goal-mouth tail.
                 self._reset_positions_to_halves()
-                # Checkpoint 9 — the threat was realised: the conceding team's
+                # Checkpoint 9 -- the threat was realised: the conceding team's
                 # danger PEAKS (a goal came from it), then resets at kickoff.
                 self.threat.on_goal(conceding_team, minute)
                 self._chain_clock_marks.append(ChainClockMark(
@@ -6514,7 +6564,7 @@ class MatchEngine:
                     end_clock=self.state.match_clock_s, motion_folded=False,
                     events=list(chain_result.events),
                 ))
-                # GOAL CELEBRATION — the fixed real-world pause (10-30s) between
+                # GOAL CELEBRATION -- the fixed real-world pause (10-30s) between
                 # a goal and the center restart. The chain span above was folded
                 # at the pre-celebration clock, so the celebration time lands in
                 # dead_time rather than inflating the goal chain's measured play.
@@ -6527,7 +6577,7 @@ class MatchEngine:
                 # inherit the (50.0, 34.0) centre-spot default, so every
                 # celebration in every match was exported on the centre circle.
                 # Note this fires AFTER `_reset_positions_to_halves()`, so the
-                # tracked positions are already the kickoff shape — the goal
+                # tracked positions are already the kickoff shape -- the goal
                 # mouth, not the engine's current state, is the truthful answer.
                 cel_x, cel_y = self._goal_mouth(chain_result.goal_team)
                 self.timeline.append(MatchEvent(
@@ -6559,14 +6609,14 @@ class MatchEngine:
                 self.state, chain_result.goal_team, self.config.home_team
             )
             if not self.quiet:
-                print(f"  ⚽ PENALTY! {minute}' — {chain_result.goal_scorer} "
+                print(f"  ⚽ PENALTY! {minute}' -- {chain_result.goal_scorer} "
                       f"({chain_result.goal_team}) [{self.state.score_str}]")
 
             # xG accumulation
             # xG accumulation
         if chain_result.xg_generated > 0:
             # Attribute xG to whichever team actually took the shot, not to
-            # self.state.possession_team. possession_team can be stale here —
+            # self.state.possession_team. possession_team can be stale here --
             # e.g. a successful TransitionChain press flips the ball to the
             # pressing/counter-attacking team, but possession_team is only
             # updated for the NEXT sequence, not before this chain result is
@@ -6603,22 +6653,22 @@ class MatchEngine:
                 card_team = ce.team
 
                 if ce.event_type == EventType.YELLOW_CARD:
-                    # Track booking — first yellow for this player
+                    # Track booking -- first yellow for this player
                     self.state.booked_players[player_name] = self.state.booked_players.get(player_name, 0) + 1
                     if not self.quiet:
-                        print(f"  🟨 YELLOW CARD! {minute}' — {player_name} ({card_team})")
+                        print(f"  🟨 YELLOW CARD! {minute}' -- {player_name} ({card_team})")
 
                 elif ce.event_type == EventType.RED_CARD:
                     # Check if it's a second yellow
                     was_booked = self.state.booked_players.get(player_name, 0) > 0
                     if was_booked:
                         if not self.quiet:
-                            print(f"  🟥🟨 SECOND YELLOW! {minute}' — {player_name} ({card_team}) SENT OFF")
+                            print(f"  🟥🟨 SECOND YELLOW! {minute}' -- {player_name} ({card_team}) SENT OFF")
                     else:
                         if not self.quiet:
-                            print(f"  🟥 RED CARD! {minute}' — {player_name} ({card_team}) SENT OFF")
+                            print(f"  🟥 RED CARD! {minute}' -- {player_name} ({card_team}) SENT OFF")
 
-                    # Credit minutes up to the sending-off BEFORE removal —
+                    # Credit minutes up to the sending-off BEFORE removal --
                     # the final-whistle pass only covers players still in the
                     # active pools, so skipping this leaves the red-carded
                     # player at minutes_played=0 and breaks every per-90 stat.
@@ -6644,7 +6694,7 @@ class MatchEngine:
                         self.state, card_team, self.config.home_team
                     )
 
-        # Checkpoint — fold this chain's continuous ball_path onto the single
+        # Checkpoint -- fold this chain's continuous ball_path onto the single
         # global match clock so the whole 90' reads as one timeline (#1).
         self._absorb_motion(chain_result)
 
@@ -6683,7 +6733,7 @@ class MatchEngine:
         """Create and record an event."""
         # The TRUE clock (2026-10-20).  These events are emitted by the
         # engine directly, so no chain mark covers them and the chronology
-        # cannot stamp them — this is where they get their real time.  The
+        # cannot stamp them -- this is where they get their real time.  The
         # `second` placeholder is left alone (it is the minute bucket) and
         # the truth is ADDED alongside it.
         kwargs.setdefault('match_clock_s', round(float(self.state.match_clock_s), 2))
@@ -6764,7 +6814,7 @@ class MatchEngine:
         # the sequence loop) rather than by this random draw. What remains
         # here is a residual for real-world corner sources this engine
         # doesn't model discretely yet (keeper tipping over, a cross
-        # knocked behind under no direct pressure, etc.) — not the primary
+        # knocked behind under no direct pressure, etc.) -- not the primary
         # source of corners anymore.
         weights = {
             SituationType.OPEN_PLAY:        58,
@@ -6773,7 +6823,7 @@ class MatchEngine:
             SituationType.DIRECT_FREEKICK:  9,
             SituationType.CROSSED_FREEKICK: 8,
             # NOTE: SituationType.PENALTY is intentionally ABSENT from this
-            # weights table. A penalty is NOT a generic shot situation — it is
+            # weights table. A penalty is NOT a generic shot situation -- it is
             # always the consequence of a defending-team foul inside its own
             # box, which the DisciplineChain reports via `box_conviction` and
             # queues through `pending_penalty_*`. Leaving PENALTY here generated
@@ -6783,7 +6833,7 @@ class MatchEngine:
             # box-foul conviction path below.
         }
 
-        # Resolve style — profile may be EffectiveTactics (no .style attr) or TeamProfile
+        # Resolve style -- profile may be EffectiveTactics (no .style attr) or TeamProfile
         team_style = getattr(profile, 'style', style) or TeamStyle.BALANCED
         # Style adjustments
         if team_style == TeamStyle.WING_PLAY:
@@ -6847,7 +6897,7 @@ class MatchEngine:
 
 
 # ─────────────────────────────────────────────
-# MATCH RESULT — What simulation returns
+# MATCH RESULT -- What simulation returns
 # ─────────────────────────────────────────────
 
 def _terrs(d: Dict[str, float]) -> str:
@@ -6906,7 +6956,7 @@ class MatchResult:
     @property
     def score_str(self) -> str:
         return (
-            f"{self.config.home_team} {self.home_goals}–"
+            f"{self.config.home_team} {self.home_goals}-"
             f"{self.away_goals} {self.config.away_team}"
         )
 
@@ -6954,7 +7004,7 @@ class MatchResult:
 
         Distance/sprints here are derived from ACTUAL 10 Hz movement
         integration (on-ball via PossessionEpisode traces, off-ball via the
-        continuous off-ball integrator) — not snapshot baselines. Returns a
+        continuous off-ball integrator) -- not snapshot baselines. Returns a
         mapping player_name -> {distance_m, sprint_count,
         high_speed_sprint_count, top_speed_mps}.
         """
@@ -6984,7 +7034,7 @@ class MatchResult:
     # ── POSSESSION ANALYTICS (#5) ────────────────────────────────
     def territorial_possession(self) -> Dict[str, Dict[str, float]]:
         """Share of ball-time spent in each third, per team (from the global
-        continuous timeline). Answers 'territorial dominance' — not just who
+        continuous timeline). Answers 'territorial dominance' -- not just who
         had the ball, but WHERE on the pitch they had it."""
         from collections import defaultdict
         counts: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -7027,7 +7077,7 @@ class MatchResult:
         """Per-team average/max shot velocity across the match, Opta-style.
 
         Reads the launch velocity stamped on each shot-attempt event
-        (``metadata["shot_speed_kmh"]`` — set by every shot-producing chain).
+        (``metadata["shot_speed_kmh"]`` -- set by every shot-producing chain).
         GOAL events are excluded so a goal's paired SHOT_ON_TARGET isn't
         counted twice; headers count but contribute their (slower, ~5-12 m/s)
         velocities naturally.
@@ -7075,8 +7125,8 @@ class MatchResult:
         lines = [
             f"\n{'='*50}",
             f"  {self.score_str}",
-            f"  xG: {self.config.home_team} {self.home_xg} — {self.away_xg} {self.config.away_team}",
-            f"  Possession: {self.config.home_team} {self.home_possession_pct}% — "
+            f"  xG: {self.config.home_team} {self.home_xg} -- {self.away_xg} {self.config.away_team}",
+            f"  Possession: {self.config.home_team} {self.home_possession_pct}% -- "
             f"{self.away_possession_pct}% {self.config.away_team}",
             f"  Territorial (att%/mid%/def%): "
             f"{self.config.home_team} "
@@ -7094,8 +7144,8 @@ class MatchResult:
         for g in self.goals:
             assist = (f" (assist: {g.secondary_player})"
                       if g.secondary_player and g.event_type != EventType.OWN_GOAL else "")
-            lines.append(f"  ⚽ {g.minute}' {g.player}{assist} — {g.team}")
+            lines.append(f"  ⚽ {g.minute}' {g.player}{assist} -- {g.team}")
         for c in self.cards:
             icon = "🟥" if c.event_type == EventType.RED_CARD else "🟨"
-            lines.append(f"  {icon} {c.minute}' {c.player} — {c.team}")
+            lines.append(f"  {icon} {c.minute}' {c.player} -- {c.team}")
         return "\n".join(lines)

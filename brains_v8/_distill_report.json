@@ -1,0 +1,370 @@
+{
+  "reports": {
+    "GK": {
+      "position": "GK",
+      "sequences": 230,
+      "steps": 1099,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 3.1901425842123663,
+      "loss_last": 0.2538432609060697,
+      "agreement_first": 0.05368516833484986,
+      "agreement": 0.9608735213830755,
+      "mix": {
+        "CARRY": 0.3867,
+        "RECYCLE": 0.5787,
+        "SAFE_PASS": 0.0346
+      },
+      "mix_heldout": {
+        "CARRY": 0.2794,
+        "RECYCLE": 0.7045,
+        "SAFE_PASS": 0.0162
+      },
+      "train_sequences": 230,
+      "eval_sequences": 57,
+      "family": "GK",
+      "census_flags": [
+        "GK: only 3 intents",
+        "GK: RECYCLE at 70%"
+      ]
+    },
+    "CB": {
+      "position": "CB",
+      "sequences": 344,
+      "steps": 1344,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 3.0088496381746164,
+      "loss_last": 0.8511996162661811,
+      "agreement_first": 0.06919642857142858,
+      "agreement": 0.8221726190476191,
+      "mix": {
+        "PROGRESSIVE_PASS": 0.0372,
+        "PROTECT_POSSESSION": 0.4122,
+        "RECYCLE": 0.154,
+        "SAFE_PASS": 0.0796,
+        "SWITCH": 0.0603,
+        "THROUGH_BALL": 0.2567
+      },
+      "mix_heldout": {
+        "PROGRESSIVE_PASS": 0.0142,
+        "PROTECT_POSSESSION": 0.4375,
+        "RECYCLE": 0.1193,
+        "SAFE_PASS": 0.0852,
+        "SWITCH": 0.071,
+        "THROUGH_BALL": 0.2727
+      },
+      "train_sequences": 344,
+      "eval_sequences": 86,
+      "family": "CB",
+      "census_flags": [
+        "CB: PROTECT_POSSESSION at 44%"
+      ]
+    },
+    "LB": {
+      "position": "LB",
+      "sequences": 216,
+      "steps": 640,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 3.067211373731967,
+      "loss_last": 0.8852485691855259,
+      "agreement_first": 0.08125,
+      "agreement": 0.8140625,
+      "mix": {
+        "CARRY": 0.0437,
+        "CROSS": 0.1484,
+        "PROGRESSIVE_PASS": 0.4266,
+        "RECYCLE": 0.1547,
+        "SAFE_PASS": 0.1422,
+        "SWITCH": 0.0172,
+        "THROUGH_BALL": 0.0672
+      },
+      "mix_heldout": {
+        "CARRY": 0.021,
+        "CROSS": 0.1818,
+        "PROGRESSIVE_PASS": 0.4056,
+        "RECYCLE": 0.1818,
+        "SAFE_PASS": 0.1469,
+        "SWITCH": 0.007,
+        "THROUGH_BALL": 0.0559
+      },
+      "train_sequences": 216,
+      "eval_sequences": 53,
+      "family": "FB",
+      "census_flags": [
+        "LB: PROGRESSIVE_PASS at 41%"
+      ]
+    },
+    "RB": {
+      "position": "LB",
+      "sequences": 216,
+      "steps": 640,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 3.067211373731967,
+      "loss_last": 0.8852485691855259,
+      "agreement_first": 0.08125,
+      "agreement": 0.8140625,
+      "mix": {
+        "CARRY": 0.0437,
+        "CROSS": 0.1484,
+        "PROGRESSIVE_PASS": 0.4266,
+        "RECYCLE": 0.1547,
+        "SAFE_PASS": 0.1422,
+        "SWITCH": 0.0172,
+        "THROUGH_BALL": 0.0672
+      },
+      "mix_heldout": {
+        "CARRY": 0.021,
+        "CROSS": 0.1818,
+        "PROGRESSIVE_PASS": 0.4056,
+        "RECYCLE": 0.1818,
+        "SAFE_PASS": 0.1469,
+        "SWITCH": 0.007,
+        "THROUGH_BALL": 0.0559
+      },
+      "train_sequences": 216,
+      "eval_sequences": 53,
+      "family": "FB",
+      "census_flags": [
+        "LB: PROGRESSIVE_PASS at 41%"
+      ]
+    },
+    "CDM": {
+      "position": "CDM",
+      "sequences": 117,
+      "steps": 390,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.8999572961299207,
+      "loss_last": 0.8979240943243121,
+      "agreement_first": 0.2205128205128205,
+      "agreement": 0.8128205128205128,
+      "mix": {
+        "CARRY": 0.1128,
+        "DRIBBLE": 0.0103,
+        "PROGRESSIVE_PASS": 0.2103,
+        "PROTECT_POSSESSION": 0.0026,
+        "RECYCLE": 0.1821,
+        "SAFE_PASS": 0.2744,
+        "SWITCH": 0.0487,
+        "THROUGH_BALL": 0.159
+      },
+      "mix_heldout": {
+        "CARRY": 0.119,
+        "PROGRESSIVE_PASS": 0.3214,
+        "RECYCLE": 0.131,
+        "SAFE_PASS": 0.2857,
+        "SWITCH": 0.0119,
+        "THROUGH_BALL": 0.131
+      },
+      "train_sequences": 117,
+      "eval_sequences": 29,
+      "family": "DM",
+      "census_flags": []
+    },
+    "CM": {
+      "position": "CM",
+      "sequences": 331,
+      "steps": 1067,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.8066470783402235,
+      "loss_last": 0.8358731811381198,
+      "agreement_first": 0.2492970946579194,
+      "agreement": 0.8678537956888472,
+      "mix": {
+        "CARRY": 0.0169,
+        "PROGRESSIVE_PASS": 0.2324,
+        "PROTECT_POSSESSION": 0.2774,
+        "RECYCLE": 0.1771,
+        "SAFE_PASS": 0.2624,
+        "SWITCH": 0.0281,
+        "THROUGH_BALL": 0.0056
+      },
+      "mix_heldout": {
+        "PROGRESSIVE_PASS": 0.1984,
+        "PROTECT_POSSESSION": 0.3095,
+        "RECYCLE": 0.1825,
+        "SAFE_PASS": 0.246,
+        "SWITCH": 0.0516,
+        "THROUGH_BALL": 0.0119
+      },
+      "train_sequences": 331,
+      "eval_sequences": 82,
+      "family": "CM",
+      "census_flags": []
+    },
+    "CAM": {
+      "position": "CAM",
+      "sequences": 12,
+      "steps": 29,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.97873660773805,
+      "loss_last": 0.04566452849735387,
+      "agreement_first": 0.034482758620689655,
+      "agreement": 1.0,
+      "mix": {
+        "PROGRESSIVE_PASS": 0.2759,
+        "PROTECT_POSSESSION": 0.069,
+        "RECYCLE": 0.1724,
+        "SAFE_PASS": 0.0345,
+        "SHOOT": 0.2414,
+        "SWITCH": 0.2069
+      },
+      "mix_heldout": {
+        "PROTECT_POSSESSION": 0.2,
+        "SHOOT": 0.8
+      },
+      "train_sequences": 12,
+      "eval_sequences": 2,
+      "family": "AM",
+      "census_flags": [
+        "CAM: only 2 intents",
+        "CAM: SHOOT at 80%"
+      ]
+    },
+    "LW": {
+      "position": "LW",
+      "sequences": 38,
+      "steps": 82,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.7046206128600545,
+      "loss_last": 0.3674900829378288,
+      "agreement_first": 0.21951219512195122,
+      "agreement": 0.9878048780487805,
+      "mix": {
+        "CARRY": 0.2561,
+        "CROSS": 0.1951,
+        "DRIBBLE": 0.0244,
+        "PROGRESSIVE_PASS": 0.1829,
+        "PROTECT_POSSESSION": 0.0854,
+        "RECYCLE": 0.1585,
+        "SAFE_PASS": 0.0854,
+        "SWITCH": 0.0122
+      },
+      "mix_heldout": {
+        "CARRY": 0.1579,
+        "CROSS": 0.1053,
+        "PROGRESSIVE_PASS": 0.1053,
+        "PROTECT_POSSESSION": 0.1579,
+        "RECYCLE": 0.3684,
+        "SAFE_PASS": 0.1053
+      },
+      "train_sequences": 38,
+      "eval_sequences": 9,
+      "family": "WING",
+      "census_flags": []
+    },
+    "RW": {
+      "position": "LW",
+      "sequences": 38,
+      "steps": 82,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.7046206128600545,
+      "loss_last": 0.3674900829378288,
+      "agreement_first": 0.21951219512195122,
+      "agreement": 0.9878048780487805,
+      "mix": {
+        "CARRY": 0.2561,
+        "CROSS": 0.1951,
+        "DRIBBLE": 0.0244,
+        "PROGRESSIVE_PASS": 0.1829,
+        "PROTECT_POSSESSION": 0.0854,
+        "RECYCLE": 0.1585,
+        "SAFE_PASS": 0.0854,
+        "SWITCH": 0.0122
+      },
+      "mix_heldout": {
+        "CARRY": 0.1579,
+        "CROSS": 0.1053,
+        "PROGRESSIVE_PASS": 0.1053,
+        "PROTECT_POSSESSION": 0.1579,
+        "RECYCLE": 0.3684,
+        "SAFE_PASS": 0.1053
+      },
+      "train_sequences": 38,
+      "eval_sequences": 9,
+      "family": "WING",
+      "census_flags": []
+    },
+    "ST": {
+      "position": "ST",
+      "sequences": 65,
+      "steps": 241,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.9892114176774376,
+      "loss_last": 0.5324848884028555,
+      "agreement_first": 0.024896265560165973,
+      "agreement": 0.950207468879668,
+      "mix": {
+        "CARRY": 0.0456,
+        "PROGRESSIVE_PASS": 0.3693,
+        "PROTECT_POSSESSION": 0.2946,
+        "RECYCLE": 0.029,
+        "SAFE_PASS": 0.0166,
+        "SHOOT": 0.166,
+        "SWITCH": 0.0747,
+        "THROUGH_BALL": 0.0041
+      },
+      "mix_heldout": {
+        "CARRY": 0.0789,
+        "PROGRESSIVE_PASS": 0.3684,
+        "PROTECT_POSSESSION": 0.3421,
+        "SHOOT": 0.1842,
+        "SWITCH": 0.0263
+      },
+      "train_sequences": 65,
+      "eval_sequences": 16,
+      "family": "ST",
+      "census_flags": []
+    },
+    "CF": {
+      "position": "ST",
+      "sequences": 65,
+      "steps": 241,
+      "epochs": 80,
+      "seed": 123,
+      "loss_first": 2.9892114176774376,
+      "loss_last": 0.5324848884028555,
+      "agreement_first": 0.024896265560165973,
+      "agreement": 0.950207468879668,
+      "mix": {
+        "CARRY": 0.0456,
+        "PROGRESSIVE_PASS": 0.3693,
+        "PROTECT_POSSESSION": 0.2946,
+        "RECYCLE": 0.029,
+        "SAFE_PASS": 0.0166,
+        "SHOOT": 0.166,
+        "SWITCH": 0.0747,
+        "THROUGH_BALL": 0.0041
+      },
+      "mix_heldout": {
+        "CARRY": 0.0789,
+        "PROGRESSIVE_PASS": 0.3684,
+        "PROTECT_POSSESSION": 0.3421,
+        "SHOOT": 0.1842,
+        "SWITCH": 0.0263
+      },
+      "train_sequences": 65,
+      "eval_sequences": 16,
+      "family": "ST",
+      "census_flags": []
+    }
+  },
+  "flags": [
+    "GK: GK: only 3 intents",
+    "GK: GK: RECYCLE at 70%",
+    "CB: CB: PROTECT_POSSESSION at 44%",
+    "LB: LB: PROGRESSIVE_PASS at 41%",
+    "RB: LB: PROGRESSIVE_PASS at 41%",
+    "CAM: CAM: only 2 intents",
+    "CAM: CAM: SHOOT at 80%"
+  ],
+  "out_dir": "brains_v8"
+}

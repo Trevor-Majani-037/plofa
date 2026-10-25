@@ -63,6 +63,7 @@ TRAINING_METHODS = (
     # for by the genetic algorithm.  Same table, same corpus, same reward —
     # a different way to reach the optimum the objective already defines.
     "distilled_surrogate",
+    "bptt_situational",  # distilled via BPTT from situational surrogate
     "unknown",        # legacy / unspecified
 )
 BRAIN_KINDS = (

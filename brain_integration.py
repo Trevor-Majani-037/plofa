@@ -124,7 +124,7 @@ def set_brain_dir(path: str) -> None:
     _pos_brain_cache.clear()
 
 
-def _brain_for_position(position: str) -> Optional[FootballBrain]:
+def _brain_for_position(position: str):
     """Load and cache the brain for a position, or None if unavailable.
 
     A genuinely missing file → None (falls back to a random brain, as
@@ -132,6 +132,9 @@ def _brain_for_position(position: str) -> Optional[FootballBrain]:
     version, sensor/normalization/DNA schema, or misshaped weights) is
     NOT silently swallowed: BrainSchemaError propagates loudly so an
     incompatible brain can never masquerade as a valid one.
+
+    The brain TYPE is detected from the file's meta block (or lack
+    thereof): v1/v2/v3/v4 → FootballBrain, v5/situational → SituationalBrain.
     """
     if position in _pos_brain_cache:
         return _pos_brain_cache[position]
@@ -140,7 +143,17 @@ def _brain_for_position(position: str) -> Optional[FootballBrain]:
     path = os.path.join(BRAIN_DIR, f"{position}.json")
     if not os.path.exists(path):
         return None
-    brain = FootballBrain.load(path)
+    # Detect brain type from file meta
+    import json
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    meta = raw.get("meta", {})
+    sensor_schema = meta.get("sensor_schema", "v1_24d")
+    if sensor_schema == "v5_situational":
+        from situational_brain import SituationalBrain
+        brain = SituationalBrain.load(path)
+    else:
+        brain = FootballBrain.load(path)
     _pos_brain_cache[position] = brain
     return brain
 
@@ -439,9 +452,9 @@ def _maybe_situational(
             team_profile, under_pressure, attacks_right, game_state,
             minute, soul, record_trace, coach_instructions,
         )
-    except Exception:
-        # A situational failure must NEVER kill a match — degrade to the
-        # ordinary path.  Same discipline as the cognition route.
+    except Exception as e:
+        import sys
+        print(f"  [DEBUG] _maybe_situational failed for {getattr(player, 'name', '?')}: {e}", file=sys.stderr)
         return None
 
 

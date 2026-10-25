@@ -73,18 +73,22 @@
       "experience_years": 9,
       "bias_home": 0.01,
       "bias_away": -0.02,
-      "matches_officiated": 2,
+      "matches_officiated": 3,
       "matchdays_refd": [
         2,
-        4
+        4,
+        8
       ],
       "teams_seen": {
         "Rodice": 1,
         "Telbey": 1,
-        "Tryox City": 1,
-        "Claw": 1
+        "Claw": 1,
+        "Red Wolves": 1,
+        "Oxton": 1,
+        "Lige-8": 1,
+        "Trendboys": 1
       },
-      "last_matchday": 4
+      "last_matchday": 8
     },
     {
       "name": "Ashley Mantu",
@@ -124,7 +128,9 @@
         "Red Wolves": 1,
         "Club Chovers": 1,
         "Uditon": 2,
-        "Triumpher": 1
+        "Triumpher": 1,
+        "Natrican": 1,
+        "Seafcea": 1
       },
       "last_matchday": 4
     },
@@ -255,8 +261,8 @@
       "teams_seen": {
         "Ganester": 1,
         "Uditon": 1,
-        "Natrican": 1,
-        "Tryox City": 1
+        "Tryox City": 2,
+        "Club Chovers": 1
       },
       "last_matchday": 3
     },
@@ -300,8 +306,9 @@
         "Lige-8": 2,
         "Ganester": 2,
         "Seafcea": 1,
-        "Claw": 1,
-        "Tryox City": 1
+        "Claw": 2,
+        "Tryox City": 1,
+        "Justice": 1
       },
       "last_matchday": 3
     },
@@ -321,7 +328,8 @@
       "teams_seen": {
         "Natrican": 2,
         "Avada Zenith": 1,
-        "Trendboys": 1
+        "Rodice": 1,
+        "Ganester": 1
       },
       "last_matchday": 4
     },

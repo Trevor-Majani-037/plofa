@@ -86,18 +86,18 @@ class _BuiltSquad(TypedDict):
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 10, 18) # Year, Month, Day
-MATCHDAY     = 7 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 10, 24) # Year, Month, Day
+MATCHDAY     = 8 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "Oxton"
-AWAY_TEAM  = "Rodice"
+HOME_TEAM  = "Lige-8"
+AWAY_TEAM  = "Trendboys"
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = "Oxland City"
-CAPACITY  = 45_000
+VENUE     = "West 1977 City"
+CAPACITY  = 65_000
 
 # ── Referee (auto-assigned by default) ──────────────────────────────
 # Set FORCE_REF to a referee name to override rotation (e.g. for a derby).
