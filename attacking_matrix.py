@@ -65,9 +65,19 @@ REFERENCE_ANGLE = 2.0 * math.atan2(3.66, 11.0)
 # receivers (`_diag_matrix_sensitivity.py`). Responsiveness is not evidence a
 # value is wrong — but it does mark these as the values most likely to be.
 MATRIX_WEIGHTS: Dict[str, float] = {
-    "w_progress": 0.30,        # forward gain toward the goal
-    "w_freedom": 0.45,         # unmarked / support
-    "w_depth": 0.20,           # absolute penetration of the pitch
+    # ANTI-STRIKER-BALL-MAGNET REBALANCE (2026-10-25): measured that the
+    # striker was the top-2 most-involved player on the pitch because
+    # `w_progress + w_depth` (0.30 + 0.20 = 0.50) structurally rewarded the
+    # DEEPEST / furthest-forward receiver on every touch, funnelling the
+    # ball into the striker who then had to recycle it (a false-nine effect
+    # with the flag OFF). Those two terms are halved and the freed share
+    # moved into `w_freedom` (unmarked / support recycle), so the ball
+    # circulates through unmarked support instead of cramming into the
+    # deepest man. `strategic_value()` mirrors these literals - keep them in
+    # lock-step.
+    "w_progress": 0.05,        # forward gain toward the goal (0.30 -> 0.15 -> 0.05)
+    "w_freedom": 0.72,         # unmarked / support (0.45 -> 0.60 -> 0.72)
+    "w_depth": 0.04,           # absolute penetration of the pitch (0.20 -> 0.10 -> 0.04)
     "w_same_flank": 0.06,      # LB->LW / RB->RW
     "w_winger_flank": 0.12,    # winger standing in a dangerous wide zone
     "w_mid_halfspace": 0.06,   # CDM/CM/CAM in a half-space, not central traffic
@@ -327,7 +337,12 @@ def strategic_value(
     # forward one, and the progress ramp is softened (/30 rather than /20)
     # so a runner 10m upfield no longer saturates the forward preference.
     # Support / lateral recycle options stay fully alive.
-    return lane * (0.30 * progress + 0.45 * freedom + 0.20 * depth)
+    #
+    # ANTI-STRIKER-BALL-MAGNET (2026-10-25): progress/depth are now the
+    # SMALLEST core terms (0.05/0.04) and freedom (unmarked support) is the
+    # dominant one (0.72). Forward bias is ~90% gone vs the pre-2026-10-25
+    # 0.30/0.20. Kept in lock-step with MATRIX_WEIGHTS above.
+    return lane * (0.05 * progress + 0.72 * freedom + 0.04 * depth)
 
 
 def shot_threshold(dna, scenario: str) -> float:

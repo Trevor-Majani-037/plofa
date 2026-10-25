@@ -312,8 +312,11 @@ def test_counter_prefers_far_key_pass_build_up_recycles():
     # VERTICALITY RE-BALANCE: option weights 0.45/0.35/0.20 →
     # 0.30/0.45/0.20 lower the strategic value of a deep target; the
     # guarded number tracks the new scale (still a strong open-lane option).
+    # ANTI-STRIKER-BALL-MAGNET (2026-10-25): 0.30/0.45/0.20 →
+    # 0.15/0.60/0.10 shrinks the forward/deep share to a quarter of the old
+    # forward bias and prizes unmarked support. Guarded number follows.
     val = strategic_value(40, 34, 56, 34, [cb], pe)
-    assert val == pytest.approx(0.486, abs=0.03)
+    assert val == pytest.approx(0.468, abs=0.03)
 
     teammates = _outfield_teammates(att, carrier)
 
