@@ -211,7 +211,7 @@ def distill_situational(
     verbose: bool = False,
     brain: Optional[SituationalBrain] = None,
     hidden_size: int = 32,
-    input_size: int = 51,
+    input_size: int = 57,
 ) -> Tuple[SituationalBrain, Dict[str, Any]]:
     """Fit one position's situational brain by BPTT over its sequences.
 

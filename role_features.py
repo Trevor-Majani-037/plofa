@@ -143,30 +143,37 @@ MENU_NAMES: Dict[str, List[str]] = {
         "recycle_open",
     ],
     "WING": [
-        "marker_dist",          # nearest opp defender on the flank corridor ahead
-        "one_v_one",            # openness vs that fullback
-        "inside_channel",       # lane openness of the cut-inside diagonal
-        "overlap_option",       # DISTANCE to the nearest forward teammate (misnamed; see FB note)
-        "cross_zone",           # in the crossing corridor
-        "cross_target_open",    # lane openness of the penalty-spot target zone
-        "box_arrival",          # teammates arriving in the opponent box
-        "cover_behind",         # 1 - proximity of cover behind (high = stranded)
-        "pass_lane_open",       # openness of the BEST forward teammate (see _forward_options)
-        # ── Neymar defender-prediction features (2026-10-24) ──────────────
-        "marker_approach_speed",  # how fast the nearest defender is closing (0=static, 1=sprinting)
-        "marker_commitment",      # defender's lateral shift (high = committed, feint opportunity)
-        "escape_lane_left",      # openness of the lane to the carrier's left
-        "escape_lane_right",     # openness of the lane to the carrier's right
+        "marker_dist",              # nearest opp defender on the flank corridor ahead
+        "one_v_one",                # openness vs that fullback
+        "inside_channel",           # lane openness of the cut-inside diagonal
+        "overlap_option",           # DISTANCE to the nearest forward teammate (misnamed; see FB note)
+        "cross_zone",               # in the crossing corridor
+        "cross_target_open",        # lane openness of the penalty-spot target zone
+        "box_arrival",              # teammates arriving in the opponent box
+        "cover_behind",             # 1 - proximity of cover behind (high = stranded)
+        "pass_lane_open",           # openness of the BEST forward teammate (see _forward_options)
+        # Neymar defender-prediction features (2026-10-24)
+        "marker_approach_speed",    # how fast the nearest defender is closing (0=static, 1=sprinting)
+        "marker_commitment",        # defender's lateral shift (high = committed, feint opportunity)
+        "escape_lane_left",         # openness of the lane to the carrier's left
+        "escape_lane_right",        # openness of the lane to the carrier's right
+        # Messi defender-prediction + efficiency features (2026-10-25)
+        "defender_commitment_direction",  # where defender's body is angled (left/right/forward)
+        "space_behind_defender",          # grass behind the nearest defender (in-behind channel)
+        "defender_isolation",             # how alone the nearest defender is (no cover nearby)
+        "optimal_path_openness",          # openness of the path maximizing progress * safety
+        "defender_reaction_stability",    # how long defender has been in current state
+        "in_behind_channel",              # space between defender and goal line (Messi's in-behind)
     ],
     "ST": [
-        "cb_room",              # room to the nearest CB (high = unmarked)
-        "offside_line_gap",     # grass between their line and their goal (in-behind channel)
-        "def_gaps",             # depth spread of the opp line (loose = gaps)
-        "run_support",          # teammates running beyond the line
-        "shoot_angle",          # shooting angle vs penalty-spot reference
-        "shoot_pressure",       # shooting angle devalued by a tight marker
-        "rebound_proxy",        # close-range second-ball window
-        "in_box",               # inside the penalty area
+        "pressure",             # 1 - nearest defender dist (high = pressed)
+        "shoot_opportunity",    # shooting angle vs a penalty-spot reference
+        "scoring_zone",         # inside ~25 m of the opponent goal
+        "space_central",        # lane openness of the central point ahead
+        "box_arrival",          # teammates arriving in the opponent box
+        "cross_target_open",    # lane openness of the penalty-spot target zone
+        "in_behind_channel",    # space between defender and goal line (Messi's in-behind)
+        "cover_behind",         # 1 - proximity of cover behind (high = stranded)
     ],
 }
 
@@ -643,13 +650,9 @@ def _wing_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
     _, pass_lane_open = _forward_options(x, y, tms_n, defs, pe, ar)
 
     # ── Neymar defender-prediction features ──────────────────────────────
-    # marker_approach_speed: how fast the nearest defender is closing on
-    # the carrier. 0 = static, 1 = sprinting (7+ m/s). The brain learns
-    # "when the marker is closing fast, dribble early; when static, hold".
     marker_approach_speed = 0.0
     marker_commitment = 0.0
     if mdist is not None and corridor:
-        # find the nearest defender in the corridor
         nearest_def = None
         nearest_d = 999.0
         for d in corridor:
@@ -662,38 +665,114 @@ def _wing_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
             try:
                 st = pe.states.get(nearest_def.name)
                 if st is not None:
-                    # velocity toward the carrier
                     vx = getattr(st, "velocity_x", 0.0) or 0.0
                     vy = getattr(st, "velocity_y", 0.0) or 0.0
-                    # component of velocity pointing at the carrier
                     if nearest_d > 1e-6:
                         dx_n = (x - _pos(pe, nearest_def.name, (x, y))[0]) / nearest_d
                         dy_n = (y - _pos(pe, nearest_def.name, (x, y))[1]) / nearest_d
-                        closing = -(vx * dx_n + vy * dy_n)  # positive = closing
+                        closing = -(vx * dx_n + vy * dy_n)
                         marker_approach_speed = _clamp(closing / 7.0)
-                    # commitment: lateral velocity relative to the defender's
-                    # facing direction (high = shifting weight, feint opportunity)
                     lateral = abs(vy) if ar else abs(vx)
                     marker_commitment = _clamp(lateral / 3.0)
             except Exception:
                 pass
 
-    # escape_lane_left/right: openness of the lanes to the carrier's left
-    # and right. The brain learns "when one side is more open, dribble that
-    # way" — the core of Neymar's decision-making.
+    # escape lanes (Neymar)
     escape_left_x = x + (8 if ar else -8)
-    escape_left_y = y + (12 if y < 34 else -12)  # toward the flank
+    escape_left_y = y + (12 if y < 34 else -12)
     escape_right_x = x + (8 if ar else -8)
-    escape_right_y = y + (-12 if y < 34 else 12)  # toward the center
+    escape_right_y = y + (-12 if y < 34 else 12)
     escape_lane_left = _openness(escape_left_x, escape_left_y, defs, pe)
     escape_lane_right = _openness(escape_right_x, escape_right_y, defs, pe)
+
+    # ── Messi defender-prediction + efficiency features ──────────────────
+    defender_commitment_direction = 0.0
+    space_behind_defender = 0.0
+    defender_isolation = 0.0
+    optimal_path_openness = 0.0
+    defender_reaction_stability = 0.0
+    in_behind_channel = 0.0
+
+    if mdist is not None and corridor:
+        nearest_def = None
+        nearest_d = 999.0
+        for d in corridor:
+            dx, dy = _pos(pe, d.name, (x, y))
+            dist = math.hypot(dx - x, dy - y)
+            if dist < nearest_d:
+                nearest_d = dist
+                nearest_def = d
+        if nearest_def is not None:
+            try:
+                st = pe.states.get(nearest_def.name)
+                if st is not None:
+                    vx = getattr(st, "velocity_x", 0.0) or 0.0
+                    vy = getattr(st, "velocity_y", 0.0) or 0.0
+                    # defender_commitment_direction: where defender's body is angled
+                    # positive = angled toward carrier's right (if attacking right)
+                    # negative = angled toward carrier's left
+                    if nearest_d > 1e-6:
+                        dx_n = (x - _pos(pe, nearest_def.name, (x, y))[0]) / nearest_d
+                        dy_n = (y - _pos(pe, nearest_def.name, (x, y))[1]) / nearest_d
+                        # body angle relative to carrier direction
+                        body_angle = vx * dy_n - vy * dx_n  # cross product
+                        defender_commitment_direction = _clamp(body_angle / 2.0)
+
+                    # space_behind_defender: grass behind defender toward goal
+                    def_to_goal = math.hypot(opp_gx - _pos(pe, nearest_def.name, (x, y))[0],
+                                              34.0 - _pos(pe, nearest_def.name, (x, y))[1])
+                    space_behind_defender = _clamp(def_to_goal / 45.0)
+
+                    # defender_isolation: how alone the defender is
+                    nearby_defenders = 0
+                    for d in defs:
+                        if d is nearest_def:
+                            continue
+                        ddx, ddy = _pos(pe, d.name, (x, y))
+                        ddist = math.hypot(ddx - _pos(pe, nearest_def.name, (x, y))[0],
+                                           ddy - _pos(pe, nearest_def.name, (x, y))[1])
+                        if ddist < 10.0:
+                            nearby_defenders += 1
+                    defender_isolation = _clamp(1.0 - nearby_defenders / 3.0)
+
+                    # optimal_path_openness: best escape path considering progress * safety
+                    left_x = x + (8 if ar else -8)
+                    left_y = y + (12 if y < 34 else -12)
+                    right_x = x + (8 if ar else -8)
+                    right_y = y + (-12 if y < 34 else 12)
+                    forward_x = x + (16 if ar else -16)
+                    forward_y = y
+                    paths = [
+                        (_openness(left_x, left_y, defs, pe), 0.0),   # left
+                        (_openness(right_x, right_y, defs, pe), 0.0),  # right
+                        (_openness(forward_x, forward_y, defs, pe), 1.0),  # forward
+                    ]
+                    # weight by progress potential
+                    best = 0.0
+                    for openv, prog_bonus in paths:
+                        val = openv + prog_bonus * 0.3
+                        if val > best:
+                            best = val
+                    optimal_path_openness = _clamp(best)
+
+                    # defender_reaction_stability: how long defender has been in current state
+                    # use velocity magnitude as proxy (low velocity = stable, committed)
+                    speed = math.hypot(vx, vy)
+                    defender_reaction_stability = _clamp(1.0 - speed / 7.0)
+
+                    # in_behind_channel: space between defender and goal line
+                    in_behind_channel = _clamp(def_to_goal / 30.0)
+
+            except Exception:
+                pass
 
     return [marker_dist, one_v_one, inside_channel, overlap_option, cross_zone,
             cross_target_open, box_arrival, cover_behind, pass_lane_open,
             marker_approach_speed, marker_commitment, escape_lane_left,
-            escape_lane_right]
-
-
+            escape_lane_right,
+            defender_commitment_direction, space_behind_defender,
+            defender_isolation, optimal_path_openness,
+            defender_reaction_stability, in_behind_channel]
 def _st_block(p: Any, x: float, y: float, tms: List[Any], defs: List[Any],
               pe: Any, ar: bool) -> List[float]:
     opp_gx, _ = _xs(ar)

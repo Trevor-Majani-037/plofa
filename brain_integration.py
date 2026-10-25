@@ -133,8 +133,8 @@ def _brain_for_position(position: str):
     NOT silently swallowed: BrainSchemaError propagates loudly so an
     incompatible brain can never masquerade as a valid one.
 
-    The brain TYPE is detected from the file's meta block (or lack
-    thereof): v1/v2/v3/v4 → FootballBrain, v5/situational → SituationalBrain.
+    IMPORTANT: Position files ALWAYS load FootballBrain. SituationalBrain
+    is ONLY used for explicitly registered players (via name registry).
     """
     if position in _pos_brain_cache:
         return _pos_brain_cache[position]
@@ -143,13 +143,12 @@ def _brain_for_position(position: str):
     path = os.path.join(BRAIN_DIR, f"{position}.json")
     if not os.path.exists(path):
         return None
-    # Detect brain type from file meta
     import json
     with open(path, encoding="utf-8") as fh:
         raw = json.load(fh)
     meta = raw.get("meta", {})
     sensor_schema = meta.get("sensor_schema", "v1_24d")
-    if sensor_schema == "v5_situational":
+    if sensor_schema == "v5_situational" or "weights" in raw:
         from situational_brain import SituationalBrain
         brain = SituationalBrain.load(path)
     else:
@@ -441,16 +440,109 @@ def _maybe_situational(
     """
     try:
         from situational_brain import SituationalBrain
+        from situational_context import situation_blocks, assemble
+        from situational_brain import _softmax
+        from brain_integration import _score_diff_of, _apply_consequence, _apply_coach_bias, _decision_temperature, _fatigue_estimate, _build_decision, _sample_from_probs
+        from perception import perceive
+        from situation_tokens import entity_tokens
+        from player_state import player_team
 
         brain = _resolve_brain(player)
         if not isinstance(brain, SituationalBrain):
             return None
-        from situational_decision import SituationalDecisionBrain
 
-        return SituationalDecisionBrain.decide(
-            player, x, y, teammates, defenders, position_engine,
-            team_profile, under_pressure, attacks_right, game_state,
-            minute, soul, record_trace, coach_instructions,
+        # 1) FOV GATE
+        vis_teammates, vis_defenders = teammates, defenders
+        try:
+            from cognition.mind import get_mind
+            mind = get_mind(getattr(player, "name", "") or "")
+            if mind is not None and mind.engaged:
+                vis_teammates, vis_defenders = mind.perceive(
+                    player, x, y, teammates, defenders, position_engine)
+        except Exception:
+            vis_teammates, vis_defenders = teammates, defenders
+
+        # 2) TOKENS
+        tokens, token_mask = entity_tokens(
+            player, x, y, vis_teammates, vis_defenders,
+            position_engine, attacks_right)
+
+        # 3) THE FOUR BLOCKS
+        score_diff = _score_diff_of(game_state)
+        base_vec, scene = perceive(
+            player, x, y, vis_teammates, vis_defenders, position_engine,
+            under_pressure, attacks_right, game_state, minute,
+            team_possession=True, score_diff=score_diff,
+            return_scene=True,
+        )
+        role, memory, plan = situation_blocks(
+            player, x, y, scene["teammates"], scene["defenders"],
+            scene["position_engine"], attacks_right, base_vec)
+        # Adapt role width to the brain's expected input
+        expected_total = brain.w_q.shape[0]
+        role_width = expected_total - 24 - 8 - 6  # STATE_D=24, MEMORY_D=8, PLAN_D=6
+        role = np.asarray(role, dtype=np.float64).reshape(-1)
+        if role.shape[0] < role_width:
+            role = np.pad(role, (0, role_width - role.shape[0]))
+        elif role.shape[0] > role_width:
+            role = role[:role_width]
+        situation = assemble(base_vec, role, memory, plan)
+
+        # 4) RECURRENT FORWARD
+        store = getattr(position_engine, "neural_states", None)
+        pstate = store.player(getattr(player, "name", "") or "") \
+            if store is not None else None
+        from situational_brain import HIDDEN_D
+        h_prev = pstate.ensure_hidden(HIDDEN_D) if pstate is not None \
+            else np.zeros(HIDDEN_D, dtype=np.float64)
+        logits, plan_logits, h_new, _cache = brain.forward(
+            tokens, token_mask, base_vec, role, memory, plan, h_prev)
+        if pstate is not None:
+            pstate.hidden = h_new
+        probs = _softmax(logits)
+
+        # 5) PLAN PROPOSAL
+        plan_trace = None
+        if store is not None:
+            from player_state import player_team
+            team = player_team(player)
+            if team:
+                team_plan = store.team(team)
+                pprobs = _softmax(plan_logits)
+                pid = int(np.argmax(pprobs))
+                conf = float(pprobs[pid])
+                adopted = team_plan.propose(pid, conf)
+                plan_trace = {
+                    "proposed": pid,
+                    "confidence": round(conf, 4),
+                    "adopted": bool(adopted),
+                    "team_plan": team_plan.plan_id,
+                }
+
+        # 6) SAME SEAMS AS SHIPPED PATH
+        favored_flank = None
+        if coach_instructions is not None:
+            probs = _apply_coach_bias(
+                probs, player,
+                getattr(coach_instructions, "intent_bias", None))
+            favored_flank = getattr(coach_instructions, "favored_flank", None)
+        fatigue = _fatigue_estimate(player, minute)
+
+        cons_trace = None
+        base24 = np.asarray(base_vec, dtype=np.float64)
+        probs, cons_trace = _apply_consequence(
+            probs, base24, getattr(player, "position", ""), record_trace,
+        )
+
+        temperature = _decision_temperature(player, under_pressure, fatigue)
+        chosen_idx = _sample_from_probs(probs, temperature)
+        chosen_prob = float(probs[chosen_idx])
+
+        return _build_decision(
+            brain, player, x, y, vis_teammates, vis_defenders,
+            position_engine, attacks_right, fatigue, situation, probs,
+            chosen_idx, chosen_prob, minute, record_trace, favored_flank,
+            cons_trace,
         )
     except Exception as e:
         import sys
@@ -711,14 +803,8 @@ def _decide_core(
     """The vanilla neural decision path (cognition off / no mind)."""
     brain = _resolve_brain(player)
     if not isinstance(brain, FootballBrain):
-        # The situational route failed and we are falling back here.  This
-        # path reads ``brain.w1``, so it needs an MLP brain: use the
-        # POSITION's trained brain, or a random one.  Without this guard
-        # the fallback is not a fallback at all — it raises
-        # ``AttributeError: 'SituationalBrain' object has no attribute
-        # 'w1'`` and takes the match down.
         brain = _brain_for_position(getattr(player, "position", ""))
-        if brain is None:
+        if brain is None or not isinstance(brain, FootballBrain):
             brain = FootballBrain.random()
     sensors = build_sensors(
         brain, player, x, y, teammates, defenders, position_engine,

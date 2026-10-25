@@ -43,7 +43,7 @@ from manager_profile import ManagerPool
 SOUL_PLAYERS = {
 
     # ── Percy — Hartwell City RW — ATTACKING PROPHET ──────────
-    "Percy": PlayerSoul(
+    "Perçy Luka": PlayerSoul(
         player_name="Percy",
         archetype=SoulArchetype.ATTACKING_PROPHET,
         pillars=GreatnessPillars(
@@ -105,7 +105,7 @@ SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 HOME_TEAM    = "Hartwell City"
-AWAY_TEAM    = "Thornfield United"
+AWAY_TEAM    = "Thornfield"
 
 VENUE        = "Hartwell Arena"
 CAPACITY     = 42_000
@@ -195,7 +195,7 @@ HOME_STARTERS = [
     ("Kofi Mensah",   "CAM", ["creator", "sup_vision"],             24),
     ("Zachery Worth", "LW",  ["grand_dribbler", "creator", "foul_drawer"],  23),
     ("Dragan Novak",  "ST",  ["clinical_finisher", "aerial_threat"],29),
-    ("Percy",         "RW",  ["grand_dribbler", "inverted",
+    ("Perćy Luka",        "RW",  ["grand_dribbler", "inverted",
                                "clinical_finisher", "speedster"],   24),  # ← SOUL PLAYER
 ]
 
@@ -207,8 +207,8 @@ HOME_SUBS = [
     ("Calvin Pryce",  "ST",  ["poacher", "fox_in_box"],             27, 75),  # sub at 75'
 ]
 
-HOME_SUPERSTARS    = ["Percy", "Dragan Novak"]
-HOME_SP_TAKERS     = ["Percy", "Kofi Mensah"]   # set piece takers
+HOME_SUPERSTARS    = ["Perçy Luka", "Dragan Novak"]
+HOME_SP_TAKERS     = ["Perçy Luka", "Kofi Mensah"]   # set piece takers
 
 
 # ─────────────────────────────────────────────

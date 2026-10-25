@@ -42,8 +42,8 @@ from typing import Any, List, Optional
 import numpy as np
 
 from situational_brain import (
-    HIDDEN_D, OUT_D, PLAN_OUT_D, SituationalBrain, _softmax,
-    STATE_D, MEMORY_D, PLAN_D,
+    HIDDEN_D, EMBED_D, OUT_D, PLAN_OUT_D, SituationalBrain, _softmax,
+    STATE_D, ROLE_D, MEMORY_D, PLAN_D,
 )
 
 
@@ -110,19 +110,8 @@ class SituationalDecisionBrain:
         role, memory, plan = situation_blocks(
             player, x, y, scene["teammates"], scene["defenders"],
             scene["position_engine"], attacks_right, base_vec)
-        # Adapt role width to the brain's expected input.  Old brains
-        # (47-wide, 9 role features) and new brains (51-wide, 13 role
-        # features) coexist: pad with zeros or truncate so the matmul
-        # never fails.  A zero-padded feature is "no data" and the net
-        # learns to ignore it; truncation drops features the brain never
-        # saw, which is correct.
-        expected_total = brain.w_q.shape[0]
-        role_width = expected_total - STATE_D - MEMORY_D - PLAN_D
-        role = np.asarray(role, dtype=np.float64).reshape(-1)
-        if role.shape[0] < role_width:
-            role = np.pad(role, (0, role_width - role.shape[0]))
-        elif role.shape[0] > role_width:
-            role = role[:role_width]
+        # The brain's forward_logits will handle role width adaptation.
+        # Do NOT pad/truncate here — the brain knows its own expected input size.
         situation = assemble(base_vec, role, memory, plan)
 
         # ── 4) THE RECURRENT FORWARD ──────────────────────────────

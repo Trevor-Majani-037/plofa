@@ -87,12 +87,12 @@ OUTPUT_SIZE = 10
 PLAN_OUT_D = 4
 
 STATE_D = 24
-ROLE_D = 13
+ROLE_D = 19
 MEMORY_D = 8
 PLAN_D = 6
-SITUATION_D = STATE_D + ROLE_D + MEMORY_D + PLAN_D  # 51
-U_D = EMBED_D + SITUATION_D  # 32 + 51 = 83
-Q_D = SITUATION_D  # 51
+SITUATION_D = STATE_D + ROLE_D + MEMORY_D + PLAN_D  # 57
+U_D = EMBED_D + SITUATION_D  # 32 + 57 = 89
+Q_D = SITUATION_D  # 57
 
 SCHEMA = "v5_situational"
 
@@ -260,51 +260,38 @@ class SituationalBrain:
     # ─────────────────────────────────────────────────────────────
 
     @classmethod
-    def random(cls, seed: int = 123, hidden_size: int = 32, input_size: int = 51) -> "SituationalBrain":
+    def random(cls, seed: int = 123, hidden_size: int = 32, input_size: int = 57) -> "SituationalBrain":
         rng = np.random.default_rng(seed)
 
         def he(fan_in: int, fan_out: int) -> np.ndarray:
             return rng.normal(0.0, math.sqrt(2.0 / fan_in),
                               size=(fan_in, fan_out)).astype(np.float64)
 
-        # Use custom dimensions or defaults
-        hidden_size = hidden_size
-        embed_d = 32  # embedding size fixed
-        input_size = input_size  # 24 + role_d + memory_d + plan_d = 51
-
-        # Derived dimensions
-        token_d = 12
-        embed_d = 32
-        state_d = STATE_D
-        role_d = ROLE_D
-        memory_d = MEMORY_D
-        plan_d = PLAN_D
-        situation_d = STATE_D + ROLE_D + MEMORY_D + PLAN_D
-        embed_d = 32
-        out_d = 10
-        plan_out_d = 4
+        # Derived dimensions from constants
+        situation_d = input_size
+        embed_d = EMBED_D
         hidden_d = hidden_size
-        u_d = 32 + situation_d
+        u_d = EMBED_D + situation_d
         q_d = situation_d
 
         w = {
-            "w_e": he(12, 32),  # token embedding
-            "w_q": he(input_size, 32),  # query projection
-            "w_k": he(32, 32),  # key projection
-            "w_v": he(32, 32),  # value projection
-            "w_z": he(32 + input_size, hidden_size),  # GRU update gate
+            "w_e": he(TOKEN_D, EMBED_D),  # token embedding
+            "w_q": he(situation_d, EMBED_D),  # query projection
+            "w_k": he(EMBED_D, EMBED_D),  # key projection
+            "w_v": he(EMBED_D, EMBED_D),  # value projection
+            "w_z": he(EMBED_D + situation_d, hidden_size),  # GRU update gate
             "u_z": he(hidden_size, hidden_size),
             "b_z": np.zeros(hidden_size),
-            "w_r": he(32 + input_size, hidden_size),  # GRU reset gate
+            "w_r": he(EMBED_D + situation_d, hidden_size),  # GRU reset gate
             "u_r": he(hidden_size, hidden_size),
             "b_r": np.zeros(hidden_size),
-            "w_n": he(32 + input_size, hidden_size),  # GRU new gate
+            "w_n": he(EMBED_D + situation_d, hidden_size),  # GRU new gate
             "u_n": he(hidden_size, hidden_size),
             "b_n": np.zeros(hidden_size),
-            "w_o": he(hidden_size, 10),  # intent output
-            "b_o": np.zeros(10),
-            "w_p": he(hidden_size, 4),  # plan output
-            "b_p": np.zeros(4),
+            "w_o": he(hidden_size, OUTPUT_SIZE),  # intent output
+            "b_o": np.zeros(OUTPUT_SIZE),
+            "w_p": he(hidden_size, PLAN_OUT_D),  # plan output
+            "b_p": np.zeros(PLAN_OUT_D),
         }
         meta = {
             "arch_version": 3,
@@ -329,6 +316,8 @@ class SituationalBrain:
         # Ensure 2D
         if x.ndim == 1:
             x = x.reshape(1, -1)
+        
+
         e = x @ self.w_e                       # (N, E)
         role = np.asarray(role, dtype=np.float64).reshape(-1)
         expected_total = self.w_q.shape[0]
@@ -515,5 +504,59 @@ class SituationalBrain:
         for k, arr in raw["weights"].items():
             a = np.asarray(arr, dtype=np.float64)
             w[k] = a
-        return cls(**w, meta=raw.get("meta") or {})
+        brain = cls(**w, meta=raw.get("meta") or {})
+        # Initialize attention weights if missing (for brains trained without attention)
+        if brain.w_q is None:
+            brain._init_attention_weights()
+        brain._init_gru_weights()
+        return brain
+
+    def _init_attention_weights(self) -> None:
+        """Initialize attention weights if they are missing (for brains trained without attention)."""
+        if self.w_q is None:
+            input_dim = self.w1.shape[1]
+            rng = np.random.default_rng()
+            self.w_q = rng.normal(0, np.sqrt(2.0 / input_dim), size=(input_dim, 64)).astype(np.float64)
+            self.w_k = rng.normal(0, np.sqrt(2.0 / input_dim), size=(input_dim, 64)).astype(np.float64)
+            self.w_v = rng.normal(0, np.sqrt(2.0 / input_dim), size=(input_dim, 64)).astype(np.float64)
+            self.w_e = rng.normal(0, np.sqrt(2.0 / 12), size=(12, 64)).astype(np.float64)  # 12 = token feature dim
+            # Update the weights dict
+            self.w["w_q"] = self.w_q
+            self.w["w_k"] = self.w_k
+            self.w["w_v"] = self.w_v
+            self.w["w_e"] = self.w_e
+
+    def _init_gru_weights(self) -> None:
+        """Initialize GRU weights if they are missing (for brains trained without GRU)."""
+        if self.w_z is None:
+            hidden = 64
+            rng = np.random.default_rng()
+            self.w_z = rng.normal(0, np.sqrt(2.0 / 128), size=(128, hidden)).astype(np.float64)
+            self.u_z = rng.normal(0, np.sqrt(2.0 / hidden), size=(hidden, hidden)).astype(np.float64)
+            self.b_z = np.zeros(hidden, dtype=np.float64)
+            self.w_r = rng.normal(0, np.sqrt(2.0 / 128), size=(128, hidden)).astype(np.float64)
+            self.u_r = rng.normal(0, np.sqrt(2.0 / hidden), size=(hidden, hidden)).astype(np.float64)
+            self.b_r = np.zeros(hidden, dtype=np.float64)
+            self.w_n = rng.normal(0, np.sqrt(2.0 / 128), size=(128, hidden)).astype(np.float64)
+            self.u_n = rng.normal(0, np.sqrt(2.0 / hidden), size=(hidden, hidden)).astype(np.float64)
+            self.b_n = np.zeros(hidden, dtype=np.float64)
+            self.w_o = rng.normal(0, np.sqrt(2.0 / hidden), size=(hidden, 10)).astype(np.float64)
+            self.b_o = np.zeros(10, dtype=np.float64)
+            self.w_p = rng.normal(0, np.sqrt(2.0 / hidden), size=(hidden, 4)).astype(np.float64)
+            self.b_p = np.zeros(4, dtype=np.float64)
+            # Update the weights dict
+            self.w["w_z"] = self.w_z
+            self.w["u_z"] = self.u_z
+            self.w["b_z"] = self.b_z
+            self.w["w_r"] = self.w_r
+            self.w["u_r"] = self.u_r
+            self.w["b_r"] = self.b_r
+            self.w["w_n"] = self.w_n
+            self.w["u_n"] = self.u_n
+            self.w["b_n"] = self.b_n
+            self.w["w_o"] = self.w_o
+            self.w["b_o"] = self.b_o
+            self.w["w_p"] = self.w_p
+            self.w["b_p"] = self.b_p
+
 
