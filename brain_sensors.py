@@ -8,8 +8,20 @@ event_chain.py).
 Sensor vector layout (24 floats, all normalised to ~0..1):
     [ 0] ball_x                (0..1, normalised by pitch length 105)
     [ 1] ball_y                (0..1, normalised by pitch width 68)
-    [ 2] player_x              (0..1)
-    [ 3] player_y              (0..1)
+    [ 2] goal_angle_norm       (-1..1, signed bearing to the goal CENTRE
+                                from the attacking direction, /90 deg.
+                                0 = goal dead ahead, +1 = goal line to the
+                                right, -1 = goal line to the left)
+    [ 3] goal_mouth_norm       (0..1, the visual angle the two POSTS
+                                subtend from here, / the angle seen from
+                                the penalty spot. 1.0 = as wide as a
+                                penalty spot view, ->0 = byline)
+
+    NOTE (2026-10-31): slots 2-3 used to be player_x/player_y.  For an
+    ON-BALL carrier those are exact duplicates of ball_x/ball_y (the
+    carrier stands at the ball), so they carried no information at all.
+    They now carry the goal's visual geometry, which the brain never had:
+    two positions 26 m from goal but 30 deg apart read identically before.
     [ 4] nearest_defender_dist  (0..1, normalised by 15 m)
     [ 5] defenders_within_5m   (0..1, count / 5)
     [ 6] defenders_within_10m  (0..1, count / 5)
@@ -125,6 +137,59 @@ def _goal_distance(x: float, y: float, attacks_right: bool) -> float:
     return math.hypot(gx - x, 34.0 - y)
 
 
+# ── GOAL GEOMETRY (the two angles a real player sees) ──────────────────
+# The goal mouth is 7.32 m wide: posts at y = 34 ± 3.66.  A player does
+# not perceive "distance to goal" plus a central-lane flag; he perceives a
+# MOUTH — how far off his facing line it sits, and how much of his view it
+# fills.  Those are exactly the two quantities the tactical layer already
+# acts on (attacking_matrix.shooting_angle_degrees / _angle_multiplier),
+# so the brain and the matrix now read the same goal.
+_GOAL_CENTER_Y = 34.0
+_GOAL_POST_HALF_WIDTH = 3.66          # 7.32 m mouth / 2
+# Angle subtended by the mouth from the penalty spot (11 m out).  MUST
+# equal attacking_matrix.REFERENCE_ANGLE — both are 2*atan(3.66/11), and
+# both exist because a full mouth at 11 m is the football reference for
+# "a good sight of goal".  Kept local to avoid a circular import.
+_REFERENCE_MOUTH_ANGLE = 2.0 * math.atan2(_GOAL_POST_HALF_WIDTH, 11.0)
+
+
+def _goal_geometry(
+    x: float, y: float, attacks_right: bool,
+) -> Tuple[float, float]:
+    """Return ``(goal_angle_norm, goal_mouth_norm)`` for a player at x, y.
+
+    ``goal_angle_norm`` — signed bearing of the goal CENTRE relative to
+    the attacking direction, normalised by 90 deg and clamped to [-1, 1]:
+    0.0 faces the goal, ±1.0 is level with (or behind) the goal line.
+    Sign is the side the goal lies on (+ = the player's right when
+    attacking right).
+
+    ``goal_mouth_norm`` — the angle the TWO POSTS subtend, divided by the
+    penalty-spot reference and clamped to [0, 1].  Facing goal from the
+    spot reads 1.0; an acute byline position reads near 0.0, because the
+    mouth has visually collapsed — the classic "the angle's gone".
+
+    Both are pure trigonometry on the CURRENT frame: deterministic, no
+    randomness, no futurity.  A player always knows where the goal is —
+    it is a fixed landmark, not another actor — so these are not routed
+    through the perception layer's FOV/range/noise.  What degrades with
+    fatigue and vision is the DECISION around them, not the landmark.
+    """
+    gx = 105.0 if attacks_right else 0.0
+    dx = gx - x                       # signed distance to the goal line
+    forward = 0.0 if attacks_right else math.pi
+
+    centre = math.atan2(_GOAL_CENTER_Y - y, dx)
+    centre_diff = (centre - forward + math.pi) % (2.0 * math.pi) - math.pi
+    angle_norm = _clamp(centre_diff / (math.pi / 2.0), -1.0, 1.0)
+
+    a_top = math.atan2(_GOAL_CENTER_Y + _GOAL_POST_HALF_WIDTH - y, dx)
+    a_bottom = math.atan2(_GOAL_CENTER_Y - _GOAL_POST_HALF_WIDTH - y, dx)
+    mouth = abs(a_top - a_bottom) / _REFERENCE_MOUTH_ANGLE
+    return angle_norm, _clamp(mouth, 0.0, 1.0)
+
+
+
 def _fatigue_estimate(player: Any, minute: float) -> float:
     dna = getattr(player, "dna", None)
     stamina_attr = _get_attr(dna, "physical.stamina", 65.0) / 100.0
@@ -176,8 +241,9 @@ def extract_sensors(
     # ── Spatial sensors ────────────────────────────────────────
     ball_x = _clamp(x / 105.0)
     ball_y = _clamp(y / 68.0)
-    player_x = ball_x
-    player_y = ball_y
+    # The carrier IS the ball.  Slots 2-3 used to repeat these two values
+    # verbatim; they now carry the goal's visual geometry instead.
+    goal_angle_norm, goal_mouth_norm = _goal_geometry(x, y, attacks_right)
 
     near_def = _nearest_defender_dist(x, y, defenders, position_engine)
     near_def_norm = _clamp(near_def / 15.0) if near_def is not None else 1.0
@@ -216,7 +282,7 @@ def extract_sensors(
     decisions = _clamp(_get_attr(mental, "decisions", 55.0) / 100.0)
 
     sensors = np.array([
-        ball_x, ball_y, player_x, player_y,
+        ball_x, ball_y, goal_angle_norm, goal_mouth_norm,
         near_def_norm, def_5, def_10,
         fwd_dist, fwd_open, space,
         is_crossing, is_near_goal, is_final_third, is_own_half,
@@ -255,7 +321,13 @@ def extract_offball_sensors(
 
     Layout shares slots 0..23 with ``extract_sensors`` (same 32-hidden
     block can be shared); slot 24 is the ball-CERTAINTY introduced by the
-    perception-aware off-ball evolution (2026-09-21):
+    perception-aware off-ball evolution (2026-09-21).
+
+    SLOTS 2-3 DIFFER FROM THE ON-BALL VECTOR BY DESIGN (2026-10-31): the
+    on-ball carrier stands AT the ball, so its slots 2-3 are the goal's
+    two visual angles.  A runner does not stand at the ball, so here they
+    stay runner_x/runner_y — dropping them would delete the runner-to-ball
+    offset that IS the off-ball decision.
 
         [ 0] ball_x             (perceived ball position, 0..1)
         [ 1] ball_y             (perceived ball position, 0..1)

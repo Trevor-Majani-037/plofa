@@ -202,10 +202,31 @@ def test_serialize_roundtrip():
 # 5. brain_sensors — vector extraction
 # ─────────────────────────────────────────────────────────────
 
+# Signed slots: [2] goal bearing and [18] score difference are the only
+# slots that legally run -1..1.  Everything else is a 0..1 magnitude or flag.
+_SIGNED_SLOTS = (2, 18)
+
+
+def _in_range(s):
+    """True when every sensor slot sits in its declared range.
+
+    Slots 2-3 became the goal's visual geometry on 2026-10-31: slot 2 is a
+    SIGNED bearing (-1 = goal line to the left, +1 = to the right), so a
+    blanket 0..1 assertion is no longer the right invariant.
+    """
+    for i, v in enumerate(np.asarray(s, dtype=float)):
+        if i in _SIGNED_SLOTS:
+            if not (-1.0 <= v <= 1.0):
+                return False
+        elif not (0.0 <= v <= 1.0):
+            return False
+    return True
+
+
 def test_sensor_shape_and_range():
     s = extract_sensors(None, 75, 34, [], [], None, False, True, None, 30)
     assert s.shape == (INPUT_SIZE,)
-    assert np.all((s >= 0.0) & (s <= 1.0)), f"sensors out of range: {s}"
+    assert _in_range(s), f"sensors out of range: {s}"
 
 
 def test_sensor_final_third_flags():
@@ -342,12 +363,12 @@ def test_sensor_extraction_robustness_no_nan():
                             None, True, x > 50, FakeGameState("LEVEL"), 90)
         assert s.shape == (INPUT_SIZE,)
         assert np.all(np.isfinite(s)), f"NaN/Inf at ({x},{y}): {s}"
-        assert np.all((s >= 0.0) & (s <= 1.0)), f"out of range at ({x},{y}): {s}"
+        assert _in_range(s), f"out of range at ({x},{y}): {s}"
     # GK-only defenders, empty teammates
     gk = make_player("GK", "GK")
     s = extract_sensors(make_player("P", "ST"), 80, 34, [], [gk],
                         None, False, True, None, 30)
-    assert np.all(np.isfinite(s)) and np.all((s >= 0.0) & (s <= 1.0))
+    assert np.all(np.isfinite(s)) and _in_range(s)
 
 
 # ─────────────────────────────────────────────────────────────

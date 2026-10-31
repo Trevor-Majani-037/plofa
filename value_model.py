@@ -40,8 +40,18 @@ _SPACE = 9
 _CENTRAL = 15
 _GOAL_DIST = 14
 _NEAR_DEF = 4
-# Duplicate / constant sensors: player_x==ball_x, player_y==ball_y,
-# team_possession is always 1.0 for an on-ball carrier.
+# Dropped columns.  Keep this tuple's WIDTH stable: a fitted ValueModel's
+# coefficients are tied to phi's layout, so adding or removing a column
+# silently invalidates every persisted fit.
+#
+# History: slots 2-3 used to be exact duplicates of 0-1 (player_x==ball_x,
+# player_y==ball_y for an on-ball carrier) and slot 20 is constant 1.0 for
+# an on-ball carrier — all three were pure collinearity.  Since 2026-10-31
+# slots 2-3 carry the goal's visual geometry (bearing + mouth).  They are
+# still dropped HERE so phi keeps its 37-wide shape and existing fits stay
+# valid; V(s) reads the goal through _GOAL_DIST / _CENTRAL instead.  If the
+# value model is ever refitted from scratch, un-dropping 2-3 is the first
+# thing to try.
 _DROP_COLS = (2, 3, 20)
 
 _POSITIONS = [

@@ -433,10 +433,13 @@ def _maybe_situational(
     """The SITUATIONAL route (attention + recurrence + memory + a plan).
 
     Returns None for every player whose brain is an ordinary
-    ``FootballBrain`` — which is every player in the shipped set.  The
-    route is chosen by the brain's TYPE, so there is no flag to forget to
-    turn off and no way for it to change the shipped behaviour by
-    accident.
+    ``FootballBrain``.  Since 2026-10-23 that is NO player in the shipped
+    set: ``brains/<POS>.json`` is the v8 situational family (~458 KB,
+    ``sensor_schema: v5_situational``), so every position takes this
+    route.  The older ~62 KB ``v2_role_features`` T1 set is retired
+    (commit ``c7b6918``) and would return None here.  The route is chosen
+    by the brain's TYPE, so there is no flag to forget to turn off and no
+    way for it to change behaviour by accident.
     """
     try:
         from situational_brain import SituationalBrain

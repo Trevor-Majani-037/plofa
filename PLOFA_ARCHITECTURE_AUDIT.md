@@ -1,6 +1,13 @@
 # PLOFA ARCHITECTURE AUDIT
 ### Phase 0 deliverable — Next-Generation Football Intelligence Engine
 
+> **DATE NOTE (2026-10-31):** this audit predates the 2026-10-23 promotion of
+> the v8 situational brains. Wherever it calls T1 "the shipped/production"
+> set, read v8 situational instead: `brains/` is now v8 (~458 KB per file,
+> `sensor_schema v5_situational`, `arch_version 3`), and T1 (~62-70 KB,
+> `v2_role_features`) is retired at commit `c7b6918`. Everything else here is
+> a snapshot of the tree as it stood when written.
+
 Read-only audit. No production file in this repository was modified to produce this document.
 Companion working state: a `PLOFA_ARCHITECTURE_AUDIT.md` (this file) added at repo root.
 

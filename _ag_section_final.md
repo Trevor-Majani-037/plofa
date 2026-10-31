@@ -1,3 +1,11 @@
+> **CORRECTION (2026-10-31):** this draft recommended keeping T1. The decision
+> went the other way — commit `c7b6918` (2026-10-23) **promoted v8 situational
+> to production**, so `brains/` is v8 (~458 KB/file, `sensor_schema
+> v5_situational`) and T1 (~62-70 KB, `v2_role_features`) is retired. The gate
+> numbers below are kept as the evidence for that decision, but the
+> "SHIPPED SET REMAINS T1" verdict at the bottom is superseded. See AGENTS.md,
+> "PRODUCTION BRAIN SET: v8 SITUATIONAL SHIPS, T1 IS RETIRED".
+
 ## GATE RESULTS — SITUATIONAL BRAIN v8 vs SHIPPED T1 (2026-10-23)
 
 ### CORPUS

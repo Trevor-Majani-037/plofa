@@ -1591,12 +1591,16 @@ def build_situational_sequences(records: List[DecisionRecord]
                     # the carrier's x jumped at a speed no body has.  The
                     # recurrent context must not cross it.
                     #
-                    # `sensors[2]` is the NORMALISED x (it is `x / 105.0`),
+                    # `sensors[0]` is the NORMALISED ball x (it is `x / 105.0`),
                     # so the jump in METRES is the difference of the raw
                     # values times 105.  (Multiplying an already-converted
                     # value by 105 a second time is a 105x error, and it
                     # cuts EVERY sequence — which is exactly what it did.)
-                    jump = abs(float(rec.sensors[2]) - prev_x) * 105.0
+                    #
+                    # It used to read slot 2 (player_x).  Since 2026-10-31
+                    # on-ball slots 2-3 are the goal's visual angles, so the
+                    # carrier's x lives in slot 0 alone (they were duplicates).
+                    jump = abs(float(rec.sensors[0]) - prev_x) * 105.0
                     if jump / (gap * SECONDS_PER_DECISION) > MAX_IMPLIED_SPEED_MPS:
                         cut = True
             if cut:
@@ -1604,7 +1608,7 @@ def build_situational_sequences(records: List[DecisionRecord]
                 chunk = []
             chunk.append(rec)
             prev_order = rec.order
-            prev_x = float(rec.sensors[2])
+            prev_x = float(rec.sensors[0])
         _emit_sequence(sequences, chunk, player)
     return sequences
 
