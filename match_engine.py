@@ -2091,6 +2091,13 @@ class MatchEngine:
         self._minute_start_snapshot: Dict[str, Tuple[float, float]] = {}
         self._top_speed_cache: Dict[str, float] = {}
         self._minute_start_clock: float = 0.0
+        # Ball velocity tracking for anticipation lead-time (2026-10-27):
+        # updated per tick in the off-ball loops, consumed by
+        # ``_offball_move_player`` to predict where the ball WILL be.
+        self._prev_ball_x: float = 52.5
+        self._prev_ball_y: float = 34.0
+        self._ball_vx: float = 0.0
+        self._ball_vy: float = 0.0
         # Team-press engagement cache: {(team, tick_key) -> g} so the shared
         # controller's forward pass runs once per team per off-ball tick.
         self._team_press_g_cache: Dict[Tuple[str, float], float] = {}
@@ -2685,6 +2692,18 @@ class MatchEngine:
             self._last_path_t = cursor
             self.state.last_ball_x = self._last_path_x
             self.state.last_ball_y = self._last_path_y
+            # Ball velocity for anticipation lead-time (2026-10-27): computed
+            # from the net displacement across this episode.  During the
+            # subsequent off-ball ticks, ``_offball_move_player`` reads this
+            # to predict where the ball WILL be, so a high-anticipation
+            # player shifts his shape toward the future ball position.
+            _ball_dx = self.state.last_ball_x - self._prev_ball_x
+            _ball_dy = self.state.last_ball_y - self._prev_ball_y
+            _ep_dur = max(0.01, dur)
+            self._ball_vx = _ball_dx / _ep_dur
+            self._ball_vy = _ball_dy / _ep_dur
+            self._prev_ball_x = self.state.last_ball_x
+            self._prev_ball_y = self.state.last_ball_y
             # The global clock must absorb the bridging time actually consumed
             # (fetch segments push the tail beyond the chain's own duration).
             prepend = max(0.0, cursor - (base + float(bp[-1].get("t", 0.0))))
@@ -3120,8 +3139,21 @@ class MatchEngine:
             if _lbt is not None:
                 _lb_a, ax, ay = _lbt
         # Live shape target: home anchor compacted toward the ball.
-        tx = ax + (ball_x - ax) * 0.14
-        ty = ay + (ball_y - ay) * 0.07
+        #
+        # ANTICIPATION LEAD-TIME (2026-10-27): a player with high
+        # anticipation reads the game and shifts toward where the ball WILL
+        # be, not where it IS.  The lead time is the same scale as
+        # ``possession_physics.reaction_time()`` but applied as a prediction
+        # horizon: ``ball + velocity * lead``.  During the dead phase
+        # velocity is zero (ball stationary), so the prediction is inactive;
+        # during live play after a pass/carry the velocity points in the
+        # ball's travel direction and the shape target pulls ahead of the
+        # current ball position.
+        _lead = 0.15 + 0.27 * (getattr(st, "anticipation", 60.0) / 100.0)
+        _pred_bx = ball_x + self._ball_vx * _lead
+        _pred_by = ball_y + self._ball_vy * _lead
+        tx = ax + (_pred_bx - ax) * 0.14
+        ty = ay + (_pred_by - ay) * 0.07
         # Defensive block: out of possession + danger -> squeeze.
         #
         # Skipped inside a low block, and that is the whole difference between
@@ -3256,6 +3288,28 @@ class MatchEngine:
             if p_sp > 0.0:
                 tx += (spx - tx) * p_sp
                 ty += (spy - ty) * p_sp
+        # ── PASSING-LANE ANTICIPATION (2026-10-27) ───────────────────
+        # While out of possession, a high-anticipation defender reads the
+        # most dangerous opponent receiver and steers his shape to CUT the
+        # passing lane rather than just tracking the ball.  The steer target
+        # sits between the ball and that receiver, slightly goal-side — the
+        # classic zonal intercept position.  This is what makes a defender
+        # arrive with the pass instead of after it.
+        #
+        # Suppressed inside a low block (the block is the shape — the team
+        # is already compact and the lane is defined by the block's front
+        # line).  Also suppressed when the ball is in the defensive third
+        # (too close to goal — the primary job is goal-side cover, not
+        # intercepting).
+        if (not has_ball) and (not _in_block):
+            _pas = self.position_engine.defensive_anticipation_steer(
+                pname, ball_x, ball_y, has_ball,
+                self.position_engine.team_attacks_right.get(team, True))
+            if _pas is not None:
+                p_pas, pasx, pasy = _pas
+                if p_pas > 0.0:
+                    tx += (pasx - tx) * p_pas
+                    ty += (pasy - ty) * p_pas
         # (The low block no longer steers here. It substitutes the shape ANCHOR
         # upstream, before the generic compaction, so the whole chain operates
         # on a low block instead of fighting one. See the anchor substitution
@@ -3636,6 +3690,10 @@ class MatchEngine:
             # own. match_clock_s does not supply one: this loop advances it
             # outside, so it is constant for every tick here.
             self._offball_tick_seq += 1
+            # Ball velocity decays per tick so anticipation lead-time
+            # tapers off as the ball settles (2026-10-27).
+            self._ball_vx *= 0.97
+            self._ball_vy *= 0.97
             for team in (home, away):
                 has_ball = (team == home) == home_has_ball
                 for pname in self.position_engine.team_rosters.get(team, []):
@@ -3701,6 +3759,10 @@ class MatchEngine:
         # (27,773 of his 36,561 excluded ticks were dead-phase).
         skip = set(self._on_ball_this_minute) if self.gps is not None else None
 
+        # Ball velocity is zero during dead time (ball is stationary),
+        # so anticipation lead-time has no effect between episodes.
+        self._ball_vx = 0.0
+        self._ball_vy = 0.0
         for ti in range(ticks):
             ball_x = self.state.last_ball_x
             ball_y = self.state.last_ball_y

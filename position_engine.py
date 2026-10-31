@@ -485,6 +485,10 @@ class PlayerSpatialState:
     # Populated from DNA during initialize_team. Used by midfielder
     # coverage drift to model Enzo/Rice/Pedri style space occupation.
     geometric_awareness: float = 50.0
+    # Anticipation (0-100, from DNA MentalAttributes, 2026-10-27): drives
+    # the shape-target lead-time so a high-anticipation player shifts his
+    # shape toward where the ball WILL be, not where it IS.
+    anticipation: float = 60.0
 
     # Last minute they were actively involved (for staleness checks)
     last_active_minute: int = 0
@@ -731,6 +735,7 @@ class PositionEngine:
                 player_name=name, position=pos, team=team_name,
                 home_x=home_x, home_y=home_y, drift_tolerance=tol,
                 geometric_awareness=self._geometric_awareness_for(p),
+                anticipation=self._anticipation_for(p),
                 top_speed_mpm=self._pace_mpm_for(p),
             )
             if name not in self.team_rosters[team_name]:
@@ -774,6 +779,7 @@ class PositionEngine:
             player_name=name, position=pos, team=team_name,
             home_x=home_x, home_y=home_y, drift_tolerance=tol,
             geometric_awareness=self._geometric_awareness_for(player),
+            anticipation=self._anticipation_for(player),
             top_speed_mpm=self._pace_mpm_for(player),
         )
         self.team_rosters.setdefault(team_name, []).append(name)
@@ -930,6 +936,20 @@ class PositionEngine:
             if val is not None:
                 return max(0.0, min(100.0, val))
         return 50.0
+
+    @staticmethod
+    def _anticipation_for(player) -> float:
+        """Read anticipation from DNA MentalAttributes (0-100).
+
+        Used by ``_offball_move_player`` for shape-target lead-time
+        prediction (2026-10-27).
+        """
+        mental = getattr(getattr(player, "dna", None), "mental", None)
+        if mental is not None:
+            val = getattr(mental, "anticipation", None)
+            if val is not None:
+                return max(0.0, min(100.0, float(val)))
+        return 60.0
 
     @staticmethod
     def _pace_mpm_for(player) -> float:
@@ -2606,6 +2626,114 @@ class PositionEngine:
             out[n] = (alpha, gx, gry)
         return out
 
+    # ── PASSING-LANE ANTICIPATION (2026-10-27) ────────────────────
+    # When the opponent has the ball, a high-anticipation defender reads the
+    # likeliest RECEIVER and shifts his shape to CUT the passing lane, not
+    # just track the ball.  This is the difference between a mediocre
+    # defender who follows the ball and an elite one who arrives when the
+    # pass does.
+    #
+    # The mechanism: find the opponent who is (a) in the most dangerous
+    # position (proximity to our goal) and (b) unmarked (no teammate in the
+    # lane between ball and receiver).  Then steer the shape target toward a
+    # point on that lane that bisects the angle between ball and dangerous
+    # space — the classic "zonal" intercept position.
+
+    ANTICIPATION_LANE_WEIGHT_BASE: float = 0.25
+    ANTICIPATION_LANE_MAX_DIST: float = 35.0  # m — ignore receivers beyond this
+    ANTICIPATION_LANE_TARGET_GAP: float = 3.0  # m ahead of the receiver (intercept cushion)
+
+    def defensive_anticipation_steer(
+        self, pname: str, ball_x: float, ball_y: float,
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Optional[Tuple[float, float, float]]:
+        """Return ``(weight, target_x, target_y)`` or None.
+
+        Active when:
+        - This team is OUT of possession (``has_ball=False``),
+        - This player has above-average anticipation (>55),
+        - A dangerous opponent receiver exists within range.
+
+        The weight scales with anticipation (higher = stronger steer toward
+        the lane) and proximity (closer to own goal = more urgent).
+
+        This is a PREFERENCE steer, not a constraint — it yields to rest
+        defence and positional play.  It is placed so it CAN be outranked.
+        """
+        st = self.states.get(pname)
+        if st is None or has_ball:
+            return None
+        ant = getattr(st, "anticipation", 55.0)
+        if ant < 55.0:
+            return None  # below-average readers don't read passes
+        # Find the opponent team
+        opp = next((t for t in self.team_rosters if t != st.team), None)
+        if opp is None:
+            return None
+        # Locate the most dangerous opponent receiver: the one who is
+        # (a) closest to our goal (advanced position),
+        # (b) open (no teammate between ball and them),
+        # (c) within range.
+        our_goal_x = 0.0 if attacks_right else 105.0
+        best_score = -1.0
+        best_rx = best_ry = None
+        for n in self.team_rosters.get(opp, []):
+            ost = self.states.get(n)
+            if ost is None or ost.position == "GK":
+                continue
+            ox, oy = ost.current_x, ost.current_y
+            dist_to_ball = math.hypot(ox - ball_x, oy - ball_y)
+            if dist_to_ball > self.ANTICIPATION_LANE_MAX_DIST:
+                continue
+            # Proximity to our goal (dangerous position)
+            goal_dist = math.hypot(ox - our_goal_x, oy - 34.0)
+            goal_urgency = max(0.0, 1.0 - goal_dist / 65.0)
+            # Openness: is there a teammate between ball and receiver?
+            blocked = False
+            for tn in self.team_rosters.get(st.team, []):
+                ts = self.states.get(tn)
+                if ts is None or tn == pname:
+                    continue
+                tx, ty = ts.current_x, ts.current_y
+                dx = ox - ball_x
+                dy = oy - ball_y
+                seg_len_sq = dx * dx + dy * dy
+                if seg_len_sq < 1.0:
+                    continue
+                t_param = ((tx - ball_x) * dx + (ty - ball_y) * dy) / seg_len_sq
+                if t_param <= 0.0 or t_param >= 1.0:
+                    continue
+                proj_x = ball_x + t_param * dx
+                proj_y = ball_y + t_param * dy
+                perp = math.hypot(tx - proj_x, ty - proj_y)
+                if perp < 2.5:
+                    blocked = True
+                    break
+            openness = 0.0 if blocked else 1.0
+            score = goal_urgency * 0.6 + openness * 0.4
+            if score > best_score:
+                best_score = score
+                best_rx, best_ry = ox, oy
+        if best_rx is None or best_score < 0.15:
+            return None
+        # Compute the intercept position: midpoint of the lane between ball
+        # and dangerous receiver, offset goal-ward by a cushion so the
+        # defender arrives a step ahead of the pass.
+        lane_cx = (ball_x + best_rx) / 2.0
+        lane_cy = (ball_y + best_ry) / 2.0
+        dx_goal = our_goal_x - lane_cx
+        dy_goal = 34.0 - lane_cy
+        _glen = math.hypot(dx_goal, dy_goal)
+        if _glen > 1.0:
+            lane_cx += (dx_goal / _glen) * self.ANTICIPATION_LANE_TARGET_GAP
+            lane_cy += (dy_goal / _glen) * self.ANTICIPATION_LANE_TARGET_GAP
+        lane_cx = max(0.0, min(105.0, lane_cx))
+        lane_cy = max(0.0, min(68.0, lane_cy))
+        ant_weight = (ant - 55.0) / 44.0
+        steer_w = self.ANTICIPATION_LANE_WEIGHT_BASE * ant_weight * best_score
+        if steer_w < 0.02:
+            return None
+        return (steer_w, lane_cx, lane_cy)
     # LIVE-TICK SPACING GUARD (Checkpoint 38): the per-minute graph-relaxation
     # repel is too slow to stop two runners stacking at 10Hz inside one build-up
     # sequence. This is a TARGET redirect applied in match_engine._offball_move_

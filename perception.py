@@ -283,9 +283,59 @@ class _PerceivedEngine:
 # VISIBILITY GEOMETRY
 # ─────────────────────────────────────────────────────────────
 
+# Maximum realistic head turn (radians) — a player at full rotation
+# (head + upper body twist) can check their shoulder by about 80°.
+# Elite scan rates mean this happens constantly; poor readers barely
+# glance back.
+_MAX_HEAD_TURN_RAD: float = np.deg2rad(80.0)
+
+
 def _forward_angle(attacks_right: bool) -> float:
-    """Bearing (radians) of the direction the player faces."""
+    """Bearing (radians) of the direction the player faces.
+
+    Legacy wrapper returning only the body-forward direction (toward
+    the opponent goal).  Used for ACTOR visibility, which is fine as a
+    constant — the fix for ball-invisibility (ball behind a defender who
+    never checks) lives in :func:`_facing_angle`.
+    """
     return 0.0 if attacks_right else np.pi
+
+
+def _facing_angle(player: Any, from_x: float, from_y: float,
+                  ball_x: float, ball_y: float,
+                  attacks_right: bool) -> float:
+    """Per-player facing angle (radians).
+
+    On-ball players face the opponent goal (attacking direction), same as
+    the legacy constant.  Off-ball players turn their HEAD toward the ball
+    when it sits behind their forward-facing cone — a realistic shoulder
+    check.  The turn magnitude is modulated by vision + anticipation,
+    so an elite reader of the game checks more often and sees more.
+
+    The maximum head turn is ~60° (0.6 on the blend) so the player never
+    faces fully backward — that's what the full-body turn (a 180° pivot)
+    is for, which costs time and is not modeled here.
+    """
+    forward = 0.0 if attacks_right else np.pi
+    # Angle from the player to the ball
+    ball_angle = np.arctan2(ball_y - from_y, ball_x - from_x)
+    diff = (ball_angle - forward + np.pi) % (2 * np.pi) - np.pi
+    # Ball is within ±90° of forward -> face forward (can see it without
+    # turning the head).
+    if abs(diff) <= np.pi / 2.0:
+        return forward
+    # Ball is behind the shoulder — turn the head toward it.
+    # ``engagement`` captures how much this player bothers to scan, scaled by
+    # how far behind the ball actually is (a ball at 90° gets a light glance;
+    # a ball at 180° gets a full shoulder check).
+    mental = getattr(getattr(player, "dna", None), "mental", None)
+    vision = _clamp(_get_attr(mental, "vision", 60.0) / 100.0)
+    anticipation = _clamp(_get_attr(mental, "anticipation", 60.0) / 100.0)
+    engagement = 0.5 * vision + 0.5 * anticipation
+    # How far past 90° the ball is (0 = at shoulder, 1 = directly behind)
+    behind_frac = min(1.0, (abs(diff) - np.pi / 2.0) / (np.pi / 2.0))
+    turn = _MAX_HEAD_TURN_RAD * engagement * behind_frac
+    return forward + float(np.sign(diff)) * turn
 
 
 def _bearing_diff(from_x: float, from_y: float, to_x: float, to_y: float,
@@ -308,19 +358,103 @@ def _is_visible(from_x: float, from_y: float, to_x: float, to_y: float,
     return True
 
 
-def _mental_scale(player: Any) -> tuple[float, float]:
+def _is_visible_facing(player: Any, from_x: float, from_y: float,
+                       to_x: float, to_y: float,
+                       ball_x: float, ball_y: float,
+                       attacks_right: bool, radius: float,
+                       fov_rad: float) -> bool:
+    """Like :func:`_is_visible` but uses the per-player dynamic facing
+    angle (head-turn toward the ball) instead of the constant forward.
+    This is the variant used by ball-vision, where a defender checking his
+    shoulder genuinely sees the ball come back into view."""
+    dist = np.hypot(to_x - from_x, to_y - from_y)
+    if dist > radius:
+        return False
+    facing = _facing_angle(player, from_x, from_y, ball_x, ball_y,
+                           attacks_right)
+    if abs(_bearing_diff(from_x, from_y, to_x, to_y, facing)) > fov_rad / 2.0:
+        return False
+    return True
+
+
+def _mental_scale(player: Any, fatigue: float = 0.0) -> tuple[float, float]:
     """Return (perception_power, accuracy_factor) from the player's DNA.
 
     ``perception_power`` in [0,1] scales the perception radius (vision +
     anticipation); ``accuracy_factor`` in [0,1] scales noise down (1 =
-    elite accuracy ~ 0 noise)."""
+    elite accuracy ~ 0 noise).
+
+    FATIGUE DEGRADATION (2026-10-27): a player at 80 % stamina perceives at
+    ~90 % effectiveness.  At 40 % stamina he is at ~70 %.  Fatigue eats
+    BOTH power and accuracy — a tired player literally sees less and reads
+    worse, which is what makes game management a real skill.
+    """
     mental = getattr(getattr(player, "dna", None), "mental", None)
     vision = _clamp(_get_attr(mental, "vision", 60.0) / 100.0)
     anticipation = _clamp(_get_attr(mental, "anticipation", 60.0) / 100.0)
     composure = _clamp(_get_attr(mental, "composure", 60.0) / 100.0)
     power = 0.5 * vision + 0.5 * anticipation
     acc = 0.4 * vision + 0.3 * anticipation + 0.3 * composure
-    return power, acc
+    # Fatigue multiplier: a linear ramp from 1.0 at fatigue=0 to ~0.55 at
+    # fatigue=1.0 — a completely gassed player perceives half as well.
+    fatigue_mult = 1.0 - 0.45 * _clamp(fatigue)
+    return power * fatigue_mult, acc * fatigue_mult
+
+
+def _tunnel_vision_fov(base_fov_deg: float, speed_mps: float,
+                       under_pressure: bool = False) -> float:
+    """Effective horizontal FOV (deg) after accounting for:
+
+    1. SPRINT NARROWING: at full sprint (> 7 m/s, roughly 25 km/h) the
+       effective FOV narrows to ~90° (tunnel vision).  At jog (~2 m/s) it
+       is essentially the full base FOV.  Linear ramp between.
+    2. PRESSURE NARROWING: under high pressure, attention narrows by an
+       additional ~15°.  This models the real "gaze anchoring" effect
+       where anxious players stare at the ball and miss the periphery.
+
+    Both effects are additive — a player sprinting under pressure sees
+    barely 75° of the pitch, which is exactly when he is most likely to
+    miss a blind-side run.
+    """
+    speed = max(0.0, speed_mps)
+    # Thresholds below jog (2 m/s) -> full FOV; at sprint (7+ m/s) -> 90 deg.
+    sprint_shrink = max(0.0, (speed - 2.0) / 5.0) * (base_fov_deg - 90.0)
+    # Pressure costs a fixed ~15° additional narrowing.
+    pressure_shrink = 15.0 if under_pressure else 0.0
+    return max(60.0, base_fov_deg - sprint_shrink - pressure_shrink)
+
+
+def _peripheral_glimpse(bearing: float, fov_rad: float,
+                        vision_power: float,
+                        rng: Optional[np.random.Generator] = None) -> bool:
+    """Can the player glimpse something in their peripheral vision?
+
+    Even when an object is outside the central FOV (narrow cone for crisp
+    vision), the human periphery detects motion and large shapes up to
+    ~170° horizontal.  This function returns True if a random glance
+    based on the player's vision power catches the ball in the periphery.
+
+    The probability is highest just outside the FOV edge and decays
+    linearly to zero at 170° total (85° off each side).
+
+    ``rng`` is an optional numpy Generator for deterministic draws (the
+    same discipline ``perceive()`` uses for positional noise).  When None,
+    fresh randomness is used (non-deterministic fallback).
+    """
+    # How far outside the central FOV is it?  (0 = at the edge)
+    abs_bearing = abs(bearing)
+    peripheral_start = fov_rad / 2.0
+    peripheral_max = np.deg2rad(85.0)  # ~170° total peripheral range
+    if abs_bearing <= peripheral_start:
+        return False  # already in central vision, not a "glimpse"
+    if abs_bearing >= peripheral_max:
+        return False  # completely out of sight
+    # Decaying probability from the edge outward
+    edge_distance = (abs_bearing - peripheral_start) / (peripheral_max - peripheral_start)
+    glimpse_prob = 0.35 * vision_power * (1.0 - edge_distance)
+    if rng is not None:
+        return float(rng.random()) < glimpse_prob
+    return np.random.random() < glimpse_prob
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
