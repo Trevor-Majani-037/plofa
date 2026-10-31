@@ -36,7 +36,7 @@ from weather_physics import WeatherCondition, WeatherPhysics
 from tactical_shapes import FormationStance
 from attack_patterns import AttackPattern
 from set_piece_routines import SetPieceRoutine
-from ball_vision import movement_ball
+from ball_vision import movement_ball, _tracks_for as _bv_tracks
 from run_tracking import IntendedRunRecorder, RunTracker
 
 # Phase 2 -- Manager trigger events (duplicated here to avoid circular import)
@@ -5678,6 +5678,12 @@ class MatchEngine:
                     ctx_x = last_evt.end_x if last_evt.end_x is not None else last_evt.location_x
                     ctx_y = last_evt.end_y if last_evt.end_y is not None else last_evt.location_y
                     danger = self.threat.danger_at(defending_team)
+                    # PERCEPTION-GATED DANGER (2026-10-27): modulate the
+                    # team-level danger by the nearest defender's ball
+                    # certainty.  Blind defender perceives more danger →
+                    # clears more urgently.
+                    danger = self._modulate_danger_perception(
+                        danger, defending_team, ctx_x, ctx_y)
                     own_goal_x = 105.0 if attacks_right else 0.0
                     # Action type: learned DefensiveActionBrain when engaged,
                     # else the heuristic danger-scaled weights.  The physical
@@ -5726,6 +5732,8 @@ class MatchEngine:
                 dangerous_def = ctx_x > 80 if attacks_right else ctx_x < 25
                 if dangerous_def and random.random() < 0.50:
                     danger_now = self.threat.danger_at(defending_team)
+                    danger_now = self._modulate_danger_perception(
+                        danger_now, defending_team, ctx_x, ctx_y)
                     # Same learned action controller as the open-play contest:
                     # the trigger (dead ball in our third) is a material FEASIBILITY
                     # fact, but WHICH act (clearance/block/tackle/interception) is
@@ -6088,6 +6096,8 @@ class MatchEngine:
         if not deep_zone:
             return False
         danger = self.threat.danger_at(defending_team)
+        danger = self._modulate_danger_perception(
+            danger, defending_team, ctx_x, ctx_y)
         recovery_prob = 0.22 + min(0.20, danger / 250.0)
         if random.random() >= recovery_prob:
             return False
@@ -6129,6 +6139,64 @@ class MatchEngine:
             referee_strictness=self.config.referee_strictness,
         )
         return self._absorb_chain(def_result, minute)
+
+    # ── PERCEPTION-GATED DANGER (2026-10-27) ───────────────────────
+    # The base ``danger_level`` from the threat engine is team-level and
+    # omniscient — it knows exactly where the ball is relative to goal.
+    # But a real defender doesn't.  A CB who has lost sight of the ball
+    # feels more danger than the objective position warrants — he panics.
+    # A CB who just scanned and sees exactly where the ball is feels calm
+    # and makes a composed decision.
+    #
+    # This method finds the nearest defender to the contest point, looks
+    # up his ball-certainty (from ball_vision's per-player track), and
+    # modulates danger: blind = up to 1.5x, seen = 1.0x.  High composure
+    # dampens the panic.  The modulated danger feeds ``_def_action_choice``
+    # which weights clearance/tackle/interception/block by perceived danger.
+    def _modulate_danger_perception(self, base_danger: float,
+                                     defending_team: str,
+                                     ctx_x: float, ctx_y: float) -> float:
+        # 1. Find nearest outfield defender to the contest point.
+        nearest_name = None
+        nearest_dist = 9999.0
+        for pn in self.position_engine.team_rosters.get(defending_team, []):
+            st = self.position_engine.states.get(pn)
+            if st is None or getattr(st, "position", "") == "GK":
+                continue
+            d = math.hypot(st.current_x - ctx_x, st.current_y - ctx_y)
+            if d < nearest_dist:
+                nearest_dist = d
+                nearest_name = pn
+        if nearest_name is None:
+            return min(100.0, base_danger)
+        # 2. Get ball certainty from ball_vision track.
+        tracks = _bv_tracks(self)
+        track = tracks.get(nearest_name)
+        certainty = 1.0
+        if track is not None and track.seen:
+            elapsed = max(0.0, float(self.state.minute) - track.t)
+            stale_sigma = 8.0 * elapsed  # ball_stale_growth
+            certainty = 1.0 / (1.0 + stale_sigma)
+        elif track is not None and not track.seen:
+            # Never seen the ball — moderate uncertainty by default
+            certainty = 0.3
+        else:
+            # No track at all — ball-vision hasn't been initialized
+            # for this player (on-ball carrier or GK).  Assume full
+            # certainty (no perception tax for the ball-carrier).
+            certainty = 1.0
+        # 3. Composure dampener: read from the nearest defender's DNA via
+        #    the spatial state's geometric_awareness as a proxy.
+        st = self.position_engine.states.get(nearest_name)
+        composure = max(0.0, min(1.0,
+            getattr(st, "geometric_awareness", 50.0) / 100.0))
+        # 4. Compute perception multiplier.
+        #    panic_base = 0.5 at composure=0, 0.0 at composure=100
+        panic_base = 0.5 * (1.0 - composure)
+        perception_mult = 1.0 + panic_base * (1.0 - certainty)
+        # 5. Apply and clamp.
+        modulated = base_danger * perception_mult
+        return min(100.0, modulated)
 
     def _infer_aerial_ball(self, events, last_evt) -> bool:
         """
