@@ -5682,7 +5682,7 @@ class MatchEngine:
                     # team-level danger by the nearest defender's ball
                     # certainty.  Blind defender perceives more danger →
                     # clears more urgently.
-                    danger = self._modulate_danger_perception(
+                    danger, perception_mult = self._modulate_danger_perception(
                         danger, defending_team, ctx_x, ctx_y)
                     own_goal_x = 105.0 if attacks_right else 0.0
                     # Action type: learned DefensiveActionBrain when engaged,
@@ -5706,6 +5706,7 @@ class MatchEngine:
                         context_x=ctx_x, context_y=ctx_y,
                         attacks_right=attacks_right,
                         danger_level=danger,
+                        perception_mult=perception_mult,
                         ball_aerial=self._infer_aerial_ball(poss_result.events, last_evt),
                         own_goal_x=own_goal_x,
                         position_engine=self.position_engine,
@@ -5732,7 +5733,7 @@ class MatchEngine:
                 dangerous_def = ctx_x > 80 if attacks_right else ctx_x < 25
                 if dangerous_def and random.random() < 0.50:
                     danger_now = self.threat.danger_at(defending_team)
-                    danger_now = self._modulate_danger_perception(
+                    danger_now, perception_mult = self._modulate_danger_perception(
                         danger_now, defending_team, ctx_x, ctx_y)
                     # Same learned action controller as the open-play contest:
                     # the trigger (dead ball in our third) is a material FEASIBILITY
@@ -5756,6 +5757,7 @@ class MatchEngine:
                         context_x=ctx_x, context_y=ctx_y,
                         attacks_right=attacks_right,
                         danger_level=danger_now,
+                        perception_mult=perception_mult,
                         ball_aerial=self._infer_aerial_ball(poss_result.events, last_evt),
                         own_goal_x=105.0 if attacks_right else 0.0,
                         position_engine=self.position_engine,
@@ -6096,7 +6098,7 @@ class MatchEngine:
         if not deep_zone:
             return False
         danger = self.threat.danger_at(defending_team)
-        danger = self._modulate_danger_perception(
+        danger, perception_mult = self._modulate_danger_perception(
             danger, defending_team, ctx_x, ctx_y)
         recovery_prob = 0.22 + min(0.20, danger / 250.0)
         if random.random() >= recovery_prob:
@@ -6125,6 +6127,7 @@ class MatchEngine:
             context_x=ctx_x, context_y=ctx_y,
             attacks_right=attacks_right,
             danger_level=danger,
+            perception_mult=perception_mult,
             ball_aerial=self._infer_aerial_ball(poss_result.events, last_evt),
             own_goal_x=own_goal_x,
             position_engine=self.position_engine,
@@ -6155,7 +6158,14 @@ class MatchEngine:
     # which weights clearance/tackle/interception/block by perceived danger.
     def _modulate_danger_perception(self, base_danger: float,
                                      defending_team: str,
-                                     ctx_x: float, ctx_y: float) -> float:
+                                     ctx_x: float, ctx_y: float):
+        """Return ``(modulated_danger, perception_multiplier)``.
+
+        ``perception_multiplier`` is the raw multiplier (1.0 = calm,
+        1.0-1.5 = panicked).  It is passed to the clearance outcome
+        formulas so a panicked clearance fails more often and slices
+        more easily.
+        """
         # 1. Find nearest outfield defender to the contest point.
         nearest_name = None
         nearest_dist = 9999.0
@@ -6168,7 +6178,7 @@ class MatchEngine:
                 nearest_dist = d
                 nearest_name = pn
         if nearest_name is None:
-            return min(100.0, base_danger)
+            return min(100.0, base_danger), 1.0
         # 2. Get ball certainty from ball_vision track.
         tracks = _bv_tracks(self)
         track = tracks.get(nearest_name)
@@ -6185,8 +6195,7 @@ class MatchEngine:
             # for this player (on-ball carrier or GK).  Assume full
             # certainty (no perception tax for the ball-carrier).
             certainty = 1.0
-        # 3. Composure dampener: read from the nearest defender's DNA via
-        #    the spatial state's geometric_awareness as a proxy.
+        # 3. Composure dampener: read from the nearest defender's DNA.
         st = self.position_engine.states.get(nearest_name)
         composure = max(0.0, min(1.0,
             getattr(st, "geometric_awareness", 50.0) / 100.0))
@@ -6196,7 +6205,7 @@ class MatchEngine:
         perception_mult = 1.0 + panic_base * (1.0 - certainty)
         # 5. Apply and clamp.
         modulated = base_danger * perception_mult
-        return min(100.0, modulated)
+        return min(100.0, modulated), perception_mult
 
     def _infer_aerial_ball(self, events, last_evt) -> bool:
         """

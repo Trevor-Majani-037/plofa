@@ -8973,6 +8973,7 @@ class DefensiveChain(BaseChain):
         defender_facing_y: Optional[float] = None,
         opponent_distance: Optional[float] = None,
         stamina: Optional[float] = None,
+        perception_mult: float = 1.0,
     ) -> ChainResult:
         result = ChainResult()
         phase, gs = state.phase, state.game_state
@@ -9250,6 +9251,14 @@ class DefensiveChain(BaseChain):
             body_part = cls._clearance_body_part(defender, clearance_kind, rel_angle)
             base_rate = cls._clearance_success_rate(defender, clearance_kind, danger_level)
             fail_mult = clearance_failure_multiplier(rel_angle, opponent_distance, stamina)
+            # PERCEPTION-GATED PANIC (2026-10-27): a blind defender with
+            # low composure feels more danger than the objective threat
+            # warrants.  His clearing swing is rushed and less controlled
+            # -> higher failure rate, more slices, more own-goal chances.
+            # At perception_mult=1.0 (full sight + composure) -> no change.
+            # At perception_mult=1.5 (blind + panicked) -> 1.25x failure.
+            panic_amp = max(0.0, perception_mult - 1.0) * 2.5
+            fail_mult *= (1.0 + panic_amp)
             success_rate = max(0.05, min(0.92, base_rate / fail_mult))
             outcome = random.random() < success_rate
 
@@ -9257,6 +9266,7 @@ class DefensiveChain(BaseChain):
             failure_cause = None
             if not outcome:
                 og_p = own_goal_probability(rel_angle, opponent_distance, stamina, danger_level)
+                og_p *= (1.0 + panic_amp)  # panic makes own goals more likely
                 if random.random() < og_p:
                     failure_cause = "own_goal"
                 elif clearance_kind == "headed":
@@ -9990,6 +10000,7 @@ class ChainDispatcher:
         attacks_right: bool = True,
         referee_strictness: float = 0.5,
         danger_level: float = 0.0,
+        perception_mult: float = 1.0,
         ball_aerial: bool = False,
         own_goal_x: float = 105.0,
         position_engine: Optional[PositionEngine] = None,
@@ -10006,6 +10017,7 @@ class ChainDispatcher:
             attacks_right=attacks_right,
             referee_strictness=referee_strictness,
             danger_level=danger_level,
+            perception_mult=perception_mult,
             ball_aerial=ball_aerial,
             own_goal_x=own_goal_x,
             position_engine=position_engine,
