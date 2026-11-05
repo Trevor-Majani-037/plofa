@@ -94,6 +94,36 @@ FORMATION_SLOTS = {
 # Matches the hydration floor in auto_run_match._apply_starting_stamina.
 MIN_START_STAMINA = 70.0
 
+# ─────────────────────────────────────────────
+# FLANK SELECTION — FOOT AS PREFERENCE, NOT GATE
+# ─────────────────────────────────────────────
+# A winger playing on the "wrong" flank is an inverted winger, which is a
+# standard modern profile, not an out-of-position emergency.  So for LW/RW the
+# foot costs a slice of standing instead of disqualifying the player outright.
+#
+# 0.15 means an inverted winger has to be worth ~18% more than the
+# conventional alternative to win the shirt.  Large enough that a squad with a
+# natural winger still uses him; small enough that a genuinely better inverted
+# winger is not benched for a journeyman.
+INVERTED_WING_PENALTY = 0.15
+
+
+def _authority_tiebreak(p: "PlayerRecord") -> tuple:
+    """Break an exact (foot, value) tie on something football-shaped.
+
+    Two players can be identical on every selection input — Perćy Luka and
+    Rayan Victor Jam¢s were both RW, both left-footed, both worth exactly
+    120.0M — and the sort then fell through to Excel row order.  Row order is
+    not a football decision: it benched the club captain and reigning TOTS.
+
+    Order: captain first, then seniority (older = more experience), then name
+    so the same XI is chosen on every run (determinism matters here; see the
+    PYTHONHASHSEED note in player_dna).
+    """
+    is_captain = bool(getattr(p, "is_captain", False))
+    return (-(1 if is_captain else 0), -(getattr(p, "age", 0) or 0), p.name)
+
+
 
 # ─────────────────────────────────────────────
 # PLAYER RECORD
@@ -880,7 +910,10 @@ class RosterLoader:
         """Find a bench player who can play the needed slot.
 
         Tiers: natural > OTHER POS > occasional conversion; prefer fresh;
-        within tier: foot fit then market value.
+        within tier: for fullbacks foot fit then market value, for wingers
+        value net of the inverted-foot tax (same contract as
+        `_pick_from_pool`, so the repair path cannot quietly re-apply the
+        hard foot gate the selection path just dropped).
         """
         stamina = stamina or {}
 
@@ -924,9 +957,20 @@ class RosterLoader:
                 return 1
             return 2
 
-        candidates.sort(
-            key=lambda p: (tier(p), foot_rank(p), -p.market_value)
-        )
+        if needed_slot in ("LW", "RW"):
+            def wing_value(p: PlayerRecord) -> float:
+                value = float(p.market_value or 0.0)
+                if p.foot_lower == "both" or p.foot_lower == pref_foot:
+                    return value
+                return value * (1.0 - INVERTED_WING_PENALTY)
+
+            candidates.sort(
+                key=lambda p: (tier(p), -wing_value(p), _authority_tiebreak(p))
+            )
+        else:
+            candidates.sort(
+                key=lambda p: (tier(p), foot_rank(p), -p.market_value)
+            )
         return candidates[0]
 
     def _resolve_flank_duplicates(
@@ -1011,8 +1055,12 @@ class RosterLoader:
         2. Secondary-position match (engine_other_pos == slot)
         3. Occasional conversion (foot-based cover: CAM→wing, ST inverted
            wing, CB→fullback) — only used when nobody natural is left
-        4. For flank positions: foot preference (both > preferred side >
-           opposite foot), then market value (highest first)
+        4. Within the chosen tier:
+           - LB/RB: HARD foot gate (both > preferred side > opposite foot),
+             then market value. A wrong-footed fullback is shown inside.
+           - LW/RW: market value less INVERTED_WING_PENALTY for the opposite
+             foot, then `_authority_tiebreak`. An inverted winger is a normal
+             profile, so quality decides; the foot only breaks near-ties.
         """
         candidates = [
             p for p in pool.get(slot, [])
@@ -1060,8 +1108,11 @@ class RosterLoader:
             from squad_manager import ROTATION_MAX_PENALTY
             return value * (1.0 - ROTATION_MAX_PENALTY * rot)
 
-        if slot in ("LW", "RW", "LB", "RB"):
-            preferred_foot = "left" if slot in ("LW", "LB") else "right"
+        if slot in ("LB", "RB"):
+            # Fullbacks keep a HARD foot gate: a right-footed left-back is a
+            # genuine liability every time he is shown inside, so the natural
+            # / both-footed option is preferred at any value.
+            preferred_foot = "left" if slot == "LB" else "right"
 
             def foot_rank(p: PlayerRecord) -> int:
                 if p.foot_lower == "both":
@@ -1070,7 +1121,30 @@ class RosterLoader:
 
             pool_candidates = sorted(
                 pool_candidates,
-                key=lambda p: (foot_rank(p), -standing(p)),
+                key=lambda p: (foot_rank(p), -standing(p), _authority_tiebreak(p)),
+            )
+        elif slot in ("LW", "RW"):
+            # Wingers get a SOFT foot tax, not a gate.  An inverted winger
+            # (left foot on the right) is a modern standard, not an
+            # out-of-position emergency: Perćy Luka scored 26 of his 33 goals
+            # in 25/26 with the left foot from RW.  The old hard rank put
+            # every opposite-foot winger below every same-foot winger
+            # regardless of quality, so a 120M inverted winger lost the shirt
+            # to a 22M conventional one.
+            #
+            # The tax is applied to standing, so a genuinely better
+            # opposite-foot winger still wins, and a both-footed or
+            # preferred-foot winger still edges an equal one.
+            preferred_foot = "left" if slot == "LW" else "right"
+
+            def wing_key(p: PlayerRecord) -> float:
+                if p.foot_lower == "both" or p.foot_lower == preferred_foot:
+                    return standing(p)
+                return standing(p) * (1.0 - INVERTED_WING_PENALTY)
+
+            pool_candidates = sorted(
+                pool_candidates,
+                key=lambda p: (-wing_key(p), _authority_tiebreak(p)),
             )
         else:
             pool_candidates = sorted(

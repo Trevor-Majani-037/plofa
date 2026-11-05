@@ -211,3 +211,64 @@ The v8 weights were BPTT-distilled while slots 2-3 were still duplicate position
 | **mean** | **0.1154** | — | **11.5%** | — |
 
 No information is lost — the carrier's position is still slots 0-1, which are untouched — but ~11.5% of intents flip on states where only slots 2-3 changed, and the chosen intent's confidence barely moves (|ΔP| ≤ 0.031). Read this as "the network is reacting to new inputs it was not trained on", not as a validated improvement. The next v8 retrain sees the geometry natively; until then, match-level validation of this change is the 7-match gate, not a single friendly.
+
+## FLANK SELECTION: THE FOOT IS A PREFERENCE, THE TIE IS NOT ROW ORDER (2026-11-04)
+
+`RosterLoader._pick_from_pool` chose flank players with
+`key=lambda p: (foot_rank(p), -standing(p))`, where `foot_rank` was 0 both /
+1 preferred / 2 opposite. Two defects, both visible in the 26/27 season:
+
+1. **The foot was a hard gate.** An inverted winger (left foot on the right)
+   could not outrank ANY same-foot winger at any market value. Perćy Luka —
+   RW, left foot, 120.0M, club captain — was benched behind
+   `Rayan Victor Jam¢s` (RW, left foot, 120.0M) because both landed on the
+   identical sort key `(2, -120.0)` and Python's stable sort kept Excel row
+   order. He played 535 of 810 minutes across nine matchdays.
+2. **Fullbacks and wingers were treated the same**, even though a
+   right-footed LB is a real liability while a left-footed RW is a modern
+   standard.
+
+**Now:** `LB`/`RB` keep the hard `foot_rank` gate. `LW`/`RW` apply
+`INVERTED_WING_PENALTY = 0.15` to `standing` instead — an inverted winger has
+to be worth ~18% more than the conventional alternative. Exact ties resolve on
+`_authority_tiebreak` = captain, then seniority, then name (deterministic).
+
+**Blast radius, measured HEAD vs the fix across all 18 clubs:** on the roster
+as it stood when the fix was written, exactly one XI changed — Pearls, swapping
+`Rayan Victor Jam¢s` out for `Perćy Luka`. NOTE: `PLOFA-2026-2027.xlsx` is a
+live, untracked file and it was rewritten on 2026-11-04 22:47 (Rayan now reads
+`LW`, so he and Percy are no longer competing for one shirt). Re-measured
+against that state the diff is **0/18** — Percy starts under the old rule too.
+The defect and the fix are unaffected; only the current trigger is, so do not
+use "Percy was benched" as evidence about today's workbook without re-reading
+his row and Rayan's `Pos` first.
+
+Locked by `tests/test_flank_selection.py` (11 tests: the tax, the fullback
+gate, order-independent ties, and the real Pearls squad).
+
+### The lesson for future stat comparisons
+
+Do NOT benchmark 26/27 against the 25/26 workbook. That season was produced by
+`TEST6.py`, and its per-player lines are **generated constants, not measured
+play**:
+
+| stat | how 25/26 produced it | line |
+|---|---|---|
+| team chances | `random.randint(3, 20)` by style x possession/50 | 1325-1354 |
+| who receives a chance | fixed table `ST/CF 5, LW/RW 4, CAM 3, CM 2, CDM 1, LB/RB 0.5, CB 0.1` | 1582-1587 |
+| shots | "each chance received = 1 shot", 1:1 | 1366-1371 |
+| touch thirds (attackers) | literal `own 0.20 / mid 0.30 / final 0.50` | 3072-3075 |
+| touches in the box | `random.randint(1, min(10, touches_final_third))` | 3084 |
+| progressive passes | `random.randint(0.5, 0.7) x passes_final_third` | 2103-2105 |
+| goals | **typed in** by hand via `add_goal(scorer=...)` | 5852-5856 |
+| xG | computed afterwards FROM the synthetic shots, then never reconciled with the goals | 1209 |
+
+So "33 goals from 18.34 xG" is not an overperformance — the goals were an
+input and the xG was a description of shots invented to justify them. Every
+apparent 25/26-vs-26/27 gap must be re-read as *generator constant vs measured
+simulation*, not *better vs worse*.
+
+The engine can feed a winger regardless: `Farson Willord` (Claw LW) is at
+3.11 shots/90, 7.25 box touches/90, 0.54 xG/90 in 26/27 — above the old
+workbook's own 0.50 final-third constant. Volume is not capped; distribution
+is.
