@@ -319,7 +319,8 @@ def _decimate_path(path, step: float = 0.5):
         bucket = float(samp[0]) // step
         if bucket != last_bucket:
             last_bucket = bucket
-            out.append(samp)
+            # Drop any forensic source tag: the on-disk schema is (t, x, y).
+            out.append(tuple(samp[:3]))
     return out
 
 
@@ -457,7 +458,31 @@ def run_scratch_match(seed: int = 42, verbose: bool = True,
     if verbose:
         print(f"[sim] {result.summary()}  ({time.time() - t0:.1f}s wall, "
               f"{result.match_clock_s:.0f}s match clock)")
+    _dump_raw_path(result)
     return result
+
+
+def _dump_raw_path(result) -> None:
+    """Forensics: write the UN-decimated 5 Hz player path to a side file.
+
+    `replay.json` stores 2 Hz (`_decimate_path`), which can make a legal
+    6 s set-piece run-in look like a single teleport when two writers cover
+    the same window. This dump keeps every sample plus its source, so the
+    two can be told apart offline. Enabled with PLOFA_TRACE_JUMPS=1.
+    """
+    import os as _os
+    if not _os.environ.get("PLOFA_TRACE_JUMPS"):
+        return
+    hp = getattr(result, "full_match_player_path", None)
+    if not hp:
+        return
+    try:
+        with open("tools/diag/_raw_player_path.json", "w",
+                  encoding="utf-8") as f:
+            json.dump(hp.get("path") or {}, f)
+        print("[trace] raw player path -> tools/diag/_raw_player_path.json")
+    except Exception as exc:      # forensics must never fail a match
+        print(f"[trace] raw dump failed: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────

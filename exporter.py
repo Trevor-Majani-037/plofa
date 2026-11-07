@@ -2509,6 +2509,21 @@ class PLOFAExporter:
         self.export_csv(os.path.join(base_path, f"{name}_players.csv"))
         self.export_json(os.path.join(base_path, f"{name}.json"))
 
+        # ── REPLAY SAVE (watch the match after it has run) ──────
+        # pitch_replay needs the in-memory MatchResult (position_log +
+        # full_match_ball_path); once this process exits that data is
+        # gone and the team/player positions cannot be rebuilt from the
+        # JSON timeline. Save it beside the other exports so every
+        # finished fixture is rewatchable with:
+        #   python pitch_replay.py --load <base_path>/replay.json
+        # Failure-isolated: a replay problem must never lose the stats.
+        try:
+            from pitch_replay import build_replay
+            build_replay(self.result).save(os.path.join(base_path, "replay.json"))
+            print(f"   🎬 Replay  → {os.path.join(base_path, 'replay.json')}")
+        except Exception as _replay_exc:
+            print(f"   ⚠️  Replay save skipped: {_replay_exc}")
+
         # ── VISUALIZATIONS ────────────────────────────────────
         self.plot_shot_map(os.path.join(base_path, f"{name}_shot_map.png"))
         self.plot_pass_network(os.path.join(base_path, f"{name}_pass_network.png"))

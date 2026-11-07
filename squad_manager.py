@@ -1558,10 +1558,28 @@ class SubstitutionController:
         if not pool:
             return []
 
+        # ── A KEEPER IS NEVER "THE BEST MAN FOR AN OUTFIELD ROLE" ───────
+        # `adjacent` below is EVERYONE who is not an exact positional match,
+        # and it is sorted by `sub_quality` -- which a backup keeper often
+        # wins on market value. `_pick_sub` then returns `ranked[0]` even
+        # when the quality gate rejected the exact group, so an outfielder's
+        # substitution could bring a second goalkeeper onto the pitch.
+        # Measured in Hartwell 2-2 Thornfield (seed 42): Luca Ferrini (CM)
+        # came off at 80' for Joel Trent (GK), and Trent then stood on the
+        # home goal line for 19 minutes because the keeper code paths only
+        # move the FIRST GK they find (`break`), leaving him frozen at
+        # x=11.9 with 0 m covered while Keano Walsh stayed on.
+        # A keeper may only come on to replace a keeper.
+        pos_of = _position_of
+        wants_gk = bool(want_pos) and "GK" in want_pos
+        if not wants_gk:
+            pool = [p for p in pool if pos_of(p) != "GK"]
+            if not pool:
+                return []
+
         if not want_pos:
             return sorted(pool, key=lambda p: -sub_quality(p, self))
 
-        pos_of = _position_of
         exact = [p for p in pool if pos_of(p) in want_pos]
         adjacent = [p for p in pool if pos_of(p) not in want_pos]
 

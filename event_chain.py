@@ -547,6 +547,41 @@ class BaseChain:
             stats = episode.calculate_distance_stats()
         except Exception:
             return {}
+        # SPRINT BOUTS ARE RE-DERIVED HERE, NOT TAKEN FROM THE EPISODE.
+        #
+        # `calculate_distance_stats` counts a sprint segment per episode and
+        # starts from zero every time, so a run that spans four short chains
+        # collected four sprints, and there is no recovery window between
+        # them. The episode's own count is therefore replaced by the shared
+        # per-player bout machine (see `PositionEngine.advance_sprint_bout`),
+        # which persists across episodes and is the same rule the off-ball
+        # integrator and set-piece travel use. Distance and band times are
+        # untouched: only the *credit* moves.
+        #
+        # Guarded separately from the distance extraction above on purpose: if
+        # the bout machine ever fails, the episode's own counts survive rather
+        # than the whole player's distance being dropped.
+        try:
+            from possession_physics import TICK_S as _TICK_S
+        except Exception:
+            _TICK_S = 0.1
+        bouts: Dict[str, list] = {}
+        try:
+            for row in getattr(episode, "trace", ()) or ():
+                who = getattr(row, "player", None)
+                if not who or who in ("ball", "gk_track", "drift"):
+                    continue
+                s_inc, h_inc = position_engine.advance_sprint_bout(
+                    who, float(getattr(row, "speed_mps", 0.0) or 0.0), _TICK_S)
+                slot = bouts.setdefault(who, [0.0, 0.0])
+                slot[0] += s_inc
+                slot[1] += h_inc
+        except Exception:
+            bouts = {}
+        for player_name, s in stats.items():
+            if player_name in bouts:
+                s["sprint_count"] = bouts[player_name][0]
+                s["high_speed_sprint_count"] = bouts[player_name][1]
         for player_name, s in stats.items():
             position_engine.record_physics_distance(
                 player_name,
@@ -3296,7 +3331,7 @@ class PossessionChain(BaseChain):
                 else:
                     receiver = cls._pick_receiver(
                         players, last_player, x, team_profile,
-                        preferred_positions=["ST", "CF", "LW", "RW", "CAM"],
+                        preferred_positions=["ST", "CF", "LW", "RW", "CAM", "CM", "RB", "LB"],
                         position_engine=position_engine, y=y,
                     )
                 if receiver:
@@ -4391,7 +4426,7 @@ class PossessionChain(BaseChain):
         # (cap 4.4x) so forward preference survives but support/lateral
         # outlets compete properly — less forced verticality, same shape.
         fwd_weight = min(4.4, 1.0 + (x / 105) * 3.4)
-        fwd_pos = preferred_positions or ["CAM", "LW", "RW", "ST", "CF", "CM"]
+        fwd_pos = preferred_positions or ["CAM", "LW", "RW", "ST", "CF", "CM", "LB", "RB", "CDM"]
 
         # Confidence gates how willing the passer is to attempt a pass into a
         # tightly-marked receiver. Low confidence → shy away from marked
@@ -7553,7 +7588,8 @@ class SetPieceChain(BaseChain):
                 # once, honestly.
                 position_engine.advance_to_slots(
                     box, SET_PIECE_JOSTLE_S,
-                    exclude={getattr(taker, "name", None)})
+                    exclude={getattr(taker, "name", None)},
+                    clock_start=float(getattr(state, "match_clock_s", 0.0)))
 
                 # The window then HOLDS the box through the post-corner
                 # integration, so they are not immediately dragged back
@@ -7586,7 +7622,8 @@ class SetPieceChain(BaseChain):
             rx, ry = _sup
             position_engine.advance_to_slots(
                 {receiver.name: _sup}, SET_PIECE_JOSTLE_S,
-                exclude={getattr(taker, "name", None)})
+                exclude={getattr(taker, "name", None)},
+                clock_start=float(getattr(state, "match_clock_s", 0.0)))
 
         # ── 3D FLIGHT ──────────────────────────────────────────────
         # The ball always leaves the taker's boot. Delivery quality is encoded
@@ -8146,9 +8183,12 @@ class SetPieceChain(BaseChain):
 
     @classmethod
     def _build_freekick_wall(cls, fk_x, fk_y, def_players, attacks_right,
-                             position_engine, minute, gk):
-        """Place the wall. Returns (wall_mps, gk_mp, reached) where `wall_mps`
-        are MovingPlayers at the positions they could actually reach."""
+                             position_engine, minute, gk,
+                             clock_start=None):
+        """Place the wall. Returns (wall_mps, gk_mp, reached, setup_s) where
+        `wall_mps` are MovingPlayers at the positions they could actually
+        reach, and `setup_s` is how long the clock must spend walking them
+        there."""
         import math as _m
 
         goal_x = 105.0 if attacks_right else 0.0
@@ -8180,6 +8220,12 @@ class SetPieceChain(BaseChain):
         # mean the men are not actually standing together.
         n = len(men)
         reach_log = []
+        targets = {}
+        need_s = 0.0
+        # Centre the wall on the ball-to-near-post line, then fan the men out
+        # along the face at shoulder width. For 4 men this presents ~1.65 m
+        # of face; the target is a flat line, and a wide spread here would
+        # mean the men are not actually standing together.
         for i, p in enumerate(men):
             lateral = (i - (n - 1) / 2.0) * cls.WALL_SPACING_M
             tx = fk_x + ux * cls.WALL_DISTANCE_M + px * lateral
@@ -8199,13 +8245,14 @@ class SetPieceChain(BaseChain):
                     # Cannot get there: stop at the edge of what he can cover.
                     scale = budget / d
                     tx, ty = sx + (tx - sx) * scale, sy + (ty - sy) * scale
-                reach_log.append(_m.hypot(tx - sx, ty - sy))
-                # set_piece_place, NOT record_touch: record_touch applies the
-                # wide-role flank hold and the GK box anchor after writing,
-                # and those corrections dismantle a wall (see
-                # PositionEngine.set_piece_place for the measurement).
-                position_engine.set_piece_place(p.name, tx, ty, minute)
-            wall_mps.append(cls._moving_player(p, position_engine))
+                _ran = _m.hypot(tx - sx, ty - sy)
+                reach_log.append(_ran)
+                targets[p.name] = (tx, ty)
+                # The wall takes as long as its slowest member needs, capped
+                # at the real organisation window. That is the time the clock
+                # must spend, because the men now RUN to the wall instead of
+                # being written onto it in zero seconds (Fix 11d).
+                need_s = max(need_s, _ran / max(top_speed, 1e-6))
 
         # Keeper sets his line. Against a wall a keeper does NOT stand on his
         # goal line — he comes off it and stands on the bisector of the angle
@@ -8213,26 +8260,40 @@ class SetPieceChain(BaseChain):
         # both the near post and the far post past the wall's edge. The
         # bisector from the BALL to the goal-mouth centre is the same line by
         # construction, so the keeper stands on it, just short of his line.
-        gk_mp = None
+        gk_tgt = None
         if gk is not None:
             gk_line_x = 101.0 if attacks_right else 4.0
-            # Bisector: from the ball to the centre of the goal mouth.
             bcx, bcy = fk_x, fk_y
             gcx, gcy = gk_line_x, 34.0
             bl = _m.hypot(gcx - bcx, gcy - bcy) or 1.0
             bux, buy = (gcx - bcx) / bl, (gcy - bcy) / bl
-            # Stand 2.5 m off his line, toward the ball, i.e. forward of the
-            # posts but behind the wall's back (the wall is 9.15 m out).
             gk_tx = gcx - bux * 2.5
             gk_ty = max(6.0, min(62.0, gcy - buy * 2.5))
+            gk_tgt = (gk_tx, gk_ty)
             if position_engine is not None:
+                targets[gk.name] = gk_tgt
                 try:
-                    position_engine.set_piece_place(
-                        gk.name, gk_tx, gk_ty, minute)
+                    _gx, _gy = position_engine.get_position(gk.name)
+                    need_s = max(need_s, _m.hypot(gk_tx - _gx,
+                                                  gk_ty - _gy) / 7.0)
                 except Exception:
                     pass
-            gk_mp = cls._moving_player(gk, position_engine)
-        return wall_mps, gk_mp, reach_log
+
+        # One synchronous run-in for the whole arrangement: the delivery below
+        # is resolved in this same call, so they must genuinely be there by
+        # then — but the broadcast has to SEE them get there. `set_piece_place`
+        # wrote the positions exactly in 0.0 s, which is the same class of
+        # defect as the corner box: a 9 s organisation window performed as a
+        # teleport (measured steps of 29 m in 0.2 s for four men at once).
+        if (position_engine is not None and targets and clock_start is not None
+                and need_s > 0.05):
+            position_engine.advance_to_slots(
+                targets, min(need_s, cls.WALL_SETUP_S),
+                clock_start=float(clock_start), arrival_jitter=False)
+
+        wall_mps = [cls._moving_player(p, position_engine) for p in men]
+        gk_mp = cls._moving_player(gk, position_engine) if gk is not None else None
+        return wall_mps, gk_mp, reach_log, min(need_s, cls.WALL_SETUP_S)
 
     @classmethod
     def _freekick_chain(cls, minute, att_team, def_team,
@@ -8299,9 +8360,15 @@ class SetPieceChain(BaseChain):
             # envelope AND the wall's swept blocker envelope
             # (`geometry_engine.resolve_shot`), so a ball driven into the
             # wall is BLOCKED and one lifted over the top is not.
-            wall_mps, gk_mp, _reach = cls._build_freekick_wall(
+            wall_mps, gk_mp, _reach, _wall_setup_s = cls._build_freekick_wall(
                 fk_x, fk_y, def_players, attacks_right, position_engine,
-                minute, gk)
+                minute, gk,
+                clock_start=float(getattr(state, "match_clock_s", 0.0)))
+            # The clock has to pay for the organisation it just watched.
+            if _wall_setup_s > 0.0:
+                result.sequence_duration_s = max(
+                    float(getattr(result, "sequence_duration_s", 0.0) or 0.0),
+                    float(_wall_setup_s))
 
             fk_episode = PossessionEpisode()
             taker_mp = cls._moving_player(taker, position_engine)

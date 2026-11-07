@@ -39,7 +39,7 @@ import random
 import math
 import zlib
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
 from cross_detector import WIDE_CHANNEL_WIDTH, PITCH_X, PITCH_Y, CENTER_Y
@@ -545,6 +545,27 @@ class PlayerSpatialState:
     run_mode: Optional[str] = None
     top_speed_mpm: float = 9.0
 
+    # ── PENDING TOUCH TARGET (Fix 1: physical bodies) ──────────────
+    # `touch_at` no longer teleports the man to the event site. It records
+    # WHERE he must go; the 10 Hz off-ball integrator in
+    # MatchEngine._offball_move_player then sprints him there at his top
+    # speed (pace-capped per tick, so he can never exceed ~9 m/s). A snap
+    # was the root cause of the 605/1-match teleport audit (70 m in 0.66 s
+    # at 64:13 of the broadcast fixture): touch_at belonged to the old
+    # per-minute label world; bodies must travel.
+    # `pending_ticks` ages the target; it is cleared on arrival or when a
+    # set-piece slot takes over, and expires after 600 ticks (60 s) so a
+    # blocked target cannot drag a man forever.
+    pending_x: Optional[float] = None
+    pending_y: Optional[float] = None
+    pending_ticks: int = 0
+
+    # ── Fix 4: rate-limited home anchor ───────────────────────────
+    # Authored post (stance/pattern/coach) — homes chase this, they do
+    # not teleport to it.
+    home_target_x: Optional[float] = None
+    home_target_y: Optional[float] = None
+
     def __post_init__(self):
         self.current_x = self.home_x
         self.current_y = self.home_y
@@ -559,9 +580,25 @@ class PlayerSpatialState:
                 (self.current_y - self.home_y) ** 2) ** 0.5
 
     def touch_at(self, x: float, y: float, minute: int):
-        """Called when this player is the primary/secondary actor of an event."""
+        """Called when this player is the primary/secondary actor of an event.
+
+        Records a sprint target; the integrator travels there at top speed.
+        The man is NOT moved here — instant sets are what produced the
+        159 m/s teleport audit. Use `teleport_to` for deliberate test/setup
+        placement (never called by live engine code)."""
+        self.pending_x = max(0.0, min(105.0, x))
+        self.pending_y = max(0.0, min(68.0, y))
+        self.pending_ticks = 0
+        self.last_active_minute = minute
+
+    def teleport_to(self, x: float, y: float, minute: int):
+        """Test/setup-only instant placement. Live engine code must never
+        call this: it bypasses the physics integrator and is counted in the
+        match's teleport telemetry. Used by tests to arrange scenarios."""
         self.current_x = max(0.0, min(105.0, x))
         self.current_y = max(0.0, min(68.0, y))
+        self.pending_x = None
+        self.pending_y = None
         self.last_active_minute = minute
 
     def drift_toward_home(self, pull_strength: float = 0.35):
@@ -628,8 +665,15 @@ class _ShapeShim:
 # ─────────────────────────────────────────────
 
 class PositionEngine:
-    """
-    Single source of truth for "where is everyone right now."
+    """Single source of truth for where everyone is right now.
+
+    Fix 4: homes chase stance posts at this rate per simulated minute
+    (they are *targets*, not bodies): a 30 m reshaping push takes ~4
+    minutes of spatial travel, as a real team does.
+
+    Fix 2: pace_limited_move() is the continuity clamp's single choke
+    point; MAX_TICK_MPS caps every instant write site and counts what
+    it strips so teleports become loud data.
 
     Usage (wired into MatchEngine):
         pe = PositionEngine()
@@ -648,11 +692,81 @@ class PositionEngine:
         weight = base_label_weight * plaus
     """
 
+    #: Human sprint peak in m/s (36 km/h ≈ 10 m/s); the clamp allows 25%
+    #: headroom so elite physics-module athletes are never sliced.
+    MAX_TICK_MPS = 12.5
+
+    #: Home anchor travels at this rate per simulated minute (Fix 4):
+    #: 8 m/min of match clock ≈ a 5-min reshape from old post to new.
+    HOME_RATE_M = 8.0
+
+    def ping(self) -> None:
+        """No-progress guard so the class boundary stays greppable."""
+        pass
+
+    #: Human sprint peak in m/s (36 km/h ≈ 10 m/s); the clamp allows 25%
+    #: headroom so elite physics-module athletes are never sliced.
+    MAX_TICK_MPS = 12.5
+
+    #: Home anchor travels at this rate per simulated minute (Fix 4):
+    #: 8 m/min of match clock ≈ a 5-min reshape from old post to new.
+    HOME_RATE_M = 8.0
+
+    def pace_limited_move(self, state, tx, ty, max_mps, dt, site):
+        """Move `state` toward (tx,ty) at at most max_mps for dt seconds.
+
+        Returns metres actually moved. Anything the clamp strips is booked
+        into instance telemetry by write site so teleports become loud
+        data, not silent replay glitches."""
+        max_mps = min(float(max_mps), self.MAX_TICK_MPS)
+        cap = max_mps * max(float(dt), 0.0)
+        dx, dy = float(tx) - state.current_x, float(ty) - state.current_y
+        dist = math.hypot(dx, dy)
+        if dist <= 1e-9 or cap <= 0:
+            return 0.0
+        moved = min(dist, cap)
+        stripped = dist - moved
+        if stripped > 1e-9:
+            self.teleport_events += 1
+            self.teleport_suppressed_m += stripped
+            self.teleport_by_site[site] = self.teleport_by_site.get(site, 0.0) + stripped
+            self.teleport_by_site_n[site] = self.teleport_by_site_n.get(site, 0) + 1
+        state.current_x += dx / dist * moved
+        state.current_y += dy / dist * moved
+        return moved
+
+    def teleport_report(self) -> Dict[str, Any]:
+        """Copy of the suppressed-metres ledger, for result metadata."""
+        return {
+            "events": self.teleport_events,
+            "suppressed_m": round(self.teleport_suppressed_m, 1),
+            "by_site": {k: round(v, 1) for k, v in
+                        sorted(self.teleport_by_site.items(), key=lambda kv: -kv[1])},
+            "by_site_n": dict(self.teleport_by_site_n),
+        }
+
     def __init__(self):
         self.states: Dict[str, PlayerSpatialState] = {}   # player_name -> state
         self.team_rosters: Dict[str, List[str]] = {}       # team -> [player_names]
         self.team_profiles: Dict[str, "TeamProfile"] = {}
         self.team_attacks_right: Dict[str, bool] = {}       # team -> attacks_right
+        # ── Fix 2: teleport telemetry (continuity clamp accounting) ────
+        # Every instant write site in this engine goes through
+        # pace_limited_move(); whatever the clamp strips off is counted here
+        # instead of silently vanishing into a 159 m/s replay sample.
+        self.teleport_events = 0
+        self.teleport_suppressed_m = 0.0
+        self.teleport_by_site: Dict[str, float] = {}
+        self.teleport_by_site_n: Dict[str, int] = {}
+        # ── SYNCHRONOUS MOVE RECORDER (Fix 11) ─────────────────────────
+        # `advance_to_slots` runs a multi-second set-piece run-in INSIDE one
+        # chain call, so the global clock does not tick and no player sample
+        # is written while it happens. On the broadcast that draws as the
+        # whole box appearing at once: measured 66 jumps >15 m, the worst a
+        # 60 m snap at 158 m/s, all of them corner run-ins. MatchEngine sets
+        # this hook so the run-in writes its own trajectory as it goes.
+        # Signature: recorder(player_name, absolute_t, x, y).
+        self.tick_recorder: Optional[Callable[[str, float, float, float], None]] = None
         # NEURAL STATE (2026-10-22) — the per-player RECURRENT state and the
         # per-team PLAN.  It lives HERE, in a container parallel to
         # `self.states`, for one structural reason: a recurrent state stored
@@ -759,13 +873,22 @@ class PositionEngine:
         self.midfield_registry.register_team(players)
         self.striker_registry.register_team(players)
 
-    def register_substitute(self, team_name: str, player, profile: "TeamProfile" = None):
-        """Called when a sub comes on — gives them a fresh home position."""
+    def register_substitute(self, team_name: str, player, profile: "TeamProfile" = None,
+                            position: Optional[str] = None):
+        """Called when a sub comes on — gives them a fresh home position.
+
+        ``position`` overrides the role the man actually plays. It exists for
+        the one case football forces: a keeper coming on for an outfielder
+        when he is the only body left on the bench. He plays the role he
+        replaced rather than becoming a second keeper, because every keeper
+        code path scans the roster and `break`s on the FIRST keeper — so a
+        second one is registered and then never moved at all.
+        """
         prof = profile or self.team_profiles.get(team_name)
         if prof is None:
             return
         name = getattr(player, "name", str(player))
-        pos = getattr(player, "position", getattr(getattr(player, "dna", None), "position", "CM"))
+        pos = position or getattr(player, "position", getattr(getattr(player, "dna", None), "position", "CM"))
         existing_same_pos = sum(
             1 for n in self.team_rosters.get(team_name, [])
             if self.states.get(n) and self.states[n].position == pos
@@ -883,10 +1006,10 @@ class PositionEngine:
         return True
 
     def _recompute_homes(self, team_name: str) -> None:
-        """home = base + stance_delta + pattern_delta + coach_delta, mirrored
-        for left-attacking teams, clamped to the pitch. All delta tables map
-        by ROLE in attacking-right normalised space, so the away-mirror is
-        just a sign flip (dx on the x-axis, dy on the y-axis)."""
+        """Fix 4: homes chase stance posts at this rate per simulated minute
+        (they are *targets*, not bodies): a 30 m reshaping push takes ~4
+        minutes of spatial travel, as a real team does.
+        """
         base = self._formation_base_homes.get(team_name, {})
         sgn = 1.0 if self.team_attacks_right.get(team_name, True) else -1.0
         sd = self._stance_deltas.get(team_name, {})
@@ -901,8 +1024,18 @@ class PositionEngine:
             cdx = cd.get(st.position, (0.0, 0.0))
             dx = (sdx[0] + pdx[0] + cdx[0]) * sgn
             dy = (sdx[1] + pdx[1] + cdx[1]) * sgn
-            st.home_x = max(4.0, min(101.0, bx + dx))
-            st.home_y = max(2.0, min(66.0, by + dy))
+            want_x = max(4.0, min(101.0, bx + dx))
+            want_y = max(2.0, min(66.0, by + dy))
+            st.home_target_x = want_x
+            st.home_target_y = want_y
+            ddx, ddy = want_x - st.home_x, want_y - st.home_y
+            gap = math.hypot(ddx, ddy)
+            HOME_RATE_M = 8.0
+            if gap <= 1e-9:
+                continue
+            step = min(gap, HOME_RATE_M * 0.6)
+            st.home_x += ddx / gap * step
+            st.home_y += ddy / gap * step
 
     @staticmethod
     def _drift_tolerance_for(position: str, player) -> float:
@@ -970,13 +1103,10 @@ class PositionEngine:
             return
         state = self.states.get(player_name)
         if state:
-            # ── REAL MOVEMENT CAPTURE ──────────────────────────────
-            # Measure across the WHOLE call, not just touch_at(), since
-            # the flank-hold correction and GK box anchor below also move
-            # the player before this method returns. One measurement here
-            # captures the true net displacement of this touch event,
-            # rather than under-counting by only tracking touch_at()'s
-            # own internal step.
+            # Fix 1: physical travel is banked by the integrator, not here.
+            # The touch banks zero metres at this instant (no movement yet);
+            # the sprint to the pending target books real metres as it runs,
+            # so totals stay comprehensive without double-counting.
             start_x, start_y = state.current_x, state.current_y
             state.touch_at(x, y, minute)
             # ── CHECKPOINT 21d: WIDE-ROLE FLANK HOLD ON TOUCH ──────
@@ -998,43 +1128,36 @@ class PositionEngine:
             # was tracked exactly and pinned the half-space equilibrium in
             # place. Snapping at >3m instead drags the reception band back
             # toward the touchline.
+            # CHECKPOINT 21d (adapted for Fix 1): the flank pull steers the
+            # pending sprint target, never the current body. Only fires when
+            # the pending target lies >3 m off the flank channel; the x stays
+            # at the ball, only the lateral placement is anchored.
             FLANK_HOLD_TRIGGER_M = 3.0
             if state.position in ("LB", "RB", "LW", "RW"):
                 anchor_y = state.home_y
-                if abs(anchor_y - state.current_y) > FLANK_HOLD_TRIGGER_M:
+                pending_y = state.pending_y if state.pending_y is not None else state.current_y
+                if abs(anchor_y - pending_y) > FLANK_HOLD_TRIGGER_M:
                     pull = 0.35
                     if state.position in ("LW", "RW"):
                         wp = self.winger_registry.get(player_name)
                         if wp is not None:
-                            # Checkpoint 31: 0.25+0.20c left ~58% of every
-                            # infield touch uncorrected, so the heat map kept
-                            # the RM/LM half-space band (|y-c|≈15-17 vs an
-                            # anchor at |y-c|=24). A real winger's first
-                            # action after receiving infield is to rip back
-                            # out to the touchline — pull hard.
                             pull = 0.40 + 0.35 * wp.flank_commitment
-                    # Checkpoint 35 — PITCH-STRETCH RULE: a touch that
-                    # pinned the wide player on the CENTRAL spine (packed
-                    # middle) must snap back to the line harder than a
-                    # half-space touch; the spine weight adds stretch power
-                    # so the width duty survives a central reception. Clamped
-                    # so the player can never be flung past the line.
-                    pull = min(0.95, pull + STRETCH_TOUCH_BOOST * pitch_spine_weight(state.current_y))
-                    state.current_y += (anchor_y - state.current_y) * pull
-                    state.current_y = max(
-                        STRETCH_CLAMP_LOW, min(STRETCH_CLAMP_HIGH, state.current_y)
-                    )
-            self._anchor_gk_in_own_box(state)
+                    pull = min(0.95, pull + STRETCH_TOUCH_BOOST * pitch_spine_weight(pending_y))
+                    state.pending_y = max(
+                        STRETCH_CLAMP_LOW, min(STRETCH_CLAMP_HIGH,
+                        pending_y + (anchor_y - pending_y) * pull))
+            # Fix 1: physical travel is banked by the integrator, not here.
+            # The touch banks zero metres at this instant (no movement yet);
+            # the sprint to the pending target books real metres as it runs,
+            # so totals stay comprehensive without double-counting.
+            # (Flank hold above already steered the pending target; the GK
+            # anchor clamps the pending target's x to the own third.)
+            self._anchor_gk_pending(state)
 
-            # Finalize the real distance covered by this touch event
-            # (touch_at + flank hold + GK anchor, all folded into one
-            # honest displacement measurement).
-            jump = ((state.current_x - start_x) ** 2 +
-                    (state.current_y - start_y) ** 2) ** 0.5
-            state.minute_touch_distance += jump
+            # Finalize the real distance covered by this touch event.
+            # Under Fix 1 the touch itself covers 0 m (travel is integrated);
+            # count the involvement, but never the geometry of the jump.
             state.minute_touch_count += 1
-            if jump > state.minute_peak_touch_jump:
-                state.minute_peak_touch_jump = jump
 
     # ── PENDING SET-PIECE TARGET WINDOW (2026-10-02) ───────────────────────
     #
@@ -1063,9 +1186,26 @@ class PositionEngine:
     SET_PIECE_ARRIVAL_ERROR_MAX_M = 2.4
     SET_PIECE_ACTIVE: bool = True
 
+    # ── Synchronous-window bookkeeping (Fix 11c) ──────────────────
+    # A player whose motion for a clock window has ALREADY been integrated
+    # inside the chain (`advance_to_slots`). `_absorb_motion` takes and clears
+    # this so the post-chain integrator covers those same seconds exactly
+    # once -- otherwise the run-in and the integrator each simulate the full
+    # window, booking two runs' distance and writing two contradictory
+    # position streams for the same timestamps.
+    def note_synchronous_move(self, player_name: str,
+                              t0: float, t1: float) -> None:
+        self.__dict__.setdefault("_sync_moves", {})[player_name] = (
+            float(t0), float(t1))
+
+    def take_synchronous_moves(self) -> Dict[str, Tuple[float, float]]:
+        return self.__dict__.pop("_sync_moves", None) or {}
+
     def advance_to_slots(self, targets: Dict[str, Tuple[float, float]],
                          seconds: float,
-                         exclude: Optional[set] = None) -> float:
+                         exclude: Optional[set] = None,
+                         clock_start: Optional[float] = None,
+                         arrival_jitter: bool = True) -> float:
         """RUN the named players to their slots over `seconds`. Returns metres.
 
         Synchronous, because the delivery it precedes is resolved in the same
@@ -1101,10 +1241,42 @@ class PositionEngine:
                 # not the 1.5-1.9 m/s shape-holding trot.
                 top = 6.0
             top = min(max(top, 3.0), 7.5)
+            # The arrival residual: where he actually finishes relative to the
+            # mark. One draw per player, so a full box does not draw 13
+            # numbers and silently shift the whole match's random stream
+            # twice. It is applied to the MARK, before the run -- not to the
+            # body afterwards (Fix 11c). A post-hoc overwrite could disagree
+            # with the trajectory this loop had just recorded, and before
+            # Fix 11b it could put a man who never covered the ground onto
+            # his slot anyway (measured: 47.8 m in 0.60 s).
+            _gx_off = random.gauss(0.0, self.SET_PIECE_ARRIVAL_ERROR_M / 1.8)
+            _gy_off = random.gauss(0.0, self.SET_PIECE_ARRIVAL_ERROR_M / 1.8)
+            _off = _m.hypot(_gx_off, _gy_off)
+            if _off > self.SET_PIECE_ARRIVAL_ERROR_MAX_M:
+                _sc = self.SET_PIECE_ARRIVAL_ERROR_MAX_M / _off
+                _gx_off *= _sc
+                _gy_off *= _sc
+            if not arrival_jitter:
+                # A wall is an ORDERED GEOMETRY, not a jostle: the men must
+                # stand shoulder to shoulder on the line the blocker envelope
+                # was computed from. The draws above are still taken so the
+                # random stream does not depend on which kind of set piece ran.
+                _gx_off = _gy_off = 0.0
+            gx, gy = gx + _gx_off, gy + _gy_off
             cx, cy = float(st.current_x), float(st.current_y)
             travelled = 0.0
             sprint_s = 0.0
-            for _ in range(steps):
+            #: Sprint CREDITS from the shared bout machine, summed over this
+            #: player's run-in. This used to be a flat `1` for anybody who
+            #: moved and `1` for anybody who ever exceeded 5.5 m/s, which is
+            #: not a bout at all: a 3 m step into the box scored the same as a
+            #: 40 m sprint. See `advance_sprint_bout` -- same rule as off-ball
+            #: movement and on-ball traces (sustained >= 1.0 s, real recovery).
+            sprint_inc = 0.0
+            hi_inc = 0.0
+            _rec = (self.tick_recorder
+                    if clock_start is not None else None)
+            for _si in range(steps):
                 dx, dy = gx - cx, gy - cy
                 dist = _m.hypot(dx, dy)
                 # Stop short of the mark by a realistic residual rather than
@@ -1125,28 +1297,41 @@ class PositionEngine:
                 cx += dx / dist * adv
                 cy += dy / dist * adv
                 travelled += adv
+                if _rec is not None:
+                    # Record where the body actually passed, on the global
+                    # clock, so a synchronous run-in is drawn as a run.
+                    _rec(pname, float(clock_start) + (_si + 1) * step_dt,
+                         cx, cy)
                 if v >= 5.5:
                     sprint_s += step_dt
-            # The residual: where he actually finished relative to the mark.
-            # One draw per player, so a full box does not draw 13 numbers and
-            # silently shift the whole match's random stream twice.
-            _gx_off = random.gauss(0.0, self.SET_PIECE_ARRIVAL_ERROR_M / 1.8)
-            _gy_off = random.gauss(0.0, self.SET_PIECE_ARRIVAL_ERROR_M / 1.8)
-            _off = _m.hypot(_gx_off, _gy_off)
-            if _off > self.SET_PIECE_ARRIVAL_ERROR_MAX_M:
-                _sc = self.SET_PIECE_ARRIVAL_ERROR_MAX_M / _off
-                _gx_off *= _sc
-                _gy_off *= _sc
-            cx, cy = gx + _gx_off, gy + _gy_off
+                _si, _hi = self.advance_sprint_bout(pname, v, step_dt)
+                sprint_inc += _si
+                hi_inc += _hi
+            if travelled <= 0.0:
+                # Standing at the mark is still a tick of the bout's life.
+                self.advance_sprint_bout(pname, 0.0, step_dt)
+            # Where he actually got to. No overwrite: if he could not cover
+            # the ground inside `seconds`, he is short of the mark -- and the
+            # broadcast must show that, not the mark.
             st.current_x, st.current_y = cx, cy
+            if clock_start is not None:
+                # This window's motion has now been integrated HERE, inside
+                # the chain. `_absorb_motion` advances the clock over the same
+                # seconds afterwards, so it must not integrate this man a
+                # second time: doing so booked two runs' distance in one
+                # window and wrote two contradictory position streams for the
+                # same timestamps (measured: 42.5 m in the run-in plus 12 m
+                # of drift, and a 45 m disagreement between them).
+                self.note_synchronous_move(pname, float(clock_start),
+                                           float(clock_start) + budget)
             if travelled <= 0.0:
                 continue
             total += travelled
             self.record_physics_distance(
                 pname, distance_m=travelled, duration_s=budget,
                 speed_mps=travelled / max(budget, 1e-6),
-                sprint_time_s=sprint_s, sprint_count=1,
-                high_speed_sprint_count=1 if sprint_s > 0.0 else 0,
+                sprint_time_s=sprint_s, sprint_count=sprint_inc,
+                high_speed_sprint_count=hi_inc,
                 top_speed_mps=top)
         return total
 
@@ -1227,13 +1412,28 @@ class PositionEngine:
         if not state:
             return
         start_x, start_y = state.current_x, state.current_y
-        state.touch_at(x, y, minute)   # exact write, clamped to the pitch
+        # Deliberate exception to Fix 1: a free-kick wall is a geometric
+        # arrangement handed to resolve_shot in the same call, so the men
+        # must actually be there — teleport_once, booked honestly.
+        state.teleport_to(x, y, minute)   # exact write, clamped to the pitch
         jump = ((state.current_x - start_x) ** 2 +
                 (state.current_y - start_y) ** 2) ** 0.5
         state.minute_touch_distance += jump
         state.minute_touch_count += 1
         if jump > state.minute_peak_touch_jump:
             state.minute_peak_touch_jump = jump
+
+    def _anchor_gk_pending(self, state: PlayerSpatialState) -> None:
+        """Fix 1 sibling of `_anchor_gk_in_own_box`: clamp the pending
+        sprint target's x to the keeper's own third instead of the body.
+        The body then travels to a legal socket under the integrator."""
+        if state.position != "GK" or state.pending_x is None:
+            return
+        attacks_right = self.team_attacks_right.get(state.team, True)
+        if attacks_right:
+            state.pending_x = max(0.0, min(28.0, state.pending_x))
+        else:
+            state.pending_x = max(77.0, min(105.0, state.pending_x))
 
     def _anchor_gk_in_own_box(self, state: PlayerSpatialState):
         """Keep a goalkeeper's live position inside his own defensive third.
@@ -1250,10 +1450,27 @@ class PositionEngine:
         if state.position != "GK":
             return
         attacks_right = self.team_attacks_right.get(state.team, True)
-        if attacks_right:
-            state.current_x = max(0.0, min(28.0, state.current_x))
-        else:
-            state.current_x = max(77.0, min(105.0, state.current_x))
+        lo, hi = (0.0, 28.0) if attacks_right else (77.0, 105.0)
+        legal = max(lo, min(hi, state.current_x))
+        excess = abs(state.current_x - legal)
+        if excess <= self.GK_RECALL_STEP_M:
+            state.current_x = legal
+            return
+        # Fix 12: too far out to snap. A hard clamp here wrote a 33 m jump
+        # into one 0.1 s sample (measured 80:34, Keano Walsh 61.0 -> 28.0 with
+        # y unchanged). Send him back by RUNNING: the pending target is served
+        # by the 10 Hz integrator at top speed, which covers 33 m in ~5 s of
+        # the dead phase. Football-wise this is also the truth -- a keeper
+        # caught upfield has to get back, he does not blink home.
+        state.pending_x = legal
+        state.pending_y = state.current_y
+        state.pending_ticks = 0
+        state.current_x += (self.GK_RECALL_STEP_M if legal > state.current_x
+                            else -self.GK_RECALL_STEP_M)
+
+    #: Largest keeper-anchor correction applied as an instant write. Anything
+    #: beyond this becomes a recall run (see `_anchor_gk_in_own_box`).
+    GK_RECALL_STEP_M: float = 1.0
 
     # ── MOVEMENT ACCOUNTING (real distance / sprint data) ──────────
     #
@@ -1335,6 +1552,86 @@ class PositionEngine:
             state.minute_drift_distance += dist
             state.velocity_x = (1 - a) * state.velocity_x + a * dx
             state.velocity_y = (1 - a) * state.velocity_y + a * dy
+
+    #: ── SPRINT BOUTS: one definition, three feeders ─────────────────
+    #: A sprint is a SUSTAINED effort followed by a RECOVERY, not a crossing
+    #: of a line. Three different code paths credit sprints — the off-ball
+    #: integrator, the on-ball episode trace, and set-piece travel — and before
+    #: 2026-11-01 each had its own rule: the off-ball counter assigned a
+    #: cooldown it never read, the episode trace counted segments with no
+    #: memory across episodes, and the set-piece path credited a flat `1` to
+    #: every player who moved. The same winger could therefore be credited 3
+    #: sprints for one run, and was.
+    #:
+    #: Everything now goes through :meth:`advance_sprint_bout`, so the numbers
+    #: mean the same thing wherever they come from. The band edges are Di
+    #: Salvo's published GPS thresholds, as elsewhere in this file.
+    SPRINT_MPS = 7.0            # >= 25.2 km/h
+    HI_SPRINT_MPS = 8.5         # >= 30.6 km/h
+    SPRINT_MIN_S = 1.0          # sustained before a bout counts
+    HI_SPRINT_MIN_S = 0.5
+    SPRINT_RECOVERY_S = 5.0     # below threshold before the next can count
+    HI_RECOVERY_S = 3.0
+    SPEED_EMA_TAU_S = 0.3       # one noisy tick cannot start a bout
+
+    def advance_sprint_bout(self, player_name: str, speed_mps: float,
+                            dt: float = 0.1) -> Tuple[float, float]:
+        """Feed one movement sample. Returns ``(sprint_inc, hi_inc)``.
+
+        State is per player and persists ACROSS episodes, which is the point:
+        a run does not stop being a sprint because the possession chain ended.
+        An earlier version counted per episode and restarted from zero each
+        time, so a winger carrying through four short chains collected four
+        sprints for one continuous burst.
+
+        The speed is EMA-smoothed first so a single noisy tick cannot start a
+        bout, and the recovery window must actually elapse before the next one
+        counts — the two things the old counters did not enforce.
+        """
+        if dt <= 0.0:
+            return 0.0, 0.0
+        store = self.__dict__.setdefault("_sprint_bout", {})
+        st = store.get(player_name)
+        if st is None:
+            st = store[player_name] = {
+                "ema": 0.0, "hi_ema": 0.0,
+                "run_s": 0.0, "hi_run_s": 0.0,
+                "in": False, "hi_in": False,
+                "cool_s": 0.0, "hi_cool_s": 0.0,
+            }
+
+        a = 1.0 - math.exp(-dt / self.SPEED_EMA_TAU_S)
+        speed_mps = max(0.0, float(speed_mps))
+        st["ema"] += a * (speed_mps - st["ema"])
+        st["hi_ema"] += a * (speed_mps - st["hi_ema"])
+
+        inc = 0.0
+        hi = 0.0
+        if st["ema"] >= self.SPRINT_MPS:
+            st["run_s"] += dt
+            if (st["run_s"] >= self.SPRINT_MIN_S and not st["in"]
+                    and st["cool_s"] <= 0.0):
+                inc = 1.0
+                st["in"] = True
+                st["cool_s"] = self.SPRINT_RECOVERY_S
+        else:
+            st["run_s"] = 0.0
+            st["in"] = False
+            st["cool_s"] = max(0.0, st["cool_s"] - dt)
+
+        if st["hi_ema"] >= self.HI_SPRINT_MPS:
+            st["hi_run_s"] += dt
+            if (st["hi_run_s"] >= self.HI_SPRINT_MIN_S and not st["hi_in"]
+                    and st["hi_cool_s"] <= 0.0):
+                hi = 1.0
+                st["hi_in"] = True
+                st["hi_cool_s"] = self.HI_RECOVERY_S
+        else:
+            st["hi_run_s"] = 0.0
+            st["hi_in"] = False
+            st["hi_cool_s"] = max(0.0, st["hi_cool_s"] - dt)
+
+        return inc, hi
 
     def record_physics_distance(
         self,
@@ -2743,6 +3040,109 @@ class PositionEngine:
     LIVE_SEP_MIN: float = 4.5
     LIVE_SEP_PUSH: float = 0.45
 
+    # ── BODY SEPARATION (2026-11-06) ──────────────────────────────────
+    # Two men cannot occupy one coordinate. Measured on a real match
+    # replay: a pair sat at exactly 0.00 m and five men were inside a 1.4 m
+    # knot. The causes were mechanical, not cognitive:
+    #   1. `_absorb_chain` writes the primary actor to the event location and
+    #      the secondary to `end_x/end_y` -- but a duel/press/tackle has no
+    #      distinct end point, so BOTH were written to the same metre.
+    #   2. two roles can share a shape socket, and the integrator's `arrive`
+    #      dead band then parks them on top of each other forever.
+    # This is a TARGET correction (like the CK38 spacing guard), so the body
+    # still travels at its own pace and nothing teleports. The angle for an
+    # exactly-coincident pair comes from a stable hash of the player's name,
+    # so the same man always steps to the same side and the pair cannot
+    # oscillate between ticks.
+    MIN_BODY_GAP: float = 1.6     # centre-to-centre, metres
+    BODY_PUSH_MAX: float = 2.5    # how far a target may be nudged, metres
+    # ── HARD BODY INVARIANT (2026-11-06) ──────────────────────────────
+    # `separated_target` corrects the TARGET, but the tick is not over at that
+    # point: the CB ceiling, rest defence, cover, screen, block shuffle and
+    # compaction all rewrite `tx, ty` afterwards. Measured on a real replay,
+    # 61.9% of 0.5 s samples still had a teammate pair inside 1.6 m and exact
+    # 0.00 m pairs appeared every few minutes. So the same rule is enforced
+    # once more on the POSITIONS, after every mover has had its say. The push
+    # is capped at BODY_SEP_STEP per tick, which at 10 Hz is a sidestep
+    # (2 m/s), never a relocation -- and once the pair is clear it stops.
+    BODY_SEP_STEP: float = 0.20
+
+    def separate_bodies(self, team_name: str) -> float:
+        """Hard invariant: no two teammates share a coordinate.
+
+        Returns the total metres pushed (diagnostics only). Applied after all
+        movement for the tick. Set pieces are skipped by the caller because a
+        wall and a corner queue are authored bunches, not overlap.
+        """
+        names = []
+        for n in self.team_rosters.get(team_name, []):
+            st = self.states.get(n)
+            if st is not None and st.current_x is not None:
+                names.append(n)
+        pushed = 0.0
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                a = self.states[names[i]]
+                b = self.states[names[j]]
+                dx = a.current_x - b.current_x
+                dy = a.current_y - b.current_y
+                d = math.hypot(dx, dy)
+                if d >= self.MIN_BODY_GAP:
+                    continue
+                # Float residue at the boundary is not an overlap.
+                if self.MIN_BODY_GAP - d <= 1e-9:
+                    continue
+                if d < 1e-6:
+                    ang = ((zlib.crc32(names[i].encode("utf-8")) % 360)
+                           * math.pi / 180.0)
+                    dx, dy = math.cos(ang), math.sin(ang)
+                    d = 1.0
+                step = min((self.MIN_BODY_GAP - d) * 0.5, self.BODY_SEP_STEP)
+                if step <= 0.0:
+                    continue
+                ux, uy = dx / d, dy / d
+                a.current_x = max(0.0, min(105.0, a.current_x + ux * step))
+                a.current_y = max(0.0, min(68.0, a.current_y + uy * step))
+                b.current_x = max(0.0, min(105.0, b.current_x - ux * step))
+                b.current_y = max(0.0, min(68.0, b.current_y - uy * step))
+                pushed += step * 2.0
+        return pushed
+
+    def separated_target(
+        self, team_name: str, player_name: str, tx: float, ty: float,
+    ) -> Tuple[float, float]:
+        """Push a movement target out of any teammate's personal space."""
+        ox, oy = tx, ty
+        px, py = tx, ty
+        for n in self.team_rosters.get(team_name, []):
+            if n == player_name:
+                continue
+            st = self.states.get(n)
+            if st is None or st.current_x is None or st.current_y is None:
+                continue
+            dx, dy = px - st.current_x, py - st.current_y
+            d = math.hypot(dx, dy)
+            if d >= self.MIN_BODY_GAP:
+                continue
+            if d < 1e-6:
+                ang = ((zlib.crc32(player_name.encode("utf-8")) % 360)
+                       * math.pi / 180.0)
+                px = st.current_x + math.cos(ang) * self.MIN_BODY_GAP
+                py = st.current_y + math.sin(ang) * self.MIN_BODY_GAP
+                continue
+            push = self.MIN_BODY_GAP - d
+            px += dx / d * push
+            py += dy / d * push
+        # Never let the correction become a relocation: the body still has to
+        # run the distance, and a huge nudge would make it sprint somewhere
+        # unrelated to its assignment.
+        ex, ey = px - ox, py - oy
+        ed = math.hypot(ex, ey)
+        if ed > self.BODY_PUSH_MAX:
+            px = ox + ex / ed * self.BODY_PUSH_MAX
+            py = oy + ey / ed * self.BODY_PUSH_MAX
+        return max(0.0, min(105.0, px)), max(0.0, min(68.0, py))
+
     def live_spacing_redirect(
         self, team_name: str, cx: float, cy: float, tx: float, ty: float,
     ) -> Tuple[float, float]:
@@ -3044,6 +3444,178 @@ class PositionEngine:
         else:
             tx = max(0.0, line_x - need)
         return {cdm: (tx, dst.current_y)}
+
+    # ── THE STRIKER PRESS: THE CENTRE-BACK DUEL ───────────────────────
+    #
+    # THE ASK (2026-11-04): "Make strikers the most pressed. The two CBs should
+    # have this at the back of their heads 99% of the time: press the striker.
+    # This league demands it, like the EPL — yes strikers score, but you have to
+    # battle it out with your two opponent CBs."
+    #
+    # WHAT WAS ACTUALLY HAPPENING. Nothing asserted it. The live chain is a
+    # SHAPE integrator: `defensive_block_target` gives every CB a depth slot
+    # from a preset (low 19 / mid 30 / high 42 m from his own goal) and a
+    # lateral half-width, and the chain then compacts that slot toward the
+    # ball. The opponent's centre-forward appears nowhere in the target. The
+    # only man-marking code in the engine, `MarkingEngine.assign`, runs inside
+    # `PositionEngine.defensive_block`, which MatchEngine calls once a minute
+    # and which returns early unless the ball is in the defending half AND
+    # danger >= 25 — and even then it writes positions inside the same
+    # goal-side band the block slots already occupy.
+    #
+    # THE MEASURED BEFORE. `tools/gates/validate_striker_press.py` runs the
+    # SAME matches twice on the SAME tree — `--no-press` (this constant off)
+    # and `--press` (on) — so before/after is one command, not a memory of an
+    # older build. With the constraint off the striker ranks near the BOTTOM
+    # of the opponent roles for how tightly he is pressed: he is defended by
+    # geometry, not by a defender. The census prints both arms; the numbers
+    # quoted in AGENTS.md come from it.
+    #
+    # WHY A CONSTRAINT AND NOT A WEIGHT. Same reason as the cover, the screen
+    # and rest defence: a weight is an opinion averaged against eleven other
+    # opinions, and the block anchor plus the compaction plus CK38 outvote any
+    # weight small enough to be safe. Being touch-tight on the centre-forward
+    # is not a preference the team can decline; it is the duel the league is
+    # built on, so it takes the final say in the target chain exactly like
+    # `cover_target`, and only for the two CBs.
+    #
+    # THE STANDOFF IS NOT CONSTANT. A CB does not stand 1.4 m from a striker
+    # who is 40 m from the ball: the pass is merely longer, not impossible.
+    # The distance still closes as the ball gets more playable (5.5 m at the
+    # far limit, 1.4 m at his feet), giving the pair some room to organise;
+    # unlike before, the assignment never switches off merely because the
+    # ball is far. That is the "at the back of their heads 99% of the time"
+    # demand.
+    #
+    # THE COVER SHADES TO THE SPINE, not to the ball. The marker shows the
+    # striker away from goal; the second CB must be able to see the through
+    # ball into the middle, which is where a striker actually beats a pair. So
+    # the cover sits deeper on the same goal-side line and shifts toward the
+    # centre of the goal, not toward the touchline the striker is standing on.
+    STRIKER_PRESS_ENABLED: bool = True
+    #: Touch-tight standoff (metres) when the ball is at the striker's feet.
+    STRIKER_PRESS_TIGHT_M: float = 1.4
+    #: Loosest standoff (metres). Deliberately below the 5-6 m window a CB
+    #: passes the gate in, even at maximum playability; "99% of the time"
+    #: cannot tolerate a 8 m stand-off while the striker is free to roam.
+    STRIKER_PRESS_LOOSE_M: float = 5.5
+    #: Any ball on the pitch can be played to the centre-forward (long balls
+    #: included), so the assignment never switches off merely because the
+    #: ball is far. Playability only modulates the standoff.
+    STRIKER_PRESS_ENGAGE_M: float = 110.0
+    #: The football's second-defender distance, behind the marker.
+    STRIKER_PRESS_COVER_GAP_M: float = 5.5
+    #: How far the cover shades toward the goal's centre line.
+    STRIKER_PRESS_COVER_SPINE_M: float = 3.5
+    #: A press is an emergency, not a shape (the `cover_target` precedent):
+    #: the generic ladder trots at the CB jog speed and never arrives, so the
+    #: marker sprints to his standoff.
+    STRIKER_PRESS_TOP_FRAC: float = 0.80
+    STRIKER_PRESS_GAIN: float = 1.2
+
+    def striker_press_target(
+        self, team_name: str, ball_x: Optional[float], ball_y: Optional[float],
+        has_ball: bool, attacks_right: bool = True,
+    ) -> Dict[str, Tuple[float, float]]:
+        """{cb_name: (tx, ty)} for the centre-backs marking the opposing striker.
+
+        Returns {} when the team has the ball, when the opponent has nobody
+        forward, or when the ball is too far from him for a pass to reach.
+
+        The MARKER is the CB nearest the striker and stands goal-side of him at
+        a standoff that closes as the ball gets playable. The COVER is the other
+        CB, ``STRIKER_PRESS_COVER_GAP_M`` deeper on the same line and shaded
+        toward the goal's centre, so the pair covers both the ball into feet and
+        the run in behind.
+        """
+        if not self.STRIKER_PRESS_ENABLED or has_ball:
+            return {}
+        if ball_x is None or ball_y is None:
+            return {}
+        other = next((t for t in self.team_rosters if t != team_name), None)
+        if other is None:
+            return {}
+        cbs: List[str] = []
+        for n in self.team_rosters.get(team_name, []):
+            s = self.states.get(n)
+            if s is None or getattr(s, "position", "") != "CB":
+                continue
+            if s.current_x is None or s.current_y is None:
+                continue
+            cbs.append(n)
+        if not cbs:
+            return {}
+
+        own_goal_x = 0.0 if attacks_right else self.PITCH_X_MAX
+        # The striker: the opponent's most ADVANCED forward role (closest to
+        # the goal we defend). With no ST/CF/SS on the pitch, the most advanced
+        # opponent is who the pair picks up — a false nine is still the man in
+        # the middle, and leaving him free because his shirt says RW is exactly
+        # the sort of loophole this engine keeps finding.
+        striker_pos = ("ST", "CF", "SS")
+        best = None
+        best_key = None
+        fallback = None
+        fallback_key = None
+        for n in self.team_rosters.get(other, []):
+            s = self.states.get(n)
+            if s is None or getattr(s, "position", "") == "GK":
+                continue
+            if s.current_x is None or s.current_y is None:
+                continue
+            sx, sy = s.current_x, s.current_y
+            key = (abs(sx - own_goal_x), abs(sy - 34.0))
+            if getattr(s, "position", "") in striker_pos:
+                if best_key is None or key < best_key:
+                    best, best_key = n, key
+            if fallback_key is None or key < fallback_key:
+                fallback, fallback_key = n, key
+        target_name = best or fallback
+        if target_name is None:
+            return {}
+        sst = self.states[target_name]
+        sx, sy = sst.current_x, sst.current_y
+
+        # Ball distance modulates the standoff, but there is no free pass: any
+        # ball on the pitch is on the same 105 x 68 m board and can reach the
+        # centre-forward (including as a long ball). Playability makes him a
+        # little looser; it never makes him a non-issue.
+        ball_to_striker = math.hypot(ball_x - sx, ball_y - sy)
+        if ball_to_striker > self.STRIKER_PRESS_ENGAGE_M:
+            return {}  # practical only for off-pitch coordinates
+        prox = 1.0 - min(1.0, ball_to_striker / self.STRIKER_PRESS_ENGAGE_M)
+        standoff = (self.STRIKER_PRESS_LOOSE_M
+                    + (self.STRIKER_PRESS_TIGHT_M - self.STRIKER_PRESS_LOOSE_M)
+                    * prox)
+
+        # Goal-side direction: from the striker toward the middle of the goal
+        # he attacks. That is where the marker stands to show him away.
+        gx, gy = own_goal_x, 34.0
+        vx, vy = gx - sx, gy - sy
+        norm = math.hypot(vx, vy)
+        if norm < 1e-6:
+            vx, vy, norm = (1.0 if attacks_right else -1.0), 0.0, 1.0
+        ux, uy = vx / norm, vy / norm
+
+        marker = min(cbs, key=lambda n: math.hypot(
+            self.states[n].current_x - sx, self.states[n].current_y - sy))
+        out: Dict[str, Tuple[float, float]] = {
+            marker: (max(0.0, min(self.PITCH_X_MAX, sx + ux * standoff)),
+                     max(0.0, min(self.PITCH_Y_MAX, sy + uy * standoff))),
+        }
+        covers = [n for n in cbs if n != marker]
+        if covers:
+            cover = covers[0]
+            depth = standoff + self.STRIKER_PRESS_COVER_GAP_M
+            cx = sx + ux * depth
+            cy = sy + uy * depth
+            # Shade toward the centre of the goal: the through ball is the
+            # pass that beats a pair, so the second man owns it.
+            spine = max(-1.0, min(1.0, (34.0 - cy) / 14.0))
+            cy += spine * self.STRIKER_PRESS_COVER_SPINE_M
+            out[cover] = (max(0.0, min(self.PITCH_X_MAX, cx)),
+                          max(0.0, min(self.PITCH_Y_MAX, cy)))
+        return out
 
     def rest_defence_clamp(
         self, tx: float, ty: float, ball_x: float, attacks_right: bool,

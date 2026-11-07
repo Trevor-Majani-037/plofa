@@ -80,3 +80,18 @@ alltime.db.pre-*
 .DS_Store
 Thumbs.db
 *.swp
+
+# ── Broadcast: the viewer is source, the data is regenerated ─────────
+# `broadcast.py` scans every frame and writes ~9 MB of keyframes. Those are
+# output, not source, and they are rewritten on every export; committing them
+# would add ~28 MB per match to a repo that already tracks no match output.
+# `replay.json` in particular is the artifact the diagnostics read, so it must
+# keep being regenerated.
+plofa_broadcast/replay.json
+plofa_broadcast/broadcast_data.json
+plofa_broadcast/broadcast_standalone.html
+
+# Raw per-tick player path with source tags (PLOFA_TRACE_JUMPS=1): ~750k
+# samples, written by the jump diagnostics. Evidence, not input.
+tools/diag/_raw_player_path.json
+tools/diag/replay_*.json
