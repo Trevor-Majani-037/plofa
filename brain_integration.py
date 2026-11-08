@@ -133,8 +133,11 @@ def _brain_for_position(position: str):
     NOT silently swallowed: BrainSchemaError propagates loudly so an
     incompatible brain can never masquerade as a valid one.
 
-    IMPORTANT: Position files ALWAYS load FootballBrain. SituationalBrain
-    is ONLY used for explicitly registered players (via name registry).
+    The file's declared shape decides the class: a `weights` block or
+    `sensor_schema: v5_situational` loads as SituationalBrain (this is
+    what the shipped `brains/` set is — ~458 KB per position, arch 3),
+    anything else as a plain FootballBrain (the retired ~62-70 KB T1
+    `v2_role_features` MLPs and the older `v1_24d` files).
     """
     if position in _pos_brain_cache:
         return _pos_brain_cache[position]
@@ -996,6 +999,163 @@ def _nearest_defender_dist(x, y, defenders, position_engine):
         if best is None or dist < best:
             best = dist
     return best
+
+
+# ─────────────────────────────────────────────────────────────
+# DECISION LEDGER — read the brain's choices back out of a match
+# ─────────────────────────────────────────────────────────────
+#
+# event_chain stamps every on-ball decision as metadata["active_brain"].
+# This turns that stamp into the flat ledger the observatory reasons over:
+# one row per decision, carrying the situation (third, pressure, score
+# state) next to the choice, so "does the situation drive the choice?" is
+# a question that can be answered by counting rather than by argument.
+
+# Which executed event belongs to which action family.
+_EVENT_FAMILY = {
+    "PASS": "pass",
+    "PROGRESSIVE_PASS": "pass",
+    "SWITCH_OF_PLAY": "pass",
+    "THROUGH_BALL": "pass",
+    "CROSS_ATTEMPT": "pass",
+    "CROSS_SUCCESS": "pass",
+    "CHANCE_CREATED": "pass",
+    "BIG_CHANCE_CREATED": "pass",
+    "CARRY": "carry",
+    "DRIBBLE_SUCCESS": "carry",
+    "DRIBBLE_FAIL": "carry",
+    "SHOT_ON_TARGET": "shoot",
+    "SHOT_OFF_TARGET": "shoot",
+    "SHOT_BLOCKED": "shoot",
+    "GOAL": "shoot",
+    "OWN_GOAL": "shoot",
+}
+
+# Which action family an intent asks the body to perform.
+_INTENT_FAMILY = {
+    "SHOOT": "shoot",
+    "CARRY": "carry",
+    "DRIBBLE": "carry",
+}
+
+
+def _third_of(x: Optional[float], attacks_right: bool) -> Optional[str]:
+    """Collapse the pitch into the three thirds the report reasons over."""
+    if x is None:
+        return None
+    if attacks_right:
+        if x < 35.0:
+            return "DEF"
+        if x < 70.0:
+            return "MID"
+        return "ATT"
+    if x > 70.0:
+        return "DEF"
+    if x > 35.0:
+        return "MID"
+    return "ATT"
+
+
+def collect_decisions(result_or_timeline: Any, *,
+                      engine: Any = None,
+                      home_team: Optional[str] = None,
+                      away_team: Optional[str] = None,
+                      compact: bool = False) -> List[Dict[str, Any]]:
+    """Return one flat record per on-ball decision in a finished match.
+
+    Accepts a `MatchResult` (or anything with `.timeline`) or a plain list of
+    events.  `engine` is optional but supplies the one thing the timeline
+    cannot: which way each team is attacking, without which "third" is
+    meaningless.
+
+    `compact=True` keeps only the fields the observatory reads, which cuts a
+    season's worth of traces from ~190 MB to ~70 MB.  The dropped fields
+    (`reason`, `decision_quality`, `is_error`) are either a pure function of
+    the intent or unused by any report.
+    """
+    timeline = getattr(result_or_timeline, "timeline", None)
+    if timeline is None and isinstance(result_or_timeline, (list, tuple)):
+        timeline = result_or_timeline
+    timeline = list(timeline or [])
+
+    cfg = getattr(result_or_timeline, "config", None)
+    home = str(home_team or getattr(cfg, "home_team", "") or "")
+    away = str(away_team or getattr(cfg, "away_team", "") or "")
+
+    pe = getattr(engine, "position_engine", None)
+    direction = getattr(pe, "team_attacks_right", None)
+    if not isinstance(direction, dict):
+        direction = {}
+
+    # Pass 1 — running score, so a decision knows the game state it was made in.
+    score_at: Dict[int, Tuple[int, int]] = {}
+    h = a = 0
+    for idx, ev in enumerate(timeline):
+        score_at[idx] = (h, a)
+        name = getattr(ev.event_type, "name", "")
+        if name == "GOAL":
+            if ev.team == home:
+                h += 1
+            elif ev.team == away:
+                a += 1
+        elif name == "OWN_GOAL":
+            if ev.team == home:
+                a += 1
+            elif ev.team == away:
+                h += 1
+
+    records: List[Dict[str, Any]] = []
+    for idx, ev in enumerate(timeline):
+        md = getattr(ev, "metadata", None) or {}
+        brain = md.get("active_brain")
+        if not brain:
+            continue
+
+        team = ev.team or ""
+        event_name = getattr(ev.event_type, "name", "")
+        intent = brain.get("intent") or ""
+        executed = _EVENT_FAMILY.get(event_name)
+        wanted = _INTENT_FAMILY.get(intent, "pass")
+
+        attacks_right = direction.get(team, True)
+        x = ev.location_x
+        zone = _third_of(x, attacks_right)
+
+        hg, ag = score_at.get(idx, (0, 0))
+        if team == home:
+            diff = hg - ag
+        elif team == away:
+            diff = ag - hg
+        else:
+            diff = 0
+        score_state = "leading" if diff > 0 else ("trailing" if diff < 0 else "level")
+
+        pressure = md.get("under_pressure")
+        record = {
+            "team": team,
+            "player": ev.player or "",
+            "minute": float(ev.minute or 0),
+            "clock_s": None if getattr(ev, "match_clock_s", None) is None
+                       else round(float(ev.match_clock_s), 1),
+            "event": event_name,
+            "intent": intent,
+            "confidence": round(float(brain.get("confidence") or 0.0), 3),
+            "family": executed or wanted,
+            "obeyed": (executed == wanted) if executed else None,
+            "zone": zone,
+            "pressure": None if pressure is None else bool(pressure),
+            "score_state": score_state,
+            "outcome": None if getattr(ev, "outcome", None) is None else bool(ev.outcome),
+            "x": None if x is None else round(float(x), 2),
+            "y": None if getattr(ev, "location_y", None) is None else round(float(ev.location_y), 2),
+        }
+        if not compact:
+            record["second"] = getattr(ev, "second", None)
+            record["reason"] = brain.get("reason")
+            record["decision_quality"] = brain.get("decision_quality")
+            record["is_error"] = brain.get("is_error")
+        records.append(record)
+    return records
 
 
 # needed for numpy import in decide()
