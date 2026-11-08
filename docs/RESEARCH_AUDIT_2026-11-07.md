@@ -239,6 +239,54 @@ Shot volume is flat. Goals are flat. **xG falls 37% after matchday 4** — a mod
 landing mid-season, not a change in the football. Any season-long xG table currently mixes
 two different xG engines. **[verified]**
 
+### 6.6 Does the brain's choice track the situation? (measured 2026-11-08)
+
+This is the project's founding question and, until the observatory was repaired, it had
+never been answered with a number. Oxton 1-3 Natrican, seed 123, **1,055 on-ball
+decisions** across 22 players:
+
+| measure | value |
+|---|---|
+| Variety `H(intent)` | 2.856 bits (86% of the 3.32-bit maximum) |
+| Situation → intent `I` | **0.644 bits** (22% of choice entropy explained) |
+| Shuffled null (300 permutations) | mean 0.047 bits, 95th pct 0.060 |
+| **`p`** | **0.0** |
+| Predictability | 41% |
+| Obedience (intent → executed family) | 88% |
+
+**The brain is genuinely situational.** `I = 0.644` bits against a null of `0.047` is not
+a marginal result: every one of 300 shuffles scored below the real value. Per player, 18
+of 21 with enough decisions scored `p <= 0.03`. The two exceptions are informative rather
+than alarming — Robin Fred-Pibar (`p = 0.43`) and Kal Grett (`p = 1.0`, `I = 0`, all 19
+decisions identical), which is what a goalkeeper distributing to a fixed structure should
+look like.
+
+The pooled verdict is *"context-sensitive but noisy (reacts, not consistent)"* at 41%
+predictability. That is the honest description: the situation moves the choice, but the
+same situation does not reliably produce the same choice. Whether that is appropriate
+variation or sampling noise is the next question, and it is now a measurable one.
+
+**And the one thing that is broken: `SHOOT`.** Of 109 shot decisions, **zero** produced a
+shot. All 109 were executed as passes — 101 `PASS`, 6 `PROGRESSIVE_PASS`, 2
+`SWITCH_OF_PLAY`. Every other intent obeys at 88–100%:
+
+| intent | n | obeyed |
+|---|---|---|
+| RECYCLE | 279 | 100% |
+| PROGRESSIVE_PASS | 215 | 100% |
+| CARRY | 135 | 88% |
+| SAFE_PASS | 100 | 100% |
+| PROTECT_POSSESSION | 71 | 100% |
+| THROUGH_BALL | 68 | 100% |
+| SWITCH | 66 | 100% |
+| CROSS | 12 | 100% |
+| **SHOOT** | **109** | **0%** |
+
+The brain asks to shoot ~10 times a match from every third of the pitch (4% of its
+defensive-third decisions, 13% in midfield) and the engine overrides all of it. Either the
+shot gate is too strict, or the brain has learned to ask for shots it cannot have — but
+nobody could see the discrepancy until the ledger existed. **[verified]**
+
 ---
 
 ## 7. The observability chain is severed — the most important finding
@@ -247,11 +295,35 @@ The project's central claim is that decisions are made by a network. The natural
 is *"why did it choose that?"* There are three independent answers, and all three are
 currently broken.
 
-### Break 1 — only two event types record the decision
+### Break 1 — shots are the only decision with no record
 
-`event_chain.py` stamps `metadata["active_brain"]` at exactly two sites: the shot
-(line 2134) and the carry (line 2289). A **pass** — 61,199 of 227,332 events, by far the
-most common action — carries no intent at all. **[read]**
+**Corrected 2026-11-08.** An earlier draft of this section claimed `active_brain` was
+stamped only on shots and carries, and never on passes. That was wrong — it was inferred
+from the export corpus, where *no* event carries metadata, so the absence proved nothing.
+Measured in-process on Oxton 1-3 Natrican (seed 123, 3,358 events):
+
+| event type | events | with `active_brain` | share |
+|---|---|---|---|
+| PASS | 862 | 818 | 95% |
+| PROGRESSIVE_PASS | 72 | 72 | 100% |
+| SWITCH_OF_PLAY | 46 | 46 | 100% |
+| CARRY | 554 | 119 | 21% |
+| SHOT_ON_TARGET | 10 | **0** | **0%** |
+| SHOT_OFF_TARGET | 12 | **0** | **0%** |
+| SHOT_BLOCKED | 1 | **0** | **0%** |
+| GOAL | 3 | **0** | **0%** |
+| **total decisions** | | **1,055** | |
+
+So the ordinary pass — the action the project documents as the brain's main job — is
+recorded faithfully. The hole is the **shot**, which is the highest-value decision on the
+pitch, plus the 435 unstamped carries (which carry a `micro_carry` key and are small
+positional adjustments, so their omission is defensible).
+
+This matters more than a missing field, because the ledger lets the two be compared. Of
+1,055 decisions, **109 chose `SHOOT` and 0 of them produced a shot event** — all 109 were
+executed as passes. The brain asks to shoot roughly ten times a match and the engine
+silently overrides every one. That is invisible in every stat sheet the project produces,
+and it is the single most useful thing the observatory has surfaced so far. **[verified]**
 
 ### Break 2 — the exporter drops metadata
 
@@ -268,28 +340,36 @@ discarded at the last step. **[verified]**
 
 ### Break 3 — `brain_observatory.py` cannot run
 
-Four independent faults in one 730-line file:
+**Fixed 2026-11-08** (commit `e6f28a7`). Eight independent faults in one 730-line file —
+more than the four an earlier draft of this section found:
 
 | Line | Fault |
 |---|---|
 | 254 | `*: int = 300` — parameter name lost, **SyntaxError** |
 | 431 | `r.get('obeyed',?)` — `?` placeholder left in code, **SyntaxError** |
-| 487 | imports `collect_decisions` — **function does not exist** |
+| 265 | `permutations=_,seed=seed` with the comment **`# oh no`** — the per-player loop computed a result and never appended it |
+| 487 | imports `collect_decisions` — **function does not exist** in either module |
+| 494 | calls `_attacks_right_map` — **function does not exist**, so `zone` could not be computed at all |
 | — | `auto_run_match.py:1415` imports `write_trace` — **function does not exist** |
+| — | `auto_run_match.py:1421` passes `write_report(include_log=False)` — **kwarg removed from the signature**, so every season match raised `TypeError` |
+| 379 | `_player_block(thought_limit=...)` — **kwarg not accepted**, so `render_markdown` crashed on any report containing players |
 | 660 | `--save-trace` writes `"decisions": []` with the comment *"empty – will be filled"*, and nothing fills it |
 
-`auto_run_match.py` calls this inside `try/except Exception`, so in production it degrades
-to `⚠️ Brain observatory skipped:` and the season continues. That is exactly why nobody
-noticed: the failure is caught, printed once per match, and looks like a warning.
+The last three are the reason this stayed hidden. Even with the syntax fixed, the report
+could not be written: the renderer crashed on the first player block, and the production
+caller's bad kwarg was swallowed by `try/except Exception`, which degraded to
+`⚠️ Brain observatory skipped:` once per match.
 
 Corroborating evidence that this has been broken for a while: `temp_out.txt` at repo root
 contains a shell traceback from someone trying `import brain_observatory as bo; bo.analyse_m...`,
 and `tests/__pycache__/test_brain_observatory.cpython-314-pytest-9.1.1.pyc` exists while
-`tests/test_brain_observatory.py` does not. **[verified]**
+`tests/test_brain_observatory.py` did not. The file was **untracked** — never committed —
+which is why nothing caught the rot. **[verified]**
 
-**Net effect: zero `*_brain_trace.json` files exist anywhere in the repository.** The
-question "does the brain's choice track the situation?" is currently unanswerable with the
-project's own tools.
+**Net effect (before the fix): zero `*_brain_trace.json` files existed anywhere in the
+repository.** After it, the question is answerable: `I(situation; intent) = 0.644 bits`
+against a shuffled null of `0.047`, `p = 0.0` over 1,055 decisions — the brain's choice
+does track the situation. See §6.6.
 
 ---
 
@@ -449,19 +529,31 @@ directories.
 
 ## 11. What I would do, in order
 
-### Tier 1 — restore the ability to see (half a day)
+### Tier 1 — restore the ability to see — **DONE 2026-11-08, commit `e6f28a7`**
 
-1. **Fix `brain_observatory.py`.** Three edits: `*, n: int = 300`; `'?'` instead of `?`;
-   implement or remove `collect_decisions` and `write_trace`. Add `tests/test_brain_observatory.py`
-   (the `.pyc` proves one existed).
-2. **Make the exporter emit a decision ledger.** Do not dump the full metadata blob into
-   every event — write a compact sidecar: `{minute, player, intent, confidence, zone,
-   pressure, outcome}` per decision. ~40 lines in `exporter.py`, one file per match.
-3. **Stamp `active_brain` on PASS.** It is the most common action and currently the only
-   one with no record.
+1. ~~**Fix `brain_observatory.py`.**~~ **Done.** Eight faults, not three — see §7 Break 3.
+   `collect_decisions()` was written rather than removed; it is the piece the whole tool
+   was missing. `tests/test_brain_observatory.py` added (19 tests, no match simulated).
+2. ~~**Make the exporter emit a decision ledger.**~~ **Done differently, and better.**
+   The ledger is written as a trace sidecar by `write_trace()`, not by the exporter. This
+   keeps the export package unchanged and means the ledger exists for any match, exported
+   or not. `compact=True` drops the three fields nothing reads: 497 KB → 210 KB per match.
+3. ~~**Stamp `active_brain` on PASS.**~~ **Already true — the premise was wrong.** Passes
+   are stamped at 95%; it is **shots** that carry no record (§7 Break 1). Stamping them
+   touches ~10 emitters (open play, headers, penalties, set pieces) and is its own commit.
 
-Until (1)–(3) are done, every claim about brain behaviour in the docs is unverifiable by
-the project's own tooling.
+The question is now answerable by the project's own tooling: see §6.6.
+
+### Tier 1b — close the ledger's last hole (2 hours)
+
+3b. **Stamp `active_brain` on the shot emitters.** `event_chain.py` has ten
+    `EventType.SHOT_*` call sites (6431, 6469, 6497, 6633, 6666, 7910, 7976, 7997, 8402
+    and the penalty path). Until they are stamped, the single most important decision in
+    football is the one decision the ledger cannot see — and §6.6's finding that 109
+    `SHOOT` intents produce 0 shots cannot be traced to a cause.
+3c. **Decide the shot gate.** 109 intents → 0 executions is either a gate that is too
+    strict or a brain that asks for shots it cannot have. `policy_shot_score` with
+    `minimum_shot_score = 0.20` (event_chain.py:2132) is the first place to look.
 
 ### Tier 2 — close the two live football gaps (one day)
 
@@ -505,11 +597,16 @@ the football is recognisably football (84% pass accuracy, 10.7% conversion), the
 architecture is real (recurrent attention over a perceived world), and the documentation is
 better than most commercial codebases. Its weakness is not ambition or skill — it is that
 the instrument has drifted out of calibration with the thing it is trying to measure. The
-brain decides, and then the decision is thrown away before anyone can look at it; the
-season is played, and then half of it is measured with a different xG model than the other
-half; the home team is labelled home, and then treated exactly like the away team. Fix the
-three observability breaks first. Everything else on this list becomes easier to argue
-about once you can see what the network actually did.
+brain decided, and then the decision was thrown away before anyone could look at it; the
+season was played, and then half of it was measured with a different xG model than the
+other half; the home team was labelled home, and then treated exactly like the away team.
+
+As of commit `e6f28a7` the first of those is fixed, and the first honest answer exists:
+`I(situation; intent) = 0.644` bits against a null of `0.047`, `p = 0.0`. The brain is
+situational. But the same ledger shows `SHOOT` obeyed 0 times out of 109 — the one thing
+the network most wants to do is the one thing it is never allowed to do. Fix the remaining
+two calibration gaps (home advantage, xG) and stamp the shot emitters, and the project
+will know what it is measuring.
 
 ---
 
@@ -539,7 +636,52 @@ for f in glob.glob('plofa_output/*/*.json'):
         assert 'metadata' not in e        # 227,332 events, 0 have it
 PY
 
-# observatory (currently fails)
-.venv/Scripts/python.exe brain_observatory.py --home Oxton --away Natrican
-# → SyntaxError: brain_observatory.py, line 254
+# observatory (works as of e6f28a7)
+.venv/Scripts/python.exe brain_observatory.py \
+    --home Oxton --away Natrican --seed 123 --null-test 300 \
+    --out artifacts/brain_reports \
+    --save-trace artifacts/brain_reports/Oxton_vs_Natrican_brain_trace.json
+
+# re-analyse a saved trace without re-simulating (~2 s instead of ~4 min)
+.venv/Scripts/python.exe brain_observatory.py \
+    --from-trace artifacts/brain_reports/Oxton_vs_Natrican_brain_trace.json \
+    --null-test 300
+
+# the ledger's own tests
+.venv/Scripts/python.exe -m pytest tests/test_brain_observatory.py -q
+# → 19 passed
+
+# metadata coverage per event type (the §7 Break 1 table)
+.venv/Scripts/python.exe - <<'PY'
+import collections, json, random
+from datetime import date
+import numpy as np, auto_run_match
+from player_dna import SquadBuilder
+from match_engine import MatchEngine, MatchState, MatchPhase, MatchConfig
+random.seed(123); np.random.seed(123)
+loader = auto_run_match.get_loader()
+raw = {t: loader.build_matchday_squad(t, availability=None)
+       for t in ("Oxton", "Natrican")}
+sq = {t: SquadBuilder.build(team_name=t, starters=r["starters"],
+                            substitutes=r["substitutes"],
+                            team_superstars=r.get("superstars"),
+                            set_piece_takers=r.get("sp_takers"),
+                            soul_assignments=auto_run_match.SOUL_PLAYERS)
+      for t, r in raw.items()}
+hp = auto_run_match._resolve_team_profile("Oxton", raw["Oxton"]["formation"], True, None, "fluid_counter")
+ap = auto_run_match._resolve_team_profile("Natrican", raw["Natrican"]["formation"], False, None, "attacking")
+eng = MatchEngine(MatchConfig(home_team="Oxton", away_team="Natrican",
+                              match_date=date(2026,9,6), matchday=3, season="26/27"), hp, ap)
+for t in sq:
+    eng.set_squad(t, sq[t]["starters"], sq[t]["substitutes"])
+res = eng.simulate()
+tot, stamped = collections.Counter(), collections.Counter()
+for e in res.timeline:
+    n = e.event_type.name
+    tot[n] += 1
+    if (e.metadata or {}).get("active_brain"):
+        stamped[n] += 1
+for n, c in tot.most_common():
+    print(f"{n:22s}{c:6d}{stamped[n]:6d}")
+PY
 ```
