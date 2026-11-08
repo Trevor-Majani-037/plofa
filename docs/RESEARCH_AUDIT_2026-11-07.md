@@ -283,9 +283,27 @@ shot. All 109 were executed as passes — 101 `PASS`, 6 `PROGRESSIVE_PASS`, 2
 | **SHOOT** | **109** | **0%** |
 
 The brain asks to shoot ~10 times a match from every third of the pitch (4% of its
-defensive-third decisions, 13% in midfield) and the engine overrides all of it. Either the
-shot gate is too strict, or the brain has learned to ask for shots it cannot have — but
-nobody could see the discrepancy until the ledger existed. **[verified]**
+defensive-third decisions, 13% in midfield) and the engine overrides all of it. **[verified]**
+
+**It is the brain, not the gate — measured 2026-11-08 (`143a899`).** The policy shot is
+gated on the attacking matrix's shot window score `>= 0.20`. The gate's verdict is now
+recorded, and it is decisive:
+
+| | |
+|---|---|
+| shot intents | 109 |
+| gate allowed | **0** |
+| refused shot scores | median **0.013**, p90 0.045, best **0.079** |
+
+The best window the brain chose in 109 attempts scored 0.079 — under 40% of the threshold.
+The median scored 0.013, a factor of fifteen below it. This is not a strict gate: dropping
+the bar to 0.079 would admit one shot in the match.
+
+The cause is a date. Every brain in `brains/` was written **2026-10-22**; goal vision
+(slots `[2]`/`[3]` carrying goal bearing and mouth width rather than duplicating `[0]`/`[1]`)
+landed **2026-10-31**. The `SHOOT` head was trained on a vector that could not tell a
+shooting angle from a crossing angle, and was never refit after the sensors were fixed.
+The input is still 47-wide, so a retrain fits the current architecture. **[verified]**
 
 ---
 
@@ -544,16 +562,43 @@ directories.
 
 The question is now answerable by the project's own tooling: see §6.6.
 
-### Tier 1b — close the ledger's last hole (2 hours)
+### Tier 1b — close the ledger's last hole — **DONE 2026-11-08, commit `143a899`**
 
-3b. **Stamp `active_brain` on the shot emitters.** `event_chain.py` has ten
-    `EventType.SHOT_*` call sites (6431, 6469, 6497, 6633, 6666, 7910, 7976, 7997, 8402
-    and the penalty path). Until they are stamped, the single most important decision in
-    football is the one decision the ledger cannot see — and §6.6's finding that 109
-    `SHOOT` intents produce 0 shots cannot be traced to a cause.
-3c. **Decide the shot gate.** 109 intents → 0 executions is either a gate that is too
-    strict or a brain that asks for shots it cannot have. `policy_shot_score` with
-    `minimum_shot_score = 0.20` (event_chain.py:2132) is the first place to look.
+3b. ~~**Stamp `active_brain` on the shot emitters.**~~ **Done, and the reason it was
+    missing was structural, not an oversight.** `PossessionChain` makes the decision and
+    `AttackChain` writes the `SHOT_*` event, and `AttackChain` cannot see the brain. The
+    decision now travels the channel the shooter's name already used
+    (`ChainResult.shoot_player` → `ChainResult.decision_meta` → `ChainDispatcher.attack`
+    → `AttackChain.generate` → the 5 open-play shot emitters). The keeper's `SAVE` event
+    is deliberately not stamped, and neither are set-piece shots: nobody on the ball
+    decided those.
+
+3c. ~~**Decide the shot gate.**~~ **Answered — the gate is not the problem.**
+
+| | |
+|---|---|
+| shot intents | 109 |
+| gate allowed | **0** |
+| gate refused | 109 (all by geometry) |
+| refused shot scores | median **0.013**, p90 0.045, best **0.079** |
+| threshold | 0.20 |
+
+The best shot window the brain chose in 109 attempts scored **0.079** — under 40% of the
+threshold — and the median scored **0.013**, a factor of **15** below it. This is not a
+marginal calibration error: lowering the bar to 0.079 would admit exactly one shot in the
+match. The brain is not being overruled from a shooting position; it is asking to shoot
+from positions the matrix never scores as shootable.
+
+**The cause is dated.** Every brain in `brains/` was written **2026-10-22**. Goal vision —
+slots `[2]`/`[3]` carrying goal bearing and mouth width instead of duplicating `[0]`/`[1]`
+— landed **2026-10-31**. The `SHOOT` head was trained on a vector that could not tell a
+shooting angle from a crossing angle. The sensors were fixed; the weights were never
+refit. Input is still 47-wide (`w_z: 79 × 32`, 47 = 24 sensors + role block), so a retrain
+fits the existing architecture without reshaping anything.
+
+**This is now the highest-value item on the list** — higher than the home advantage or the
+xG drift, because it is the one where the network is provably blind rather than merely
+miscalibrated.
 
 ### Tier 2 — close the two live football gaps (one day)
 
@@ -603,10 +648,12 @@ other half; the home team was labelled home, and then treated exactly like the a
 
 As of commit `e6f28a7` the first of those is fixed, and the first honest answer exists:
 `I(situation; intent) = 0.644` bits against a null of `0.047`, `p = 0.0`. The brain is
-situational. But the same ledger shows `SHOOT` obeyed 0 times out of 109 — the one thing
-the network most wants to do is the one thing it is never allowed to do. Fix the remaining
-two calibration gaps (home advantage, xG) and stamp the shot emitters, and the project
-will know what it is measuring.
+situational. As of `143a899` the second is diagnosed: the brain asks to shoot 109 times a
+match and the best shooting position it ever picks scores 0.079 against a 0.20 threshold.
+It is not being overruled from good positions — it cannot see good positions, because every
+weight in `brains/` predates the goal geometry that would let it. That retrain is now the
+highest-value item in the project, ahead of the home advantage and the xG drift, because it
+is the one place where the network is provably blind rather than merely miscalibrated.
 
 ---
 
