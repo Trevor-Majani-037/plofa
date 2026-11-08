@@ -3036,6 +3036,16 @@ class MatchEngine:
         # its own state machine with a cooldown that was assigned and never
         # read, which let a player collect a fresh "sprint" every 0.3 s he
         # spent above 7.0 m/s.
+        #
+        # NOTE ON `speed` (2026-11-07, tried and reverted): banding the
+        # ACHIEVED speed (`moved / duration_s`) instead of the ordered `speed`
+        # was measured and is INERT here -- `step = min(speed*DT, dist)`, so
+        # the body travels exactly `speed` whenever it is more than one step
+        # from its target, and the near-target ticks take the patrol branch at
+        # a consistent pace. A full match came back byte-identical: same
+        # 407.0 s for Bruno Reis, same 61 bouts, same 7.78 m/s ceiling. Do not
+        # re-add it believing it fixes the band; the ceiling is the pace
+        # ladder, not the measurement.
         sprint_inc, hi_inc = self.position_engine.advance_sprint_bout(
             name, speed, duration_s)
         if moved <= 0:

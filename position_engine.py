@@ -1585,8 +1585,12 @@ class PositionEngine:
         sprints for one continuous burst.
 
         The speed is EMA-smoothed first so a single noisy tick cannot start a
-        bout, and the recovery window must actually elapse before the next one
-        counts — the two things the old counters did not enforce.
+        bout. The sustained window ACCUMULATES across fragments and is reset
+        only by a full recovery window below the threshold -- requiring one
+        unbroken second of high speed discarded every fragmented effort the
+        engine actually produces (measured: 16 of 28 players with sprint time
+        and zero bouts). The bout still counts once per cluster, so chattering
+        across the line cannot stack sprints.
         """
         if dt <= 0.0:
             return 0.0, 0.0
@@ -1595,9 +1599,10 @@ class PositionEngine:
         if st is None:
             st = store[player_name] = {
                 "ema": 0.0, "hi_ema": 0.0,
-                "run_s": 0.0, "hi_run_s": 0.0,
+                "acc_s": 0.0, "hi_acc_s": 0.0,
                 "in": False, "hi_in": False,
-                "cool_s": 0.0, "hi_cool_s": 0.0,
+                "below_s": self.SPRINT_RECOVERY_S,
+                "hi_below_s": self.HI_RECOVERY_S,
             }
 
         a = 1.0 - math.exp(-dt / self.SPEED_EMA_TAU_S)
@@ -1607,29 +1612,45 @@ class PositionEngine:
 
         inc = 0.0
         hi = 0.0
+
+        # ── ACCUMULATE THE SUSTAINED WINDOW, DO NOT RESET IT ────────────
+        # This used to zero `run_s` on the FIRST tick below the threshold, so
+        # the 1.0 s window could only be reached by one unbroken second of
+        # high speed. The engine's locomotion does not arrive that way: a man
+        # is flushed from 7.2 m/s to 6.8 and back by a target flip inside a
+        # single chase, so the effort is real but never unbroken. Measured in
+        # Hartwell 2-2 Thornfield (seed 42): 16 of 28 players recorded sprint
+        # TIME and zero bouts, e.g. Tavish Crane 46.7 s, Finn Larsson 39.7 s,
+        # Kwame Asante 35.3 s -- all fragments shorter than the window.
+        #
+        # So the window accumulates across fragments and is reset only by a
+        # genuine RECOVERY (a full `SPRINT_RECOVERY_S` below the threshold).
+        # The bout is still counted ONCE per cluster (`in`), so chattering
+        # across the line cannot stack sprints -- that defect is what this
+        # method was written for, and it stays fixed.
         if st["ema"] >= self.SPRINT_MPS:
-            st["run_s"] += dt
-            if (st["run_s"] >= self.SPRINT_MIN_S and not st["in"]
-                    and st["cool_s"] <= 0.0):
+            st["below_s"] = 0.0
+            st["acc_s"] += dt
+            if st["acc_s"] >= self.SPRINT_MIN_S and not st["in"]:
                 inc = 1.0
                 st["in"] = True
-                st["cool_s"] = self.SPRINT_RECOVERY_S
         else:
-            st["run_s"] = 0.0
-            st["in"] = False
-            st["cool_s"] = max(0.0, st["cool_s"] - dt)
+            st["below_s"] += dt
+            if st["below_s"] >= self.SPRINT_RECOVERY_S:
+                st["acc_s"] = 0.0
+                st["in"] = False
 
         if st["hi_ema"] >= self.HI_SPRINT_MPS:
-            st["hi_run_s"] += dt
-            if (st["hi_run_s"] >= self.HI_SPRINT_MIN_S and not st["hi_in"]
-                    and st["hi_cool_s"] <= 0.0):
+            st["hi_below_s"] = 0.0
+            st["hi_acc_s"] += dt
+            if st["hi_acc_s"] >= self.HI_SPRINT_MIN_S and not st["hi_in"]:
                 hi = 1.0
                 st["hi_in"] = True
-                st["hi_cool_s"] = self.HI_RECOVERY_S
         else:
-            st["hi_run_s"] = 0.0
-            st["hi_in"] = False
-            st["hi_cool_s"] = max(0.0, st["hi_cool_s"] - dt)
+            st["hi_below_s"] += dt
+            if st["hi_below_s"] >= self.HI_RECOVERY_S:
+                st["hi_acc_s"] = 0.0
+                st["hi_in"] = False
 
         return inc, hi
 
