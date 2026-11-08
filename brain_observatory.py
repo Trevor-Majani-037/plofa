@@ -392,6 +392,29 @@ def render_markdown(report: Dict[str, Any],
             lines.append(f"### {current_team}")
             lines.append("")
         lines.extend(_player_block(p, with_reason=with_reason))
+    gate = report.get("shot_gate") or {}
+    if gate:
+        lines.append("## The shot gate")
+        lines.append("")
+        lines.append(
+            f"The brain asked to shoot **{gate['asked']}** times. The geometry gate "
+            f"allowed **{gate['passed']}** and refused **{gate['vetoed']}** "
+            f"(threshold: shot window score >= {gate.get('threshold')}).")
+        lines.append("")
+        if gate["vetoed"]:
+            reasons = ", ".join(f"{k} ×{v}" for k, v in gate["veto_reasons"].items())
+            lines.append(f"- Refused by: {reasons}")
+            lines.append(
+                f"- Refused shots scored: median **{gate['veto_score_median']}**, "
+                f"90th pct {gate['veto_score_p90']}, best {gate['veto_score_max']}")
+            lines.append("")
+            lines.append(
+                "A refusal is not the brain being wrong: the matrix scores the "
+                "window and the brain cannot see that score. If the median sits "
+                "far below the threshold the brain is asking for shots the "
+                "geometry never offers, and the intent is miscalibrated rather "
+                "than overruled.")
+            lines.append("")
     realised = report.get("realisation") or {}
     if realised:
         lines.append("## Intent → what actually happened")
@@ -485,6 +508,38 @@ def _thought_line(r: Dict[str, Any], *, with_reason: bool = False) -> str:
     if with_reason and r.get("reason"):
         parts.append(f"reason: {r['reason']}")
     return " | ".join(parts)
+
+
+def _shot_gate_summary(records: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """How often the brain asked to shoot, and what the geometry gate said.
+
+    A `SHOOT` intent is not permission to shoot: `PossessionChain` only passes
+    it through when the attacking matrix's shot window scores >= 0.20. A
+    refused shot becomes a pass, so without this the veto is invisible and
+    "the brain wanted to shoot" and "the brain shot" look like the same claim.
+    """
+    asked = [r for r in records if r.get("shot_gate")]
+    if not asked:
+        return None
+    passed = [r for r in asked if r["shot_gate"].get("passed")]
+    vetoed = [r for r in asked if not r["shot_gate"].get("passed")]
+    scores = sorted(float(r["shot_gate"].get("score") or 0.0) for r in vetoed)
+
+    def _q(p: float) -> Optional[float]:
+        if not scores:
+            return None
+        return round(scores[min(int(p * len(scores)), len(scores) - 1)], 3)
+
+    return {
+        "asked": len(asked),
+        "passed": len(passed),
+        "vetoed": len(vetoed),
+        "threshold": asked[0]["shot_gate"].get("threshold"),
+        "veto_reasons": dict(Counter(r["shot_gate"].get("veto") for r in vetoed)),
+        "veto_score_median": _q(0.5),
+        "veto_score_p90": _q(0.9),
+        "veto_score_max": scores[-1] if scores else None,
+    }
 
 
 def _realisation_table(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
@@ -598,6 +653,7 @@ def _assemble_report(records: List[Dict[str, Any]], home: str, away: str,
         "teams": team_summary,
         "players": players,
         "realisation": _realisation_table(records),
+        "shot_gate": _shot_gate_summary(records),
         "thought_log": list(records),
     }
 

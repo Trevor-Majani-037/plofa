@@ -229,6 +229,79 @@ def test_write_trace_round_trips_through_analyse_match(tmp_path):
 
 
 # ─────────────────────────────────────────────────────────────
+# The shot gate
+# ─────────────────────────────────────────────────────────────
+def _stamped_shot(event_name="CARRY", *, gate=None, shot_intent=True):
+    md = {"active_brain": {"action": "SHOOT", "intent": "SHOOT",
+                           "confidence": 0.6, "reason": "test",
+                           "decision_quality": 0.7, "is_error": False}}
+    if shot_intent:
+        md["shot_intent"] = True
+    if gate is not None:
+        md["shot_gate"] = gate
+    return _event(event_name, metadata=md)
+
+
+def test_shot_dispatch_is_obeyed_not_a_disobeyed_carry():
+    """A `shot_intent` event is recorded as CARRY for timeline ordering only.
+    Reading it literally scored every successful shot as a disobeyed carry."""
+    recs = collect_decisions([_stamped_shot()], engine=_engine(),
+                             home_team="Home", away_team="Away")
+    assert recs[0]["family"] == "shoot"
+    assert recs[0]["obeyed"] is True
+    assert recs[0]["dispatch"] is True
+
+
+def test_collect_decisions_reads_the_gate_from_inside_the_decision():
+    """An allowed shot carries its gate through to the SHOT_* event, where it
+    lives inside active_brain rather than beside it."""
+    md = {"active_brain": {"intent": "SHOOT", "confidence": 0.6,
+                           "shot_gate": {"score": 0.44, "threshold": 0.2,
+                                         "passed": True, "veto": None}}}
+    ev = _event("SHOT_ON_TARGET", metadata=md)
+    recs = collect_decisions([ev], engine=_engine(), home_team="Home",
+                             away_team="Away")
+    assert recs[0]["shot_gate"]["score"] == 0.44
+    assert recs[0]["shot_gate"]["passed"] is True
+
+
+def test_shot_gate_summary_separates_allowed_from_refused():
+    gate_ok = {"score": 0.5, "threshold": 0.2, "passed": True, "veto": None}
+    gate_no = {"score": 0.05, "threshold": 0.2, "passed": False,
+               "veto": "geometry"}
+    tl = [_stamped_shot(gate=gate_ok), _stamped_shot("PASS", gate=gate_no),
+          _stamped_shot("PASS", gate=gate_no)]
+    recs = collect_decisions(tl, engine=_engine(), home_team="Home",
+                             away_team="Away")
+    gate = obs._shot_gate_summary(recs)
+    assert gate["asked"] == 3
+    assert gate["passed"] == 1
+    assert gate["vetoed"] == 2
+    assert gate["veto_reasons"] == {"geometry": 2}
+    assert gate["veto_score_median"] == 0.05
+    assert gate["veto_score_max"] == 0.05
+
+
+def test_shot_gate_summary_is_absent_without_shot_intents():
+    recs = collect_decisions([_stamped("PASS", "SAFE_PASS")], engine=_engine(),
+                             home_team="Home", away_team="Away")
+    assert obs._shot_gate_summary(recs) is None
+
+
+def test_render_includes_the_shot_gate_when_present():
+    gate_no = {"score": 0.04, "threshold": 0.2, "passed": False,
+               "veto": "geometry"}
+    tl = [_stamped_shot("PASS", gate=gate_no) for _ in range(20)]
+    recs = collect_decisions(tl, engine=_engine(), home_team="Home",
+                             away_team="Away")
+    report = obs.analyse_match({"match": {"home": "H", "away": "A",
+                                          "score": "0-0"}, "decisions": recs})
+    text = obs.render_markdown(report)
+    assert "The shot gate" in text
+    assert "asked to shoot" in text
+
+
+# ─────────────────────────────────────────────────────────────
 # Rendering
 # ─────────────────────────────────────────────────────────────
 def test_render_includes_the_shuffle_test_verdict():

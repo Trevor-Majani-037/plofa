@@ -216,6 +216,16 @@ def _stamp_shot_speed(ev: MatchEvent, mps: float, flight_s: Optional[float] = No
         md.setdefault("shot_flight_s", round(flight_s, 2))
 
 
+def _decision_meta_block(decision_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Spread into a shot event's metadata: the on-ball decision that caused it.
+
+    Empty when the shot did not come from a player decision — a set piece, a
+    rebound, or the engine's per-minute shot funnel. An absent stamp is a real
+    answer ("nobody decided this"), not a lost decision.
+    """
+    return {"active_brain": decision_meta} if decision_meta else {}
+
+
 def _shot_speed_for_player(player: "PlayerProfile", body_part: str = "foot") -> float:
     """Launch velocity the player's DNA would generate for this body part.
 
@@ -306,6 +316,11 @@ class ChainResult:
     shoot_y: float           = 0.0
     shoot_under_pressure: bool = False
     shot_taken: bool         = False
+    # The on-ball decision that produced the shot, carried out to MatchEngine
+    # so it can reach AttackChain — which is where the SHOT_* event is actually
+    # written, and which has no access to the brain. Without this the highest-
+    # value decision on the pitch was the only one with no record.
+    decision_meta: Optional[Dict[str, Any]] = None
 
     # ── WHO HOLDS THE BALL WHEN THE EPISODE ENDS ──────────────────────────
     # `shoot_player` above is only populated at the three SHOOT sites, so it
@@ -2118,6 +2133,23 @@ class PossessionChain(BaseChain):
                 and last_player.position != "GK"
                 and policy_shot_score >= 0.20
             )
+            # ── WHY THE SHOT WAS REFUSED (2026-11-08) ────────────────
+            # A SHOOT intent that fails this gate is silently converted into a
+            # pass, and until now nothing recorded that. Measured on one match:
+            # 109 shot decisions, 0 shots — a fact that could not be attributed
+            # to a cause because the veto left no trace. The gate's own verdict
+            # now rides on whatever event carries the SHOOT intent, so the
+            # ledger can separate "the brain asked badly" from "the geometry
+            # said no".
+            shot_gate_meta = None
+            if active_decision.intent is PlayerIntent.SHOOT:
+                shot_gate_meta = {
+                    "score": round(policy_shot_score, 3),
+                    "threshold": 0.20,
+                    "passed": bool(policy_shot_feasible),
+                    "veto": None if policy_shot_feasible else (
+                        "goalkeeper" if last_player.position == "GK" else "geometry"),
+                }
             if policy_shot_feasible:
                 result.add(cls.make_event(
                     minute, EventType.CARRY, attacking_team, last_player.name,
@@ -2126,6 +2158,7 @@ class PossessionChain(BaseChain):
                     outcome=True,
                     metadata={
                         "shot_intent": True,
+                        "shot_gate": shot_gate_meta,
                         "decision_authority": "player_policy",
                         "execution_feasibility": {
                             "shot_score": round(policy_shot_score, 3),
@@ -2148,6 +2181,20 @@ class PossessionChain(BaseChain):
                 result.shoot_y = y
                 result.shoot_under_pressure = under_pressure
                 result.shot_taken = True
+                # Hand the decision to AttackChain, which writes the SHOT_*
+                # event and cannot see the brain from where it sits.
+                result.decision_meta = {
+                    "action": active_decision.action,
+                    "intent": active_decision.intent.value,
+                    "confidence": active_decision.confidence,
+                    "reason": active_decision.reason,
+                    "decision_quality": active_decision.decision_quality,
+                    "is_error": active_decision.is_error,
+                    # The gate that let this shot through. Carried with the
+                    # decision so the SHOT_* event records both halves: what
+                    # the brain asked for, and what the geometry allowed.
+                    "shot_gate": shot_gate_meta,
+                }
                 break
 
             # ── CHECKPOINT 18: MODERN WINGER CARRY STEERING ──────────
@@ -2286,6 +2333,7 @@ class PossessionChain(BaseChain):
                     metadata={
                         "progressive": is_prog,
                         "distance": round(carry_dist, 1),
+                        **({"shot_gate": shot_gate_meta} if shot_gate_meta else {}),
                         "active_brain": {
                             "action": active_decision.action,
                             "intent": active_decision.intent.value,
@@ -2982,6 +3030,7 @@ class PossessionChain(BaseChain):
                         "target_authority": receiver_authority or "unknown",
                         **({"target_deference": deference_meta}
                            if deference_meta else {}),
+                        **({"shot_gate": shot_gate_meta} if shot_gate_meta else {}),
                         "active_brain": {
                             "action": active_decision.action,
                             "intent": active_decision.intent.value,
@@ -5945,6 +5994,7 @@ class AttackChain(BaseChain):
         attacks_right: bool = True,
         shooter_name: str = "",
         assister_name: str = "",
+        decision_meta: Optional[Dict[str, Any]] = None,
     ) -> ChainResult:
         result = ChainResult()
         phase  = state.phase
@@ -6435,7 +6485,8 @@ class AttackChain(BaseChain):
                     end_x=shot_x_end, end_y=shot_y_end,
                     situation=situation, xg=xg, body_part=body_part,
                     outcome=True,
-                    metadata={"zone": zone, "is_big_chance": is_big,
+                    metadata={**_decision_meta_block(decision_meta),
+                              "zone": zone, "is_big_chance": is_big,
                               "physics": shot_physics, "resolution": "trajectory"}
                 ))
                 result.goal_scored   = True
@@ -6473,7 +6524,8 @@ class AttackChain(BaseChain):
                     end_x=shot_x_end, end_y=shot_y_end,
                     situation=situation, xg=xg, body_part=body_part,
                     outcome=True,
-                    metadata={"zone": zone, "is_big_chance": is_big,
+                    metadata={**_decision_meta_block(decision_meta),
+                              "zone": zone, "is_big_chance": is_big,
                               "physics": shot_physics, "resolution": "trajectory",
                               "worldie": True}
                 ))
@@ -6503,7 +6555,8 @@ class AttackChain(BaseChain):
                 xg=xg,
                 body_part=body_part,
                 outcome=True,
-                metadata={"zone": zone, "is_big_chance": is_big,
+                metadata={**_decision_meta_block(decision_meta),
+                          "zone": zone, "is_big_chance": is_big,
                           "physics": shot_physics, "resolution": "trajectory"}
             ))
 
@@ -6637,7 +6690,8 @@ class AttackChain(BaseChain):
                 end_x=shot_res.goal_point.x, end_y=shot_res.goal_point.y,
                 xg=xg,
                 outcome=False,
-                metadata={"physics": shot_physics, "resolution": "trajectory"}
+                metadata={**_decision_meta_block(decision_meta),
+                          "physics": shot_physics, "resolution": "trajectory"}
             ))
             # CALIBRATION (2026-09-17): blocked-shot corner 0.55 -> 0.45 -> 0.42 -> 0.38.
             corner_awarded = random.random() < 0.38
@@ -6669,7 +6723,8 @@ class AttackChain(BaseChain):
                 end_x=shot_x_end, end_y=shot_y_end,
                 xg=xg,
                 outcome=False,
-                metadata={"physics": shot_physics, "resolution": "trajectory"}
+                metadata={**_decision_meta_block(decision_meta),
+                          "physics": shot_physics, "resolution": "trajectory"}
             ))
 
         # ── PHYSICS TRACE STAMP (Checkpoint 27) ─────────────────────
@@ -10009,6 +10064,7 @@ class ChainDispatcher:
         attacks_right: bool = True,
         shooter_name: str = "",
         assister_name: str = "",
+        decision_meta: Optional[Dict[str, Any]] = None,
     ) -> ChainResult:
         res = AttackChain.generate(
             minute, att_team, def_team,
@@ -10019,6 +10075,7 @@ class ChainDispatcher:
             attacks_right=attacks_right,
             shooter_name=shooter_name,
             assister_name=assister_name,
+            decision_meta=decision_meta,
         )
         res.delayed_offside = delayed_offside
         return res

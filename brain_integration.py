@@ -1116,6 +1116,13 @@ def collect_decisions(result_or_timeline: Any, *,
         intent = brain.get("intent") or ""
         executed = _EVENT_FAMILY.get(event_name)
         wanted = _INTENT_FAMILY.get(intent, "pass")
+        # A `shot_intent` event is the shot's dispatch marker, not a carry: the
+        # carrier does not run with it, AttackChain turns it into a strike. It
+        # is recorded as a carry event purely for timeline ordering, so reading
+        # it literally would score every successful shot as a disobeyed carry.
+        dispatch = bool(md.get("shot_intent"))
+        if dispatch:
+            executed = "shoot"
 
         attacks_right = direction.get(team, True)
         x = ev.location_x
@@ -1131,6 +1138,10 @@ def collect_decisions(result_or_timeline: Any, *,
         score_state = "leading" if diff > 0 else ("trailing" if diff < 0 else "level")
 
         pressure = md.get("under_pressure")
+        # The gate rides on the event that carried the intent (a vetoed shot is
+        # recorded on the pass it became) or inside the decision itself (a shot
+        # that was allowed carries it through to the SHOT_* event).
+        gate = md.get("shot_gate") or brain.get("shot_gate")
         record = {
             "team": team,
             "player": ev.player or "",
@@ -1154,6 +1165,12 @@ def collect_decisions(result_or_timeline: Any, *,
             record["reason"] = brain.get("reason")
             record["decision_quality"] = brain.get("decision_quality")
             record["is_error"] = brain.get("is_error")
+        if gate:
+            # Only present when the brain asked to shoot: the geometry gate's
+            # own verdict on whether the body was allowed to.
+            record["shot_gate"] = gate
+        if dispatch:
+            record["dispatch"] = True
         records.append(record)
     return records
 

@@ -6168,6 +6168,10 @@ class MatchEngine:
                     # and common outcome, and is recorded as absent rather than
                     # filled with a plausible name.
                     assister_name=poss_result.shoot_assister,
+                    # The brain's decision, carried through so the SHOT_* event
+                    # AttackChain writes can carry it too. None on the matrix-
+                    # authority paths, where no brain decision was taken.
+                    decision_meta=poss_result.decision_meta,
                 )
                 self._maybe_var_overturn(att_result, poss_result, minute, attacking_team)
                 if self._absorb_chain(att_result, minute): break
