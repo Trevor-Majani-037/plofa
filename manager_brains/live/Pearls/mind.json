@@ -8,11 +8,11 @@
   "youth_trust": 0.5,
   "rotation_discipline": 0.5,
   "pressure_baseline": 0.5,
-  "composure_current": 0.68,
-  "stress_accumulator": 0.0,
+  "composure_current": 0.9750000000000003,
+  "stress_accumulator": 0.49999999999999994,
   "history_posture_counts": {
-    "DEFEND": 159,
-    "BALANCED": 184,
+    "DEFEND": 903,
+    "BALANCED": 652,
     "ATTACK": 0
   }
 }

@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from perception import (get_perception_config, _bearing_diff,
-                        _facing_angle,
+                        _facing_angle, _MAX_HEAD_TURN_RAD,
                         _mental_scale, _tunnel_vision_fov,
                         _peripheral_glimpse)
 
@@ -40,6 +40,12 @@ class _BallTrack:
     re-check blind spots.  The scan widens his effective FOV for a brief
     window, and if the ball is found the ``last_seen`` clock resets so
     uncertainty stays low.
+
+    UNITS (fixed 2026-11-05).  Every field on this object is in SECONDS of
+    match clock.  They used to be compared against `minute` — the match
+    MINUTE — so a "0.35 s shoulder check" lasted 21 s of play and the
+    cadence below fired about once every two minutes.  See
+    ``tests/test_scanning.py``.
     """
 
     __slots__ = ("x", "y", "t", "seen", "last_scan_time", "scan_duration",
@@ -48,13 +54,13 @@ class _BallTrack:
     def __init__(self) -> None:
         self.x = 0.0
         self.y = 0.0
-        self.t = -1e9          # last second it was SEEN (match clock)
+        self.t = -1e9          # match SECOND it was last SEEN
         self.seen = False
-        # --- SCAN STATE (2026-10-27) ---
-        self.last_scan_time: float = -1e9   # match-clock of the last head sweep
+        # --- SCAN STATE ---
+        self.last_scan_time: float = -1e9   # match-second of the last head sweep
         self.scan_duration: float = 0.35    # seconds a scan lasts (quick shoulder-check)
         self.in_scan: bool = False          # currently mid-sweep
-        self.scan_busy_until: float = -1e9  # match-clock until responsiveness returns
+        self.scan_busy_until: float = -1e9  # match-second until responsiveness returns
 
 
 # engine -> {player_name: _BallTrack}.  WeakKey ensures per-match trackers
@@ -146,26 +152,40 @@ def perceive_ball(
         _look_x = track.x if track.seen else true_x
         _look_y = track.y if track.seen else true_y
         _head_facing = _facing_angle(player, rx, ry,
-                                      _look_x, _look_y, attacks_right)
+                                     _look_x, _look_y, attacks_right,
+                                     fov_half=fov_rad / 2.0)
         bearing = _bearing_diff(rx, ry, true_x, true_y, _head_facing)
         visible = (dist <= radius) and abs(bearing) <= fov_rad / 2.0
+        # Seconds of match clock.  `minute` arrives as MINUTES (and used to
+        # arrive as a whole number, which quantised every timer on this
+        # object to 60 s); every cadence below is written in seconds because
+        # that is the unit a shoulder check is described in.
+        now = float(minute) * 60.0
         # ── Peripheral glimpse: even outside the central FOV, the
         # periphery catches movement.  Checked BEFORE the scan cadence
         # because it is passive (no head movement required).
-        # Uses a deterministic RNG derived from the staleness draw seed.
+        # Seeded on the TICK, not the minute: this used to be
+        # f"{pname}:glimpse:{minute:.0f}", one seed per match-minute, so the
+        # same player either glimpsed for a whole minute or never — a
+        # "random glance" that was frozen in place.
         if not visible:
             _glimpse_rng = np.random.default_rng(
                 (int(cfg.seed) * 2654435761
-                 + zlib.crc32(f"{pname}:glimpse:{minute:.0f}".encode("utf-8")))
+                 + zlib.crc32(f"{pname}:glimpse:{now:.0f}".encode("utf-8")))
                 & 0xFFFFFFFF)
             visible = _peripheral_glimpse(
                 bearing, fov_rad, power, rng=_glimpse_rng)
         # ── Scan cadence: periodic head sweeps to check blind spots.
         # Fatigue slows the cadence: a gassed player scans less often.
+        #
+        # THE CADENCE IS THE REAL ONE, ONCE THE UNITS ARE RIGHT.  The old
+        # expression 1/(0.2 + 0.6*power) evaluates to ~1.7 for a typical
+        # player, which is 0.6 sweeps per SECOND — the elite rate from
+        # Jordet et al.  It was being compared against `minute`, so it fired
+        # 0.6 times per minute instead.  Same formula, unit bug.
         fatigue_scan_mult = 1.0 - 0.50 * fatigue  # 0.5x at max fatigue
-        scan_interval = 1.0 / max(0.05, (0.2 + power * 0.6) * fatigue_scan_mult)
-        now = minute
-        if (not visible) and (now - track.last_scan_time >= scan_interval):
+        scan_interval_s = 1.0 / max(0.05, (0.2 + power * 0.6) * fatigue_scan_mult)
+        if (not visible) and (now - track.last_scan_time >= scan_interval_s):
             # Start a scan: wider FOV sweep, costs forward responsiveness.
             track.last_scan_time = now
             track.in_scan = True
@@ -175,11 +195,17 @@ def perceive_ball(
             # head-facing direction, plus separate left and right extreme
             # sweeps (each capped by the max head-turn limit).  If the ball
             # is visible at ANY of these bearings, the scan finds it.
-            scan_fov_rad = np.deg2rad(180.0)  # full peripheral sweep during scan
-            scan_fov_half = scan_fov_rad / 2.0
+            #
+            # THE DETECTION CONE IS HIS REAL ONE.  This used to test each
+            # sweep with a 90° half-angle, i.e. ±170° of coverage from three
+            # bearings — a sweep that could not fail, which made scanning a
+            # formality rather than a glance.  The cone below is the same
+            # fov_rad/2 the forward view uses, so a ball in the wedge
+            # directly behind is genuinely not found by a neck turn.
+            scan_fov_half = fov_rad / 2.0
             # Maximum head turn from the forward axis that the player can
             # achieve during a deliberate scan sweep.
-            _max_turn = np.deg2rad(80.0)
+            _max_turn = _MAX_HEAD_TURN_RAD
             _forward = 0.0 if attacks_right else np.pi
             _look_toward = np.arctan2(_look_y - ry, _look_x - rx)
             _look_diff = (_look_toward - _forward + np.pi) % (2 * np.pi) - np.pi
@@ -193,10 +219,6 @@ def perceive_ball(
             _sweep_angles.append(_forward - _max_turn)
             # Right extreme (full right shoulder check)
             _sweep_angles.append(_forward + _max_turn)
-            # Also check the pure forward direction (the player might have
-            # been looking away from the ball and swings through forward)
-            if abs(_natural_turn) > 0.5:
-                _sweep_angles.append(_forward)
             for _sw in _sweep_angles:
                 _sw_bearing = _bearing_diff(rx, ry, true_x, true_y, _sw)
                 if abs(_sw_bearing) <= scan_fov_half:

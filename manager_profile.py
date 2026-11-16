@@ -173,26 +173,26 @@ class ManagerProfile:
 # explicitly below, so edit this table instead of the picker logic.
 MANAGER_OVERRIDES: Dict[str, tuple] = {
     # ── 2025/26 clubs that KEPT their coach (approx. from II.xlsx) ──
-    "Claw":          ("gegenpress", "Roger Cyzzo"),
-    "Club Chovers":  ("counter",    "Chilan Strain"),
-    "Justice":       ("defensive",  "Patrick Quintin"),
-    "Lige-8":        ("possession", "Don Goyle"),
-    "Oxton":         ("patient",    "Jack Patro"),
-    "Pearls":        ("attacking",  "Nurem Sopan"),
-    "Seafcea":       ("balanced",   "Picaster Levi"),
-    "Telbey":        ("defensive",  "Meso Jones"),
-    "Trendboys":     ("direct",     "Lucas Roe"),
-    "Tryox City":    ("counter",    "Wehl McKinn"),
-    "Natrican":     ("direct",  "Alrvo Nuese"),
-    "Play City":    ("possession", "Respi Tepiro"),
-    "Red Wolves":   ("attacking", "Zack Loriente"),
-    "Triumpher":    ("attacking", "Garley Smiddos"),
+    "Claw":          ("gegenpress", "Roger Cyzzo"), #1
+    "Club Chovers":  ("counter",    "Chilan Strain"), #2
+    "Justice":       ("defensive",  "Patrick Quintin"), #3
+    "Lige-8":        ("possession", "Don Goyle"), #4
+    "Oxton":         ("patient",    "Jack Patro"), #5
+    "Pearls":        ("attacking",  "Nurem Sopan"), #6
+    "Seafcea":       ("balanced",   "Picaster Levi"), #7
+    "Telbey":        ("defensive",  "Meso Jones"), #8
+    "Trendboys":     ("direct",     "Lucas Roe"), #9
+    "Tryox City":    ("counter",    "Wehl McKinn"), #10
+    "Natrican":     ("direct",  "Alrvo Nuese"), #11
+    "Play City":    ("possession", "Respi Tepiro"), #12
+    "Red Wolves":   ("attacking", "Zack Loriente"), #13
+    "Triumpher":    ("attacking", "Garley Smiddos"), #14
 
     # ── Coaches whose "LIKELY HOOD" == NO → replaced next season ──
     # Natrican (Fabisch Diaz), Play City (Michael Borin),
     # Red Wolves (Zack Loriente), Triumpher (Garley Smiddos) get new/auto.
-    "Uditon":        ("possession", "Jovey Leinard"),   # Micha Sunod out → Leinard in
-    "Rodice":        ("gegenpress", "Kasper Lind")
+    "Uditon":        ("possession", "Jovey Leinard"),   # Micha Sunod out → Leinard in #15
+    "Rodice":        ("gegenpress", "Kasper Lind") #16
 
     # ── Promoted sides (no 2025/26 coach data) ──
     # Avada Zenith, Ganester, Rodice → auto-generated below.

@@ -709,3 +709,81 @@ The honest summary is therefore narrower and more useful than "the noise won":
 not outcomes), **and the end-to-end A/B is not yet trustworthy on the loader
 path** until the control passes. When it does not, the script says so rather
 than printing a table that looks like a result.
+
+### 16.2a The determinism bug, re-measured (2026-11-02) — it is *in-process*
+
+The table in §16 said "3 separate processes on the production squad path
+diverges". Re-measured on this tree with the hardcoded squads:
+
+| Configuration | Result |
+|---|---|
+| Same seed, **fresh interpreter**, run 0 | `3637 events, sha 744a7a6f0141517c` — twice, two processes |
+| Same seed, **run 1 in the same process** | `4027 events, sha efd64071f1acd451` — **diverges** |
+| Same seed, **run 2 in the same process** | `3916 events, sha 1402174637b5a19d` — **diverges again** |
+
+So the engine is **reproducible per process** and the divergence is a
+**second match inheriting state from the first**, inside one interpreter. Run 0
+is byte-identical across independent processes, so no entropy source is
+unseeded at match start — the global RNG reset the harness does is sufficient.
+The new failure is `run_1 != run_0` *and* `run_2 != run_1`: each match drifts
+further, which is accumulation, not luck. First divergence lands at event 8,
+i.e. inside the first possession chain.
+
+Ruled out by `scripts/physics/probe_leak.py` — each of these was applied
+between two identical runs and **none** restored run 0's fingerprint:
+
+* `brain_integration` registry and position-brain cache,
+* `physics.adapter._GATE_COUNTERS`,
+* numpy's global generator (`np.random.seed`),
+* *all of the above together*, plus `match_engine`'s module-level singletons
+  (`_TEAM_PRESS_BRAIN`, `_GAME_STATE_MIND`, `_DEF_ACTION_BRAIN`,
+  `_COGNITION_OBSERVER`, `_DEFAULT_MEMORY_OBSERVER`) and `_COSMETIC_RNG`.
+
+There are no `lru_cache`/`@cache` decorators on the match path, no module-level
+generator outside `_COSMETIC_RNG`, and `SquadBuilder.build` has no cache — so
+the usual "memoised function skipped an RNG draw" explanation is not available
+here. **Root cause still open.** The measurements narrow it to mutable state
+created per match that a second `MatchEngine` can reach.
+
+**Consequence, and what was done about it:** the gate no longer runs two
+conditions in one process. `scripts/physics/gate_ab.py` gives every match a
+virgin interpreter, and runs the first fixture twice per condition as a control
+— if the two runs disagree it prints `CONTROL FAILED` and refuses to present a
+gate. That makes the end-to-end comparison valid *today* without waiting for
+the leak to be found, at the cost of one process per match.
+
+### 16.2b The trace does **not** invent speeds (2026-11-02)
+
+An earlier reading of one probe run suggested the on-ball trace animated
+players faster than their own top speed — `Mikro Vitro`, top speed 7.07 m/s,
+credited ten high-speed sprints at ≥ 8.5 m/s. That reading was **wrong**, and
+`scripts/physics/probe_trace_speeds.py` shows why. Measured over one match,
+for all 25 players who appear in a trace:
+
+| | |
+|---|---|
+| largest trace label vs the engine's ceiling | **exactly 0.85 for every player** |
+| players whose label exceeds their ceiling | **0** |
+| largest label by action | `contact` / `aerial_race` 7.41 m/s, `carry` 5.92 m/s |
+
+`0.85` is `possession_physics.RACE_EFFORT` — every race/carry label is
+`top_speed × 0.85`, so no trace row can exceed 85% of what the body can run.
+The speeds were never invented.
+
+What *was* wrong is the credit rule, and it explains the old contradiction
+exactly: the set-piece travel path credited `sprint_count=1` to anybody who
+moved and `high_speed_sprint_count=1` to anybody who ever passed **5.5 m/s** —
+a label that has nothing to do with the 8.5 m/s high-speed band it was being
+counted in. Corner after corner therefore stacked "high-speed sprints" on
+players whose trace never left 7 m/s. That path now goes through the shared
+bout machine (`PositionEngine.advance_sprint_bout`), and the false high-speed
+credits are gone.
+
+The remaining, honest consequence: with the squad's ceilings at 7.3–8.7 m/s,
+labels cap at 6.2–7.4 m/s, so the 8.5 m/s band is **unreachable by
+construction** and the 7.0 m/s band is reachable only by the fastest players.
+Sprint counts are low (≈5 per player) not because the counter is wrong but
+because the simulated speed scale is compressed relative to real football. That
+is a calibration question (`_top_speed_cache` / `RACE_EFFORT`), not a counter
+bug, and it is deliberately left alone here.
+

@@ -5,18 +5,18 @@
   "table": {
     "('level', '75-90', 'DEFEND')": {
       "wins": 0,
-      "draws": 0,
+      "draws": 2,
       "losses": 3,
-      "xg_for": 3.05,
-      "xg_against": 8.06,
+      "xg_for": 3.86,
+      "xg_against": 10.07,
       "count": 0
     },
     "('level', '75-90', 'BALANCED')": {
       "wins": 0,
-      "draws": 0,
+      "draws": 2,
       "losses": 3,
-      "xg_for": 3.05,
-      "xg_against": 8.06,
+      "xg_for": 3.86,
+      "xg_against": 10.07,
       "count": 1
     }
   }

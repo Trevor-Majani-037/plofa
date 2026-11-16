@@ -392,7 +392,20 @@ class SituationalBrain:
         grads = {k: np.zeros_like(v) for k, v in self.w.items()}
         T = len(caches)
         dh_next = np.zeros(HIDDEN_D, dtype=np.float64) if dh_last is None             else np.asarray(dh_last, dtype=np.float64).copy()
-        smp = STATE_D + ROLE_D + MEMORY_D + PLAN_D
+        # THE SITUATION WIDTH IS THIS BRAIN'S, NOT THE MODULE DEFAULT.
+        #
+        # This used to be ``STATE_D + ROLE_D + MEMORY_D + PLAN_D``, with
+        # ROLE_D the module constant (19).  Every shipped brain has a NINE-wide
+        # role block (``w_q`` is (47, 32): 24 + 9 + 8 + 6), so ``smp`` came out
+        # at 57 against a real 47, and ``dctx = du[smp:]`` sliced 22 of the 32
+        # context gradients off the end of an 79-long vector.  BPTT then wrote
+        # that truncated vector into the GRU gate gradients — wrong shape,
+        # wrong weights, no exception.  Any supervised training of the shipped
+        # brains through this method was silently corrupt.
+        #
+        # ``forward_logits`` already derives the width this way; the backward
+        # pass must agree with the forward pass it is inverting.
+        smp = int(self.w_q.shape[0])
 
         for t in range(T - 1, -1, -1):
             c = caches[t]
@@ -463,11 +476,11 @@ class SituationalBrain:
             if d_state is not None:
                 d_state[t] += du[:STATE_D]
             if d_role is not None:
-                d_role[t] += du[STATE_D:STATE_D + ROLE_D]
+                d_role[t] += du[STATE_D:smp - MEMORY_D - PLAN_D]
             if d_memory is not None:
-                d_memory[t] += du[STATE_D + ROLE_D:STATE_D + ROLE_D + MEMORY_D]
+                d_memory[t] += du[smp - MEMORY_D - PLAN_D:smp - PLAN_D]
             if d_plan is not None:
-                d_plan[t] += du[STATE_D + ROLE_D + MEMORY_D:smp]
+                d_plan[t] += du[smp - PLAN_D:smp]
 
         return grads
 

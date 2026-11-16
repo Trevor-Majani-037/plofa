@@ -54,14 +54,14 @@ if HASH_SEED is None:
     print()
 
 sys.path.insert(0, r"D:\PLOFA\plofa")
+# `_repro` (the hardcoded squad fixture) lives with the other diag tools.
+sys.path.insert(0, r"D:\PLOFA\plofa\tools\diag")
 
 # Hardcoded squads, lifted from _repro.py. Using SquadBuilder directly rather
 # than the roster loader keeps the loader's own caches out of the question —
 # this is a test of the match engine, not of how a squad gets picked.
 from _repro import (AWAY_STARTERS, AWAY_SUBS, AWAY_TEAM,
                     HOME_STARTERS, HOME_SUBS, HOME_TEAM)
-
-sys.path.insert(0, r"D:\PLOFA\plofa")
 
 
 def _squads():

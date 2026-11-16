@@ -433,122 +433,60 @@ def _maybe_situational(
     minute: float, soul: Any, record_trace: bool,
     coach_instructions: Any = None,
 ) -> Optional[PlayerDecision]:
-    """The SITUATIONAL route (attention + recurrence + memory + a plan).
+    """The SITUATIONAL route -- a THIN delegate to ``situational_decision``.
 
-    Returns None for every player whose brain is an ordinary
-    ``FootballBrain``.  Since 2026-10-23 that is NO player in the shipped
-    set: ``brains/<POS>.json`` is the v8 situational family (~458 KB,
-    ``sensor_schema: v5_situational``), so every position takes this
-    route.  The older ~62 KB ``v2_role_features`` T1 set is retired
-    (commit ``c7b6918``) and would return None here.  The route is chosen
-    by the brain's TYPE, so there is no flag to forget to turn off and no
-    way for it to change behaviour by accident.
+    Returns None for every player whose brain is an ordinary ``FootballBrain``.
+    Since 2026-10-23 that is NO player in the shipped set: ``brains/<POS>.json``
+    is the v8 situational family (~458 KB, ``sensor_schema: v5_situational``),
+    so every position takes this route.  The older ~62 KB ``v2_role_features``
+    T1 set is retired (commit ``c7b6918``) and would return None here.  The
+    route is chosen by the brain's TYPE, so there is no flag to forget to turn
+    off and no way for it to change behaviour by accident.
+
+    THE FORK THAT USED TO LIVE HERE, AND WHY IT WAS REMOVED
+    -------------------------------------------------------
+    This function did not delegate: it contained a **complete second copy** of
+    the situational pipeline -- FOV gate, tokens, the four blocks, recurrent
+    forward, plan proposal, consequence, temperature, sampling.
+    ``situational_decision`` held the same pipeline, documented and unit-tested,
+    and was imported by nothing but its own tests.
+
+    Two copies of one pipeline is not a style problem, it is a correctness
+    problem, and it cost real work:
+
+    * the shot read-out (``shot_head.py``) was wired into
+      ``situational_decision.decide``, verified there, and gated on a real
+      match -- and had **no effect at all**, because this copy never called it.
+      The paired gate came back bit-identical to four decimals, which is what
+      sent me looking;
+    * the temperament reconnection was written for the same reason and was
+      equally dead;
+    * the copies had already drifted: the one below re-padded the role block by
+      hand (``forward_logits`` already does that itself, so it was a no-op) and
+      carried none of the trace fields.
+
+    A gate that cannot tell the thing under test from its absence is worse than
+    no gate, because it still reports a number.  There is now ONE pipeline and
+    this is a router.
+
+    Behaviour is unchanged, and the two switches this route exposes are both OFF
+    unless asked for:
+      ``PLOFA_SHOT_HEAD=1``  the per-position shot read-out;
+      ``PLOFA_TEMPER=1``     the player's temperament.
     """
     try:
         from situational_brain import SituationalBrain
-        from situational_context import situation_blocks, assemble
-        from situational_brain import _softmax
-        from brain_integration import _score_diff_of, _apply_consequence, _apply_coach_bias, _decision_temperature, _fatigue_estimate, _build_decision, _sample_from_probs
-        from perception import perceive
-        from situation_tokens import entity_tokens
-        from player_state import player_team
 
         brain = _resolve_brain(player)
         if not isinstance(brain, SituationalBrain):
             return None
 
-        # 1) FOV GATE
-        vis_teammates, vis_defenders = teammates, defenders
-        try:
-            from cognition.mind import get_mind
-            mind = get_mind(getattr(player, "name", "") or "")
-            if mind is not None and mind.engaged:
-                vis_teammates, vis_defenders = mind.perceive(
-                    player, x, y, teammates, defenders, position_engine)
-        except Exception:
-            vis_teammates, vis_defenders = teammates, defenders
+        from situational_decision import SituationalDecisionBrain
 
-        # 2) TOKENS
-        tokens, token_mask = entity_tokens(
-            player, x, y, vis_teammates, vis_defenders,
-            position_engine, attacks_right)
-
-        # 3) THE FOUR BLOCKS
-        score_diff = _score_diff_of(game_state)
-        base_vec, scene = perceive(
-            player, x, y, vis_teammates, vis_defenders, position_engine,
-            under_pressure, attacks_right, game_state, minute,
-            team_possession=True, score_diff=score_diff,
-            return_scene=True,
-        )
-        role, memory, plan = situation_blocks(
-            player, x, y, scene["teammates"], scene["defenders"],
-            scene["position_engine"], attacks_right, base_vec)
-        # Adapt role width to the brain's expected input
-        expected_total = brain.w_q.shape[0]
-        role_width = expected_total - 24 - 8 - 6  # STATE_D=24, MEMORY_D=8, PLAN_D=6
-        role = np.asarray(role, dtype=np.float64).reshape(-1)
-        if role.shape[0] < role_width:
-            role = np.pad(role, (0, role_width - role.shape[0]))
-        elif role.shape[0] > role_width:
-            role = role[:role_width]
-        situation = assemble(base_vec, role, memory, plan)
-
-        # 4) RECURRENT FORWARD
-        store = getattr(position_engine, "neural_states", None)
-        pstate = store.player(getattr(player, "name", "") or "") \
-            if store is not None else None
-        from situational_brain import HIDDEN_D
-        h_prev = pstate.ensure_hidden(HIDDEN_D) if pstate is not None \
-            else np.zeros(HIDDEN_D, dtype=np.float64)
-        logits, plan_logits, h_new, _cache = brain.forward(
-            tokens, token_mask, base_vec, role, memory, plan, h_prev)
-        if pstate is not None:
-            pstate.hidden = h_new
-        probs = _softmax(logits)
-
-        # 5) PLAN PROPOSAL
-        plan_trace = None
-        if store is not None:
-            from player_state import player_team
-            team = player_team(player)
-            if team:
-                team_plan = store.team(team)
-                pprobs = _softmax(plan_logits)
-                pid = int(np.argmax(pprobs))
-                conf = float(pprobs[pid])
-                adopted = team_plan.propose(pid, conf)
-                plan_trace = {
-                    "proposed": pid,
-                    "confidence": round(conf, 4),
-                    "adopted": bool(adopted),
-                    "team_plan": team_plan.plan_id,
-                }
-
-        # 6) SAME SEAMS AS SHIPPED PATH
-        favored_flank = None
-        if coach_instructions is not None:
-            probs = _apply_coach_bias(
-                probs, player,
-                getattr(coach_instructions, "intent_bias", None))
-            favored_flank = getattr(coach_instructions, "favored_flank", None)
-        fatigue = _fatigue_estimate(player, minute)
-
-        cons_trace = None
-        base24 = np.asarray(base_vec, dtype=np.float64)
-        probs, cons_trace = _apply_consequence(
-            probs, base24, getattr(player, "position", ""), record_trace,
-        )
-
-        temperature = _decision_temperature(player, under_pressure, fatigue)
-        chosen_idx = _sample_from_probs(probs, temperature)
-        chosen_prob = float(probs[chosen_idx])
-
-        return _build_decision(
-            brain, player, x, y, vis_teammates, vis_defenders,
-            position_engine, attacks_right, fatigue, situation, probs,
-            chosen_idx, chosen_prob, minute, record_trace, favored_flank,
-            cons_trace,
+        return SituationalDecisionBrain.decide(
+            player, x, y, teammates, defenders, position_engine,
+            team_profile, under_pressure, attacks_right, game_state,
+            minute, soul, record_trace, coach_instructions,
         )
     except Exception as e:
         import sys
@@ -602,13 +540,74 @@ def _resolve_brain(player: Any) -> FootballBrain:
 
 
 def _score_diff_of(game_state: Any) -> int:
-    score_diff = 0
-    gs_name = getattr(game_state, "name", "LEVEL")
-    if "HOME_AHEAD" in gs_name or "HOME_CHASE" in gs_name:
-        score_diff = 1
-    elif "AWAY_AHEAD" in gs_name or "AWAY_CHASE" in gs_name:
-        score_diff = -1
-    return score_diff
+    """Goals the HOME side leads by, from the engine's ``GameState``.
+
+    TWO BUGS WERE HERE, FOUND 2026-11-16.  The old body tested substrings:
+
+        if "HOME_AHEAD" in name or "HOME_CHASE" in name:  return  1
+        elif "AWAY_AHEAD" in name or "AWAY_CHASE" in name: return -1
+        return 0
+
+    * **CRUISE was mapped to 0.**  ``HOME_CRUISE`` is a two-goal lead and
+      ``AWAY_CRUISE`` a two-goal deficit, and both came back as "level".  The
+      engine emits both (``match_engine.MatchState.game_state``), so this was
+      live: a team 2-0 up was told the game was level.
+    * **CHASE had the sign inverted.**  ``HOME_CHASE`` means the HOME side is
+      chasing — i.e. it is BEHIND, so the home perspective is negative.  The
+      old code returned +1, telling a team chasing a two-goal deficit that it
+      was winning.  This one is latent rather than live, because
+      ``MatchState.game_state`` never emits the CHASE members — but it is the
+      mapping anything reading the enum directly would get, so it is fixed
+      rather than left as a trap.
+
+    The substring match is kept (rather than an exact-name dict) so that a
+    decorated name still resolves; the order of the table matters, so the
+    longer, more specific keys are listed first.
+    """
+    name = str(getattr(game_state, "name", game_state) or "")
+    table = (
+        ("HOME_CHASE", -2), ("AWAY_CHASE", 2),
+        ("HOME_CRUISE", 2), ("AWAY_CRUISE", -2),
+        ("HOME_AHEAD", 1), ("AWAY_AHEAD", -1),
+        ("LEVEL", 0),
+    )
+    for key, value in table:
+        if key in name:
+            return value
+    return 0
+
+
+def _player_score_diff(game_state: Any, attacks_right: Any) -> int:
+    """Goal difference from the DECIDING PLAYER's point of view.
+
+    ``_score_diff_of`` answers "how far ahead is the HOME side".  That is the
+    right answer for a scoreboard and the wrong answer for a decision, because
+    the same physical situation has to mean the same thing to the policy no
+    matter which shirt the carrier wears.  Gate 8 of
+    ``docs/PREFLIGHT_RECOLLECTION_2026-11-16.md``: before this function, an
+    away player 2-0 **up** read ``-2`` — "I am two goals down" — and the away
+    half of every corpus row was inverted.
+
+    Team identity is already in the decision path: ``attacks_right`` is
+    ``team_name == home_team`` (``match_engine.MatchState`` never swaps ends),
+    so home is always ``True`` and away always ``False``.  So the frame is a
+    sign flip and nothing else — no new plumbing, no new input, and the
+    sensor block keeps its 24 slots.
+
+    ``attacks_right`` is required to be a real ``bool`` (or ``np.bool_``, which
+    the engine's dict lookups can hand back).  A ``GameState`` enum or ``None``
+    arriving here is precisely the defect that made the shipped corpus 100 %
+    attacking-right (``surrogate_collect`` decoded the argument one slot
+    early), and a truthy non-bool would silently skip the flip and restore the
+    inversion.  Raising is the honest response: the collector fails loudly
+    instead of writing a wrong row.
+    """
+    if not isinstance(attacks_right, (bool, np.bool_)):
+        raise TypeError(
+            "attacks_right must be a bool (team identity), got "
+            f"{type(attacks_right).__name__}: {attacks_right!r}")
+    sd = _score_diff_of(game_state)
+    return sd if bool(attacks_right) else -sd
 
 
 def _brain_label(brain: FootballBrain) -> str:

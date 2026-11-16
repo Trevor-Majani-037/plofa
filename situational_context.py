@@ -29,6 +29,7 @@ from typing import Any, List, Optional, Tuple
 import numpy as np
 
 from role_features import role_block
+from player_state import player_team
 from situational_brain import MEMORY_D, PLAN_D, ROLE_D, STATE_D
 
 
@@ -62,15 +63,24 @@ def memory_tail(player_name: str) -> np.ndarray:
 
 
 def plan_tail(position_engine: Any, team: str) -> np.ndarray:
-    """The team's plan summary, or zeros when there is no plan."""
+    """The team's plan summary, or zeros when there is no plan.
+
+    ``TeamPlan.summary()`` is ``[one_hot(PLAN_COUNT), confidence, has_plan]``
+    — ``PLAN_COUNT + 2`` floats.  It is copied into a fixed ``PLAN_D`` array
+    rather than returned directly, so a change to the plan-head count can
+    never silently change the network's input width.
+    """
     out = np.zeros(PLAN_D, dtype=np.float64)
     if position_engine is None or not team:
         return out
     try:
         store = position_engine.neural_states
-        return store.team(team).summary()
+        summary = np.asarray(store.team(team).summary(), dtype=np.float64).reshape(-1)
     except Exception:
         return out
+    n = min(PLAN_D, summary.shape[0])
+    out[:n] = summary[:n]
+    return out
 
 
 def situation_blocks(player: Any, x: float, y: float,
@@ -82,11 +92,23 @@ def situation_blocks(player: Any, x: float, y: float,
     ``state`` is the shared 24-d block, already built by the perception
     layer — it is NOT rebuilt here, so the situational brain reads the
     SAME world the shipped brain would have read.
+
+    THE PLAN BLOCK USED TO BE ALWAYS ZEROS (fixed 2026-11-08)
+    --------------------------------------------------------
+    This function read the team with ``getattr(player, "team", "")``.
+    ``PlayerProfile`` carries it as ``team_name`` and has no ``team``
+    attribute, so the lookup returned ``""`` for every player in every
+    match, ``plan_tail`` bailed out on the empty team, and the six plan
+    inputs were constant.  The network trained on a dead block and
+    correctly learned to ignore it.
+
+    ``player_state.player_team`` exists precisely for this trap and
+    documents it; using it here is the whole fix.
     """
     role = role_tail(player, x, y, teammates, defenders,
                      position_engine, attacks_right)
     mem = memory_tail(getattr(player, "name", "") or "")
-    pl = plan_tail(position_engine, getattr(player, "team", "") or "")
+    pl = plan_tail(position_engine, player_team(player))
     return role, mem, pl
 
 

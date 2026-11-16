@@ -1,0 +1,174 @@
+{
+  "matches": 1,
+  "seed": 7001,
+  "samples": 572,
+  "perception": "role_blocks",
+  "episodes_covered": 279,
+  "episode_anatomy": {
+    "episodes": 425,
+    "mean_touches_per_episode": 4.46,
+    "payoff_episode_share": 0.0424,
+    "turnover_episode_share": 0.6141,
+    "goal_episode_share": 0.0024
+  },
+  "goal_decisions_share": 0.0,
+  "mean_R": -0.432,
+  "value_model": {
+    "r2_oos": -2.4855,
+    "spearman": 0.1014,
+    "pearson": 0.0675,
+    "n": 572
+  },
+  "surrogate_v1": {
+    "spearman": -0.03614901341861484,
+    "pearson": -0.1039,
+    "n": 572
+  },
+  "intent_baseline": {
+    "spearman": 0.1317129702803775,
+    "pearson": 0.1976,
+    "n": 572
+  },
+  "payoff_view": {
+    "payoff_share": 0.0105,
+    "value_model_spearman": -0.0647,
+    "value_model_accuracy": 0.7028,
+    "catch_rate_at_top_decile": 0.0517
+  },
+  "position_table": [
+    {
+      "position": "CB",
+      "n": 128,
+      "goals": 0,
+      "mean_R": -0.401,
+      "model_infit_rho": 0.346,
+      "surrogate_rho": 0.141
+    },
+    {
+      "position": "CDM",
+      "n": 46,
+      "goals": 0,
+      "mean_R": -0.47,
+      "model_infit_rho": 0.435,
+      "surrogate_rho": 0.05
+    },
+    {
+      "position": "CM",
+      "n": 163,
+      "goals": 0,
+      "mean_R": -0.453,
+      "model_infit_rho": 0.452,
+      "surrogate_rho": 0.099
+    },
+    {
+      "position": "GK",
+      "n": 92,
+      "goals": 0,
+      "mean_R": -0.447,
+      "model_infit_rho": 0.362,
+      "surrogate_rho": -0.136
+    },
+    {
+      "position": "LB",
+      "n": 40,
+      "goals": 0,
+      "mean_R": -0.404,
+      "model_infit_rho": 0.657,
+      "surrogate_rho": 0.308
+    },
+    {
+      "position": "LW",
+      "n": 12,
+      "goals": 0,
+      "mean_R": -0.55,
+      "model_infit_rho": 0.259,
+      "surrogate_rho": 0.706
+    },
+    {
+      "position": "RB",
+      "n": 37,
+      "goals": 0,
+      "mean_R": -0.341,
+      "model_infit_rho": 0.704,
+      "surrogate_rho": -0.297
+    },
+    {
+      "position": "RW",
+      "n": 15,
+      "goals": 0,
+      "mean_R": -0.52,
+      "model_infit_rho": 0.568,
+      "surrogate_rho": 0.929
+    },
+    {
+      "position": "ST",
+      "n": 39,
+      "goals": 0,
+      "mean_R": -0.41,
+      "model_infit_rho": 0.624,
+      "surrogate_rho": 0.072
+    }
+  ],
+  "physics": {
+    "value_vs_forward": 0.074,
+    "value_vs_goal_proximity": 0.0668
+  },
+  "v_delta_direction": {
+    "episodes_with_2plus_decisions": 141,
+    "value_rose": 67,
+    "of_rose_payoff": 0,
+    "of_rose_no_payoff": 67,
+    "rose_payoff_share": 0.0,
+    "fall_payoff_share": 0.014
+  },
+  "top_value_weights": [
+    [
+      "s14",
+      -0.14343099977735285
+    ],
+    [
+      "s0",
+      -0.09161836556278294
+    ],
+    [
+      "s12",
+      -0.05926503088047527
+    ],
+    [
+      "FT*CENTRAL",
+      0.04935337004576426
+    ],
+    [
+      "s8",
+      0.03255744575265527
+    ],
+    [
+      "FT*SPACE",
+      -0.03224129695946729
+    ],
+    [
+      "s16",
+      -0.02801235184483385
+    ],
+    [
+      "s15",
+      -0.026816606788338367
+    ],
+    [
+      "s9",
+      0.02485420542919728
+    ],
+    [
+      "s1",
+      -0.0244304035283157
+    ],
+    [
+      "s5",
+      0.021581013301325676
+    ],
+    [
+      "pos:CDM",
+      -0.02089580792671269
+    ]
+  ]
+}

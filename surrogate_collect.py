@@ -68,7 +68,7 @@ from decision_brain import DecisionBrain, PlayerIntent
 from decision_brain import CARRY_LIKE_INTENTS
 from brain_sensors import extract_sensors
 from brain_integration import (
-    NeuralDecisionBrain, _INTENT_BY_INDEX, _score_diff_of,
+    NeuralDecisionBrain, _INTENT_BY_INDEX, _player_score_diff, _score_diff_of,
 )
 from football_brain import INPUT_SIZE
 from perception import get_perception_config, perceive
@@ -98,6 +98,20 @@ _SCALE_FLOOR = 0.002
 #: anything; below it the scale is 1.0 (no normalisation rather than a scale
 #: computed from one or two numbers).
 _SCALE_MIN_CELLS = 3
+
+#: Pseudo-observations pulling an urgency-band residual toward zero.  This is
+#: the knob that decides how much evidence a scoreline band needs before it is
+#: allowed to move a value: with N=5, a band with 5 samples gets half of its
+#: measured shift and a band with 45 gets 90 %.  Set high enough that a handful
+#: of lucky samples cannot reorder the intents in a cell — that is the failure
+#: mode this layer exists to avoid, and it is worse than indifference because
+#: it is invisible: the player looks inconsistent rather than uninterested.
+_URGENCY_PRIOR_N = 5
+
+#: Strength of a parent rung in the ladder, in units of observations.  A child
+#: cell needs this many samples before it carries half the weight of its
+#: parent — see ``FitnessSurrogate._pooled_value``.
+_LADDER_PRIOR_N = 5
 
 
 # ─────────────────────────────────────────────────────────────
@@ -132,6 +146,14 @@ class DecisionRecord:
     memory: Optional[np.ndarray] = None       # (MEMORY_D,)
     plan: Optional[np.ndarray] = None         # (PLAN_D,)
     phase: int = -1                           # the engine's possession phase
+    # ── THE SCORELINE, AS A NUMBER ─────────────────────────────
+    # Needed by the REWARD, not just the sensors.  `threat_reward.stakes()`
+    # scales the whole return by how much this moment matters (0.65 cruising
+    # .. 1.60 chasing late), and until 2026-11-16 nothing passed it, so a goal
+    # was worth exactly the same at 0-0 in minute 1 and at 0-1 down in minute
+    # 89.  Stored on the record because the reward is computed at PAIRING time,
+    # long after the decision, when the live game state is gone.
+    score_diff: int = 0
 
 
 _COLLECTOR: List[DecisionRecord] = []
@@ -304,6 +326,55 @@ def _explore_intent(player, intent, sensors=None):
         return intent
 
 
+def _decode_situational_args(args, kwargs):
+    """Decode the situational keywords from ``decide``'s positional layout.
+
+    Extracted from ``_snapshot_decide`` so it can be tested against the
+    ENGINE'S OWN call shape rather than against a memory of it.  That is the
+    whole point: the bug this replaces was an off-by-one that no unit test
+    could see because the decoding was buried inside a 90-line wrapper that
+    needs a live match to run.
+
+    The layout, verified against ``event_chain.py`` and against both entry
+    points (``DecisionBrain.decide`` and ``NeuralDecisionBrain.decide``, which
+    share it exactly)::
+
+        args[0] x           args[5] team_profile
+        args[1] y           args[6] under_pressure
+        args[2] teammates   args[7] attacks_right
+        args[3] defenders   args[8] game_state
+        args[4] engine      args[9] minute  (normally a KEYWORD, not here)
+
+    THE OFF-BY-ONE THAT WAS HERE, AND WHAT IT COST
+    ----------------------------------------------
+    The old body read ``args[7]``, ``args[8]``, ``args[9]`` — one slot to the
+    right of the truth — and ``args[9]`` does not exist.  Measured against the
+    engine's own call shape:
+
+        wrapper believed under_pressure  -> actually received attacks_right
+        wrapper believed attacks_right   -> actually received game_state
+        wrapper believed game_state      -> actually received NOTHING (None)
+
+    Both consequences were silent, and both are baked into the shipped corpus:
+
+    * ``_score_diff_of(None)`` is 0, so the scoreline was **0-0 in 100 % of the
+      15,426 rows**.  The brains were distilled from data that never contained
+      a scoreline — which is the mechanical origin of the "indifference" this
+      project set out to explain;
+    * ``attacks_right`` was a ``GameState`` enum, hence always TRUTHY, so every
+      recorded decision — the away team's included — was perceived as attacking
+      to the right.  Half the corpus is geometrically mirrored.
+
+    ``minute`` was right only by accident: it is passed as a keyword, and the
+    out-of-range fallback happened to land on the correct kwarg.
+    """
+    under_pressure = args[6] if len(args) > 6 else kwargs.get("under_pressure", False)
+    attacks_right = args[7] if len(args) > 7 else kwargs.get("attacks_right", True)
+    game_state = args[8] if len(args) > 8 else kwargs.get("game_state", None)
+    minute = args[9] if len(args) > 9 else kwargs.get("minute", 45.0)
+    return under_pressure, attacks_right, game_state, minute
+
+
 def _snapshot_decide(player, *args, **kwargs):
     """Patch that records (sensor, intent) then calls the real brain.
 
@@ -325,14 +396,16 @@ def _snapshot_decide(player, *args, **kwargs):
     teammates = args[2]
     defenders = args[3]
     position_engine = args[4]
-    # positional args after the player are: x, y, teammates, defenders,
-    # position_engine, team_profile, under_pressure, attacks_right,
-    # game_state, minute
-    under_pressure = args[7] if len(args) > 7 else kwargs.get("under_pressure", False)
-    attacks_right = args[8] if len(args) > 8 else kwargs.get("attacks_right", True)
-    game_state = args[9] if len(args) > 9 else kwargs.get("game_state", None)
-    minute = args[10] if len(args) > 10 else kwargs.get("minute", 45.0)
+    # See `_decode_situational_args` for the layout and for the off-by-one
+    # that used to live here (scoreline always 0-0, attacks_right always
+    # True — 100 % of the shipped corpus).
+    under_pressure, attacks_right, game_state, minute = _decode_situational_args(
+        args, kwargs)
     team_possession = True  # on-ball carrier is by definition in possession
+    # Player-frame scoreline (gate 8).  The record, the sensors and the stakes
+    # multiplier must all see the SAME signed value: "I am behind" has to mean
+    # behind for the man deciding, not for the scoreboard.
+    score_diff = _player_score_diff(game_state, attacks_right)
 
     # The sensors are computed BEFORE the exploration, because a
     # SITUATION-AWARE exploration needs to know where the player is: the
@@ -350,7 +423,7 @@ def _snapshot_decide(player, *args, **kwargs):
     sensors, scene = perceive(
         player, x, y, teammates, defenders, position_engine,
         under_pressure, attacks_right, game_state, minute,
-        team_possession=team_possession, score_diff=_score_diff_of(game_state),
+        team_possession=team_possession, score_diff=score_diff,
         config=get_perception_config(), return_scene=True,
     )
     # ε-exploration: replace the decision with a random ACTION the role can
@@ -376,6 +449,7 @@ def _snapshot_decide(player, *args, **kwargs):
         sensors=sensors,
         intent=d.intent,
         team=_team_of(player, position_engine),
+        score_diff=score_diff,
         **_situational_blocks(player, x, y,
                              scene.get("teammates", teammates),
                              scene.get("defenders", defenders),
@@ -717,7 +791,8 @@ def _correlate_outcomes_causal(
                 continue
             ar = True if not attacks_right_by_team else bool(
                 attacks_right_by_team.get(getattr(ev, "team", None), True))
-            reward = _event_success(ev, attacks_right=ar, grid=grid)
+            reward = _event_success(ev, attacks_right=ar, grid=grid,
+                                   stakes_pair=_stakes_pair(rec))
             pairs.append((rec.sensors, rec.intent, reward,
                           event_type_name(ev), rec.position))
     return pairs
@@ -810,18 +885,108 @@ def _pin_on_ball_policy(policy: str = "heuristic"):
 from threat_reward import (  # noqa: E402  (grouped for readability)
     threat_return, event_type_name, default_grid as _threat_grid,
     EXECUTION_TYPES as _EXECUTION_TYPES, describe as describe_reward,
-    SHOT_TYPES as _SHOT_TYPES,
+    SHOT_TYPES as _SHOT_TYPES, stakes as _stakes,
+    stakes_pair as _stakes_pair_of,
 )
+
+#: Whether the reward is scaled by how much the moment matters.
+#:
+#: ON by default FOR COLLECTION, because collection is the step whose whole
+#: purpose is to produce labels that know the scoreline.  It is still a switch
+#: so that a corpus can be reproduced against the old objective, and it is
+#: RECORDED IN THE SURROGATE METADATA (``stakes_applied``) so that a corpus
+#: can never again be silently ambiguous about what it was built against —
+#: which is the failure this project has already paid for twice.
+_STAKES_ENABLED = True
+
+
+def set_stakes(enabled: bool) -> None:
+    """Turn the scoreline-scaled reward on or off for subsequent collection."""
+    global _STAKES_ENABLED
+    _STAKES_ENABLED = bool(enabled)
+
+
+def stakes_applied() -> bool:
+    return bool(_STAKES_ENABLED)
+
+
+def stakes_mode() -> str:
+    """``"differential"`` (gain/loss split) or ``"off"``.
+
+    There is no ``"uniform"`` mode any more: the scalar multiplier is still
+    available through ``_event_success(stakes_mult=...)`` for reproducing an
+    old corpus, but the collector always labels differentially, because a
+    uniform multiplier cannot change which intent is preferred.
+    """
+    return "differential" if _STAKES_ENABLED else "off"
+
+
+def _stakes_mult(rec: Any) -> float:
+    """The multiplier for this decision's moment, or 1.0 if disabled.
+
+    ``stakes`` is 0.65 (cruising late) .. 1.60 (chasing late); 1.0 when the
+    match is level and there is time.  A disabled switch returns exactly 1.0,
+    which makes ``threat_return`` byte-identical to the old objective.
+    """
+    if not _STAKES_ENABLED:
+        return 1.0
+    try:
+        return float(_stakes(int(getattr(rec, "score_diff", 0) or 0),
+                             float(getattr(rec, "minute", 45.0) or 45.0)))
+    except Exception:
+        return 1.0
+
+
+def _stakes_pair(rec: Any) -> Tuple[float, float]:
+    """``(gain_mult, loss_mult)`` for this decision's moment, or (1, 1).
+
+    THE DIFFERENTIAL, NOT THE SCALAR.  ``stakes()`` scales every return by one
+    number, and scaling by a positive constant preserves order — so a corpus
+    labelled with a uniform multiplier teaches exactly the same preferences as
+    a corpus with no multiplier at all, only more or less confidently.  Gate 7
+    of ``docs/PREFLIGHT_RECOLLECTION_2026-11-16.md`` is a preference test, so
+    it needs the asymmetric version: see ``threat_reward.stakes_pair``.
+
+    A disabled switch returns exactly (1.0, 1.0), which makes the label
+    byte-identical to the old objective.
+    """
+    if not _STAKES_ENABLED:
+        return 1.0, 1.0
+    try:
+        g, l = _stakes_pair_of(int(getattr(rec, "score_diff", 0) or 0),
+                               float(getattr(rec, "minute", 45.0) or 45.0))
+        return float(g), float(l)
+    except Exception:
+        return 1.0, 1.0
 
 
 def _event_success(ev: Any, attacks_right: bool = True,
-                   grid: Optional[Sequence[Sequence[float]]] = None) -> float:
+                   grid: Optional[Sequence[Sequence[float]]] = None,
+                   stakes_mult: float = 1.0,
+                   stakes_pair: Optional[Tuple[float, float]] = None) -> float:
     """Threat return of one execution event (legacy name, new meaning).
 
     Kept as a thin alias so callers and tests that imported the old name keep
     working; the substance lives in :mod:`threat_reward`.
+
+    ``stakes_mult`` scales the WHOLE return (not just goals): a chasing team's
+    turnover has to cost more than a cruising team's, or the model is
+    incoherent.  1.0 is the old objective, byte for byte.
+
+    ``stakes_pair=(gain, loss)`` is the differential form and takes precedence
+    when given: the return is computed raw, then a positive return is scaled by
+    ``gain`` and a negative one by ``loss``.  That asymmetry is the only way a
+    scoreline can change WHICH intent is preferred — a uniform ``stakes_mult``
+    cannot, because it multiplies both sides by the same number.
     """
-    return threat_return(ev, grid=grid, attacks_right=attacks_right)
+    raw = threat_return(ev, grid=grid, attacks_right=attacks_right,
+                        stakes_mult=1.0)
+    if stakes_pair is not None:
+        gain, loss = stakes_pair
+        return raw * (float(gain) if raw >= 0.0 else float(loss))
+    if stakes_mult == 1.0:
+        return raw
+    return raw * float(stakes_mult)
 
 
 def _correlate_outcomes(
@@ -888,7 +1053,8 @@ def _correlate_outcomes(
             ev = events[i]["ev"]
             ar = True if not attacks_right_by_team else bool(
                 attacks_right_by_team.get(getattr(ev, "team", None), True))
-            reward = _event_success(ev, attacks_right=ar, grid=grid)
+            reward = _event_success(ev, attacks_right=ar, grid=grid,
+                                   stakes_pair=_stakes_pair(rec))
             # record the resulting action type too (helps interpret)
             paired.append((rec.sensors, rec.intent, reward, event_type_name(ev),
                            rec.position))
@@ -1033,6 +1199,10 @@ def collect_from_matches(
     _COLLECTOR = []
     _SITUATIONAL_RECORDS = []
     _EXPLORE_EPS = float(explore)
+    # Seeded per MATCH inside the loop, not once per run: an ε-explored
+    # decision must not depend on how many matches were played before it,
+    # or a collection split into chunks is a different experiment from the
+    # same collection run in one go.  See the loop.
     _EXPLORE_RNG = random.Random(seed + 977)
     _EXPLORED = 0
     _EXPLORE_SITUATIONAL = bool(explore_situational)
@@ -1043,6 +1213,15 @@ def collect_from_matches(
         away_styles = [away_style]
 
     all_paired = []
+    # The sequences from matches already on disk.  They are written back
+    # out ahead of this run's own, so a chunked collection is a superset
+    # and never a replacement.  (Without this the resumed file held only
+    # the new chunk's matches while claiming the total — silent loss.)
+    prior_sequences: List[Dict[str, Any]] = []
+    if resume_from and situational_out:
+        prior_sequences = load_situational_sequences(situational_out)
+        if verbose and prior_sequences:
+            print(f"  seeded {len(prior_sequences)} sequences from disk")
     if resume_from and raw_out and os.path.exists(raw_out):
         # SEED THE RAW PAIRS FROM THE FILE, so the surrogate still sees
         # every pair of the matches already on disk.
@@ -1062,6 +1241,11 @@ def collect_from_matches(
                     print(f"  match {m+1}: skipped (already on disk)")
                 continue
             random.seed(seed + m * 1000)
+            # Exploration is seeded from the MATCH INDEX, not carried over
+            # from the previous match, so match 7 explores identically
+            # whether it was the seventh match of one run or the first
+            # match of a later chunk.
+            _EXPLORE_RNG = random.Random((seed + 977) * 100003 + m)
             opp_style = away_styles[m % len(away_styles)]
             template = _COLLECTION_TEMPLATES[m % len(_COLLECTION_TEMPLATES)]
             # Each match is its own set of chain calls.  Without this clear,
@@ -1106,7 +1290,8 @@ def collect_from_matches(
             if situational_out:
                 save_situational_corpus(list(_SITUATIONAL_RECORDS),
                                         situational_out, quiet=True,
-                                        matches_completed=m + 1)
+                                        matches_completed=m + 1,
+                                        prior_sequences=prior_sequences)
             if raw_out:
                 save_raw_corpus(list(all_paired), raw_out, quiet=True)
             if verbose:
@@ -1214,6 +1399,39 @@ class FitnessSurrogate:
     # `tools/diag/_diag_forbidden_scale.py`.
     scales: Dict[str, float] = field(default_factory=dict)
 
+    # ── THE URGENCY LAYER (2026-11-16, gate 6) ──────────────────────────
+    # WHY THIS IS NOT A BUCKET DIMENSION.
+    # The obvious move — append `K{behind,level,ahead}T{early,mid,late}` to
+    # the bucket key — was designed, and then MEASURED and REJECTED.  The
+    # shipped corpus fits 173 cells for a centre midfielder from ~1,300 rows,
+    # i.e. ~15 samples per cell; the goal-geometry suffix already splits that
+    # 45 ways where it can.  A further 9-way split leaves ~1.7 samples per
+    # cell, and the fit's `min_samples=3` shrink cannot rescue a cell with one
+    # observation.  A table fitted on one sample per cell is noise, and noise
+    # in a reward table is worse than the indifference it replaces: it makes
+    # the same player choose differently on Tuesday for no football reason.
+    #
+    # So the urgency effect is estimated as a POOLED ADDITIVE SHIFT instead of
+    # a finer partition: one number per (position, scoreline band, intent),
+    # measured as the mean RESIDUAL of that intent's samples against the
+    # geometry cell they fell in.  Because the residual is taken within the
+    # cell, the estimate holds the situation constant — it answers "in the
+    # same place on the pitch, what did this action pay when we were two down
+    # late versus level early", which is exactly the question the policy needs
+    # answered.  Shrunk toward zero (`URGENCY_PRIOR_N`), so a position with
+    # no evidence keeps the old geometry-only value.
+    #
+    # This is the same hierarchical instinct as `A·M·D`, applied one level up:
+    # do not spend resolution the data cannot pay for.
+    urgency_delta: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    urgency_counts: Dict[str, Dict[str, Dict[str, int]]] = field(default_factory=dict)
+
+    #: The stakes mode this table was FITTED under.  Recorded because
+    #: ``stakes_mode()`` reports the live process switch, and a probe that
+    #: loads an old artifact would otherwise label it with today's setting —
+    #: a report that lies about the file it is reading is worse than no report.
+    stakes_mode_at_fit: str = ""
+
     @staticmethod
     def bucket(sensors: np.ndarray) -> str:
         """Map a sensor vector to a coarse situation key."""
@@ -1225,9 +1443,128 @@ class FitnessSurrogate:
         goal_close = int(sensors[14] < 0.5)  # within ~half of max goal distance
         return f"P{pressure}FT{final_third}OH{own_half}S{space}C{central}G{goal_close}"
 
+    # ── THE REWARD'S GEOMETRY (2026-11-08) ───────────────────────────────
+    # THE BUG THIS FIXES.  The key above has six bits and NOT ONE of them
+    # describes the goal.  `G` is a single "close enough" flag, so every shot
+    # in the attacking third — from 18 m dead centre with the mouth open, and
+    # from the byline with nothing on — lands in the SAME cell and is
+    # averaged into one number.  SHOOT's value in that cell is therefore a
+    # blend of goals and hopeless strikes, and it was measured BELOW DRIBBLE
+    # for the striker's clearest chance (P0FT1OH0S0C1G1 -> DRIBBLE 1.163,
+    # SWITCH 1.027, SHOOT 0.957).  The objective was not wrong about football;
+    # it was never told where the goal was.
+    #
+    # `sensors[2]` (goal_angle_norm, -1..+1 signed bearing to the goal) and
+    # `sensors[3]` (goal_mouth_norm, 0..1 — the angle the mouth subtends
+    # relative to the penalty-spot view, i.e. how open the goal is) were added
+    # on 2026-10-31 precisely for this and were never read by the reward.
+    #
+    # THE CELL EXPLOSION, AND WHY THIS IS A LADDER INSTEAD OF A WIDER KEY.
+    # Adding A·M·D multiplies the space by 5*3*3 = 45.  At ~800 decisions a
+    # match the per-position table is ALREADY sparse; a flat 9-bit key would
+    # push almost every lookup back to `prior` (0.0), and a table of zeros
+    # teaches the GA nothing at all — a worse failure than the one being
+    # fixed, because it is silent.  So the key is HIERARCHICAL: the rich cell
+    # is tried first, and the 6-bit parent is the fallback.  Where the data
+    # can resolve the geometry it does; where it cannot, the player gets
+    # exactly the coarse value he had before.  Coverage degrades gracefully
+    # instead of collapsing.
+    @staticmethod
+    def goal_geometry(sensors: np.ndarray) -> str:
+        """The goal-relative bins: bearing, how open the mouth is, distance.
+
+        A: SIGNED bearing to the goal — 0 = hard left, **2 = dead ahead**,
+           4 = hard right (``sensors[2]`` is -1..+1, so 0 maps to the middle
+           of five bins).  The sign is kept because which side of the goal a
+           player is on changes which shot is on.
+        M: 0 = mouth nearly shut .. 2 = mouth wide open
+        D: 0 = far .. 2 = closest
+        """
+        angle_bin = int(np.clip((sensors[2] + 1.0) * 2.5, 0, 4))
+        mouth_bin = int(np.clip(sensors[3] * 3.0, 0, 2))
+        dist_bin = int(np.clip((1.0 - sensors[14]) * 3.0, 0, 2))
+        return f"A{angle_bin}M{mouth_bin}D{dist_bin}"
+
+    #: Separator between the coarse parent key and the geometry suffix.  A
+    #: rich key always contains it, so the two levels are distinguishable
+    #: without parsing (see ``is_rich_key``).
+    RICH_SEP = "|"
+
+    @staticmethod
+    def urgency_key(sensors: np.ndarray) -> str:
+        """The scoreline band, or ``Kneutral`` before the stakes ramp starts.
+
+        Read straight off the sensor block — ``[18] score_diff / 5`` and
+        ``[19] minute / 90`` — which means it is in the DECIDING PLAYER's own
+        frame, because ``brain_integration._player_score_diff`` put it there
+        (gate 8).
+
+        WHY THERE IS NO SCORELINE BAND BEFORE MINUTE 60
+        ------------------------------------------------
+        ``stakes_pair`` ramps from minute 60 to 90 and is exactly (1.0, 1.0)
+        before that, so the reward does not scale anything in the first hour.
+        A band that split by scoreline there would still find differences —
+        teams that are behind early are different teams — but those
+        differences are team strength and match script, not stakes, and the
+        layer would then teach behaviour the objective never encoded.  So the
+        first hour is ONE band, and the anchor makes its shift exactly zero.
+
+        That is a deliberate limitation, not an oversight: this layer can only
+        express what the reward pays for, and the reward says the first hour
+        is worth the same at 3-0 and 0-0.  Widening the ramp is a separate
+        decision with its own evidence.
+
+        The thresholds are the reward's own: ``late`` is the last third of the
+        ramp, ``mid`` is where it is building.  ``±0.1`` in slot 18 is ±half a
+        goal, which separates level from a one-goal margin without splitting
+        1-0 from 3-0 (a distinction the sample size cannot pay for).
+        """
+        m = float(sensors[19])
+        if m < 0.6667:
+            return "Kneutral"
+        sd = float(sensors[18])
+        k = "ahead" if sd > 0.1 else ("behind" if sd < -0.1 else "level")
+        t = "mid" if m < 0.8889 else "late"
+        return f"K{k}T{t}"
+
+    @classmethod
+    def is_rich_key(cls, key: str) -> bool:
+        return cls.RICH_SEP in key
+
+    @classmethod
+    def bucket_keys(cls, sensors: np.ndarray) -> Tuple[str, str, str]:
+        """The key LADDER, richest first: (rich, coarse, minimal).
+
+        WHY THERE IS A THIRD RUNG (2026-11-16)
+        --------------------------------------
+        Two rungs were not enough, and the measurement is unambiguous.  On the
+        shipped corpus the median observations per (cell, intent) was **2** at
+        the rich rung and **4** at the coarse rung — and a cell with four
+        observations produces a fitted value that is mostly the shrink, so the
+        intent values inside it sit on top of each other.  The consequence was
+        measured on real states: for **49.6 % of decisions the top two intents
+        were separated by less than 0.001 raw reward units**, against a
+        cell-to-cell spread of 0.010-0.030.  The "preferred" intent was being
+        decided by a margin an order of magnitude below the noise, and that is
+        what gets distilled as the policy's target.
+
+        The minimal rung pools 8 cells per position instead of 64, which puts
+        ~240 observations behind each (cell, intent) on the same corpus.  It is
+        used ONLY when the finer rungs are too sparse to mean anything, so the
+        geometry is still used wherever the data pays for it — which is what
+        the ladder was always for.
+        """
+        coarse = cls.bucket(sensors)
+        minimal = (f"F{int(sensors[12] > 0.5)}"
+                   f"O{int(sensors[13] > 0.5)}"
+                   f"S{int(sensors[9] > 0.4)}")
+        return (coarse + cls.RICH_SEP + cls.goal_geometry(sensors), coarse,
+                minimal)
+
     def fit(self, data: List[Tuple[np.ndarray, PlayerIntent, float, str, str]],
             min_samples: int = 3) -> "FitnessSurrogate":
         """Build per-position tables from (sensors, intent, success, action, position)."""
+        self.stakes_mode_at_fit = stakes_mode()
         # group samples by position, with "" as the global aggregate
         grouped: Dict[str, List[Tuple[np.ndarray, PlayerIntent, float]]] = {}
         for sensors, intent, success, _action, position in data:
@@ -1242,12 +1579,17 @@ class FitnessSurrogate:
             acc: Dict[str, Dict[str, float]] = {}
             cnt: Dict[str, Dict[str, int]] = {}
             for sensors, intent, success in samples:
-                key = self.bucket(sensors)
                 ik = intent.value if hasattr(intent, "value") else str(intent)
-                acc.setdefault(key, {}).setdefault(ik, 0.0)
-                cnt.setdefault(key, {}).setdefault(ik, 0)
-                acc[key][ik] += success
-                cnt[key][ik] += 1
+                # BOTH LEVELS ARE POPULATED from the same sample: the rich
+                # cell (with goal geometry) and its 6-bit parent.  The parent
+                # is not a different observation — it is the same observation
+                # at coarser resolution, which is exactly what makes it the
+                # honest fallback when the rich cell has too few samples.
+                for key in self.bucket_keys(sensors):
+                    acc.setdefault(key, {}).setdefault(ik, 0.0)
+                    cnt.setdefault(key, {}).setdefault(ik, 0)
+                    acc[key][ik] += success
+                    cnt[key][ik] += 1
             for key, intents in cnt.items():
                 tot_s = sum(acc[key].get(ik, 0.0) for ik in intents)
                 tot_c = sum(intents.values())
@@ -1291,9 +1633,18 @@ class FitnessSurrogate:
         for _pos, _buckets in self.table.items():
             if _pos == "":
                 continue
+            # ONLY THE RICH CELLS, when there are any.  Since 2026-11-08 every
+            # sample lands in BOTH its rich cell and its 6-bit parent, so
+            # counting all cells would weigh each observation twice and pull
+            # the pooled mean toward the coarse (already-averaged) values.
+            # The scale is meant to describe the spread the GA actually reads,
+            # and that spread lives at the finest resolution available.
+            _items = [(b, i) for b, i in _buckets.items() if self.is_rich_key(b)]
+            if not _items:
+                _items = list(_buckets.items())
             _vals: List[float] = []
             _wts: List[float] = []
-            for _bucket, _intents in _buckets.items():
+            for _bucket, _intents in _items:
                 _crow = self.counts.get(_pos, {}).get(_bucket, {})
                 for _ik, _v in _intents.items():
                     _vals.append(float(_v))
@@ -1308,9 +1659,193 @@ class FitnessSurrogate:
             _mean = sum(v * w for v, w in zip(_vals, _wts)) / _tw
             _var = sum(w * (v - _mean) ** 2 for v, w in zip(_vals, _wts)) / _tw
             self.scales[_pos] = max(_SCALE_FLOOR, _var ** 0.5)
+
+        # ── THE URGENCY LAYER (gate 6) ──────────────────────────────────
+        # Two passes, and the order is the whole design: the geometry table is
+        # already fitted, so each sample can be scored against the cell it fell
+        # in and the residual averaged within a scoreline band.  Taking the
+        # residual inside a cell is what stops the estimate being confounded by
+        # WHERE a chasing team happens to play — it compares like with like,
+        # and it answers the only question the policy needs: in the same place,
+        # what did this action pay when we were two down late instead of level?
+        #
+        # Shrunk toward zero with `_URGENCY_PRIOR_N` pseudo-observations, so a
+        # band with three samples moves the value a little and a band with
+        # three hundred moves it fully.  A position with no evidence at all
+        # keeps exactly the value it had before this layer existed.
+        #
+        # Reset first: `fit` may be called twice on one instance (a refit after
+        # a corpus change), and stale bands from the previous corpus would
+        # survive a per-key overwrite.
+        self.urgency_delta = {}
+        self.urgency_counts = {}
+        _acc: Dict[str, Dict[str, Dict[str, float]]] = {}
+        _cnt: Dict[str, Dict[str, Dict[str, int]]] = {}
+        # Group by (position, RICH cell, intent) and take the residual INSIDE
+        # the group.  That is the whole correctness of this estimator, and it
+        # was got wrong once already:
+        #
+        # Residualising against the COARSE parent measures geometry misfit as
+        # well as the scoreline, because the parent pools 45 geometry cells
+        # and the band correlates with where a team plays (a chasing side is
+        # higher up the pitch).  The first version did exactly that and
+        # produced shifts of 0.29 raw units — ten to thirty times the spread
+        # of the cell values themselves — and flipped 46 % of decisions,
+        # including in the band where the multiplier is exactly 1.0.
+        #
+        # A cell that appears in only ONE band carries no information about
+        # how bands differ, so it contributes nothing.  That is not a bias,
+        # it is the definition of a within estimator: 40 % of rich cells hold
+        # a single observation, and those are silently — correctly — excluded.
+        _groups: Dict[Tuple[str, str, str], List[Tuple[str, float]]] = {}
+        for _pos, _samples in grouped.items():
+            for _sensors, _intent, _success in _samples:
+                _ik = (_intent.value if hasattr(_intent, "value")
+                       else str(_intent))
+                _rich = self.bucket_keys(_sensors)[0]
+                _uk = self.urgency_key(_sensors)
+                _groups.setdefault((_pos, _rich, _ik), []).append(
+                    (_uk, float(_success)))
+        for (_pos, _rich, _ik), _obs in _groups.items():
+            if len({b for b, _ in _obs}) < 2:
+                continue
+            _mean = sum(v for _, v in _obs) / len(_obs)
+            for _uk, _v in _obs:
+                _acc.setdefault(_pos, {}).setdefault(_uk, {})
+                _cnt.setdefault(_pos, {}).setdefault(_uk, {})
+                _acc[_pos][_uk][_ik] = _acc[_pos][_uk].get(_ik, 0.0) + (
+                    _v - _mean)
+                _cnt[_pos][_uk][_ik] = _cnt[_pos][_uk].get(_ik, 0) + 1
+
+        # THE ANCHOR.  A within-cell contrast identifies only DIFFERENCES
+        # between bands — adding the same constant to every band is invisible
+        # to the data.  Left unpinned, that constant is whatever makes the
+        # sample-weighted mean zero, which re-centres every intent's value and
+        # changes the baseline preference for reasons that have nothing to do
+        # with the scoreline.  So it is pinned where football says it must be
+        # zero: the neutral band, before minute 60, where the multiplier is
+        # exactly (1.0, 1.0) and a decision must be worth what it always was.
+        for _pos, _bands in _acc.items():
+            _iks = {ik for b in _bands.values() for ik in b}
+            for _ik in _iks:
+                _num = sum(b[_ik] for uk, b in _bands.items()
+                           if uk == "Kneutral" and _ik in b)
+                _den = sum(_cnt[_pos][uk][_ik] for uk in _bands
+                           if uk == "Kneutral" and _ik in _cnt[_pos][uk])
+                _anchor = _num / (_den + _URGENCY_PRIOR_N)
+                for _uk, _intents in _bands.items():
+                    if _ik not in _intents:
+                        continue
+                    _c = _cnt[_pos][_uk][_ik]
+                    self.urgency_delta.setdefault(_pos, {}).setdefault(
+                        _uk, {})[_ik] = _intents[_ik] / (_c + _URGENCY_PRIOR_N) \
+                        - _anchor
+                    self.urgency_counts.setdefault(_pos, {}).setdefault(
+                        _uk, {})[_ik] = _c
         return self
 
-    def _lookup(self, key: str, ik: str, pos: str) -> Optional[float]:
+    def _lookup(self, keys, ik: str, pos: str,
+                min_counts: Optional[Sequence[int]] = None) -> Optional[float]:
+        """Look the intent up in the key LADDER, richest first.
+
+        ``keys`` is either a single key (the historical call) or the
+        ``(rich, coarse, minimal)`` triple from ``bucket_keys``.  The first
+        level that holds a real sample wins; if none does, ``None`` is
+        returned and the caller falls back to the neutral prior.
+
+        NOTE: this is the RAW ladder — it reports what one rung holds.  The
+        value the model and the GA actually read is ``_pooled_value``, which
+        blends the rungs by evidence weight.  A probe that measures a fitted
+        value with ``_lookup`` is measuring something else, and the two will
+        disagree wherever the finer rung is thin.  That is deliberate: the
+        probes want to see the ladder, the model wants an estimate.
+
+        ``min_counts`` — THE LADDER NOW ACTUALLY ENFORCES THAT.
+        Until 2026-11-16 this docstring claimed the rich cell "can only win
+        where the data can actually resolve it" and the code did no such
+        thing: it took the rich cell whenever it held a single sample.  The
+        consequence was measured on the pilot and it is severe — for **60.8 %
+        of decisions the top two intents were separated by less than 0.001 raw
+        reward units**, against a cell-to-cell spread of 0.010-0.030.  The
+        preferred intent was therefore decided by a margin an order of
+        magnitude below the noise, and distilling it teaches a policy to
+        reproduce sampling noise: a player who looks indifferent because his
+        "best" action is arbitrary.
+
+        A rung with a count below its minimum is skipped, so the estimate
+        comes from the parent that pools 45 geometry cells and is dense
+        enough to mean something.  Geometry is used where it is paid for and
+        nowhere else — which is what the ladder was for.
+        """
+        if isinstance(keys, str):
+            keys = (keys,)
+        for i, key in enumerate(keys):
+            need = min_counts[i] if min_counts and i < len(min_counts) else 0
+            v = self._lookup_cell(key, ik, pos)
+            if v is None:
+                continue
+            if need:
+                c = self.counts.get(pos, {}).get(key, {}).get(ik, 0)
+                if c < need:
+                    continue
+            return v
+        return None
+
+    def _pooled_value(self, keys, ik: str, pos: str,
+                      prior: float = _LADDER_PRIOR_N) -> Optional[float]:
+        """The intent's value, pooled up the ladder by EVIDENCE WEIGHT.
+
+        THE DEFECT THIS REPLACES
+        ------------------------
+        The ladder used to *switch*: take the finest rung that holds any
+        sample.  That is a hard threshold on a quantity that varies smoothly,
+        and it has two consequences, both measured on the shipped corpus:
+
+        * a rich cell with one observation outranked a parent with two hundred,
+          so the value was one sample of noise;
+        * the switch could land on a DIFFERENT rung for each intent in the same
+          comparison, so two options were valued from different populations —
+          not a like-for-like comparison at all.
+
+        The result was that **49.6 % of decisions had their top two intents
+        within 0.001 raw units of each other**, against a within-cell spread of
+        0.012-0.030, and that is the number the distillation copies as its
+        target.  Nine times more data moved it to 50 %, i.e. nowhere.
+
+        WHAT THIS DOES INSTEAD
+        ----------------------
+        Standard hierarchical shrinkage, from the coarsest rung upward:
+
+            value <- (n_rung * mean_rung + k * value_parent) / (n_rung + k)
+
+        A cell with one observation moves the parent by 1/(1+k); a cell with
+        fifty is essentially its own mean.  Every intent is valued from the
+        same ladder with the same weights, so the comparison is consistent, and
+        no rung is ever discarded — the geometry contributes exactly as much as
+        the data behind it can support, which is what "hierarchical" was always
+        supposed to mean here.
+
+        ``k`` is ``_LADDER_PRIOR_N``.  It is the strength of the parent in
+        units of observations: 5 means a child needs 5 samples before it
+        carries half the weight.
+        """
+        keys = (keys,) if isinstance(keys, str) else tuple(keys)
+        vals = []
+        for key in keys:
+            v = self._lookup_cell(key, ik, pos)
+            if v is None:
+                continue
+            n = self.counts.get(pos, {}).get(key, {}).get(ik, 0)
+            vals.append((float(v), int(n)))
+        if not vals:
+            return None
+        # Coarsest first: it is the prior, and each finer rung is a correction.
+        value = vals[-1][0]
+        for v, n in reversed(vals[:-1]):
+            value = (n * v + prior * value) / (n + prior)
+        return value
+
+    def _lookup_cell(self, key: str, ik: str, pos: str) -> Optional[float]:
         # Position cell first.  Then the ROLE FAMILY's cell for the same
         # bucket and intent, then the global row for an intent the family
         # actually performed.  The global row is never allowed to lend a
@@ -1354,7 +1889,7 @@ class FitnessSurrogate:
         return None
 
     def expected_success(self, sensors: np.ndarray, intent: PlayerIntent,
-                         position: str = "") -> float:
+                         position: str = "", use_urgency: bool = True) -> float:
         """Expected THREAT RETURN for a sensor state + intent.
 
         Name kept for compatibility with every caller; the quantity is now the
@@ -1378,13 +1913,68 @@ class FitnessSurrogate:
         — every raw reward is above -1.0, so every scaled reward is above
         -1.0/scale, which is exactly where the scaled veto sits.
         """
-        key = self.bucket(sensors)
+        keys = self.bucket_keys(sensors)
         ik = intent.value if hasattr(intent, "value") else str(intent)
-        v = self._lookup(key, ik, position)
+        v = self._pooled_value(keys, ik, position)
         if v is None:
             return self.prior
+        # The urgency shift, added in RAW units before the per-position scale
+        # is applied — it is a shift of the same quantity the cells hold, so
+        # it has to be normalised the same way.  Absent a delta the value is
+        # untouched, which is what makes this layer backward compatible with
+        # every table fitted before it existed.
+        #
+        # ``use_urgency=False`` is the A/B switch for gate 7: the same sensor
+        # vector scored with and without the layer, so the difference is the
+        # layer's effect and nothing else.  Without that, a comparison across
+        # scorelines would be confounded by where chasing teams happen to be
+        # standing.
+        if use_urgency:
+            v += self.urgency_of(sensors, ik, position)
         _scale = self.scales.get(position, 1.0) or 1.0
         return v / _scale
+
+    def urgency_of(self, sensors: np.ndarray, ik: str, position: str) -> float:
+        """The pooled scoreline shift for this intent, or 0.0.
+
+        Falls back from the position row to the global row (``""``), which is
+        the same pooling order the tables use, and returns 0.0 when neither
+        has the intent — the honest answer for "no evidence", and the reason
+        an urgency band can never make a value worse than it was.
+        """
+        uk = self.urgency_key(sensors)
+        for pos in (position, ""):
+            d = self.urgency_delta.get(pos, {}).get(uk, {}).get(ik)
+            if d is not None:
+                return float(d)
+        return 0.0
+
+    def urgency_report(self) -> Dict[str, Any]:
+        """How much of the urgency layer the data actually paid for.
+
+        Gate 6 of ``docs/PREFLIGHT_RECOLLECTION_2026-11-16.md`` asks whether
+        the table can EXPRESS urgency.  This answers it numerically so the
+        question is never settled by opinion: ``bands`` is how many
+        (position, band, intent) triples were estimated, ``well_sampled`` how
+        many of those have at least ``_URGENCY_PRIOR_N`` observations (the
+        point at which the shrink stops dominating), and ``max_abs`` the
+        largest shift in RAW reward units — if that is ~0 the layer is inert
+        no matter how many cells it has.
+        """
+        bands = well = 0
+        max_abs = 0.0
+        for _pos, _bands in self.urgency_delta.items():
+            for _uk, _intents in _bands.items():
+                for _ik, _d in _intents.items():
+                    bands += 1
+                    c = self.urgency_counts.get(_pos, {}).get(
+                        _uk, {}).get(_ik, 0)
+                    if c >= _URGENCY_PRIOR_N:
+                        well += 1
+                    max_abs = max(max_abs, abs(float(_d)))
+        return {"bands": bands, "well_sampled": well,
+                "max_abs_delta": round(max_abs, 6),
+                "prior_n": _URGENCY_PRIOR_N}
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -1407,7 +1997,19 @@ class FitnessSurrogate:
                 # table of numbers is unreadable six months later and a
                 # retrained surrogate must not be silently compared to one
                 # fitted to a different objective.
-                "reward": describe_reward()}
+                "reward": describe_reward(),
+                "stakes_applied": self.stakes_mode_at_fit != "off",
+                # "uniform" (old scalar) or "differential" (gain/loss
+                # split).  A corpus built with a uniform multiplier
+                # cannot change which intent is preferred, so the mode
+                # has to travel with the table or a retrain looks like
+                # it failed for no reason.
+                "stakes_mode": self.stakes_mode_at_fit or stakes_mode(),
+                # The urgency layer (gate 6).  Travels with the table for the
+                # same reason the reward definition does: a table whose
+                # scoreline behaviour is unknown cannot be compared to another.
+                "urgency_delta": self.urgency_delta,
+                "urgency_counts": self.urgency_counts}
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
 
@@ -1427,14 +2029,28 @@ class FitnessSurrogate:
         # "no division" — i.e. exactly the old behaviour, not a crash and not
         # a silent zero.
         s.scales = {k: float(v) for k, v in data.get("scales", {}).items()}
+        # The urgency layer.  Absent (any table fitted before 2026-11-16) it
+        # loads empty, and `urgency_of` then returns 0.0 for every band — the
+        # old geometry-only value, exactly.
+        s.stakes_mode_at_fit = data.get("stakes_mode", "") or ""
+        s.urgency_delta = data.get("urgency_delta", {}) or {}
+        s.urgency_counts = data.get("urgency_counts", {}) or {}
         return s
 
     def report(self) -> Dict[str, Any]:
         positions = list(self.table.keys())
         n_bins = sum(len(v) for v in self.table.values())
-        n_cells = sum(len(v) for v in self.table.values() for v2 in v.values())
+        # (position, bucket, intent) triples.  NOT ``len(v)`` — ``v`` is the
+        # bucket dict, so ``len(v)`` inside a per-value comprehension counts
+        # the bucket once per intent and sums SQUARES: the 2026-11-08 corpus
+        # reported 105,839 cells from 3,146 samples, which is more cells than
+        # samples and is how this was caught.  The real count is 2,628.
+        n_cells = sum(len(v2) for v in self.table.values() for v2 in v.values())
         return {"positions": positions, "bins": n_bins,
                 "filled_cells": n_cells, "reward": describe_reward(),
+                "stakes_applied": (self.stakes_mode_at_fit or stakes_mode()) != "off",
+                "stakes_mode": self.stakes_mode_at_fit or stakes_mode(),
+                "urgency": self.urgency_report(),
                 # The per-position reward scale, so a report says what unit
                 # the reward is in.  A reader who does not see this cannot
                 # tell a CB's 0.09 from a CM's 0.002 apart.
@@ -1650,14 +2266,30 @@ def _emit_sequence(out: List[Dict[str, Any]], chunk: List[DecisionRecord],
 
 def save_situational_corpus(records: List[DecisionRecord], path: str,
                             quiet: bool = False,
-                            matches_completed: int = 0) -> int:
+                            matches_completed: int = 0,
+                            prior_sequences: Optional[List[Dict[str, Any]]] = None
+                            ) -> int:
     """Write the situational corpus (the sequences the BPTT trains on).
 
     ``matches_completed`` is written WITH it, so a crashed run can be
     RESUMED rather than restarted: the next invocation reads the counter
     and skips the matches already on disk.
+
+    ``prior_sequences``
+        The sequences ALREADY on disk, from matches played by an earlier
+        chunk.  They are written back out AHEAD of the new ones.
+
+        This parameter exists because its absence was a data-loss bug: the
+        file was rebuilt from ``records`` alone, and on a resumed run
+        ``records`` holds only the matches played by THAT process.  A
+        resumed chunk therefore overwrote the earlier matches with just
+        its own, while stamping the file with the TOTAL match count — so
+        the next chunk skipped the total and the early matches were gone
+        for good, with nothing on disk to say so.  Sequences are built
+        per (team, player) and are never merged across matches, so
+        concatenating the two lists is the whole of the correct repair.
     """
-    sequences = build_situational_sequences(records)
+    sequences = list(prior_sequences or []) + build_situational_sequences(records)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"matches_completed": int(matches_completed),
@@ -1667,6 +2299,25 @@ def save_situational_corpus(records: List[DecisionRecord], path: str,
         print(f"Saved situational corpus ({len(sequences)} sequences, "
               f"{steps} steps, {matches_completed} matches) to {path}")
     return len(sequences)
+
+
+def load_situational_sequences(path: str) -> List[Dict[str, Any]]:
+    """The sequences already on disk, as the raw dicts they were saved as.
+
+    Read back verbatim rather than rebuilt from ``DecisionRecord``s: the
+    file is the only surviving copy of the earlier matches, and a
+    round-trip through the record type would need every field of it to
+    still exist.  Returns [] when there is nothing to resume from.
+    """
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        seqs = data.get("sequences")
+        return list(seqs) if isinstance(seqs, list) else []
+    except Exception:
+        return []
 
 
 def completed_matches(path: str) -> int:
@@ -1690,6 +2341,9 @@ if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Build a fitness surrogate from real matches.")
     p.add_argument("--matches", type=int, default=5)
+    p.add_argument("--no-stakes", action="store_true",
+                   help="disable the scoreline-scaled reward (the old "
+                        "objective).  Recorded as stakes_applied=false.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=str, default="brains/surrogate.json")
     p.add_argument("--styles", type=str, default=None,
@@ -1729,6 +2383,15 @@ if __name__ == "__main__":
                         "explored action by the phase.")
     args = p.parse_args()
 
+    # The scoreline-scaled reward is ON for collection unless explicitly
+    # disabled.  See `set_stakes` — the choice is recorded in the surrogate
+    # metadata so a corpus can never be ambiguous about what built it.
+    if getattr(args, "no_stakes", False):
+        set_stakes(False)
+    print(f"Reward stakes: {stakes_mode()} "
+          f"(gain/loss split by scoreline and clock)" if stakes_applied()
+          else "Reward stakes: OFF (old objective, byte for byte)")
+
     styles = [s.strip() for s in args.styles.split(",") if s.strip()] if args.styles else None
     if args.raw_out or args.situational_out:
         # RESUME: a crashed collection continues from the matches already
@@ -1754,8 +2417,16 @@ if __name__ == "__main__":
         if args.raw_out:
             save_raw_corpus(raw, args.raw_out)
         if args.situational_out:
-            save_situational_corpus(list(_SITUATIONAL_RECORDS),
-                                    args.situational_out)
+            # NO FINAL SAVE HERE.  The loop already wrote the corpus after
+            # every match, carrying the prior sequences and the TRUE
+            # match count; this call used to write it a second time with
+            # neither, which stamped `matches_completed=0` and replaced
+            # the sequences with only this run's — so every run looked
+            # like a first run and every earlier chunk was destroyed on
+            # exit.  The file on disk is authoritative; just report it.
+            print(f"Situational corpus: {len(load_situational_sequences(args.situational_out))} "
+                  f"sequences, {completed_matches(args.situational_out)} matches "
+                  f"-> {args.situational_out}")
     else:
         surrogate = build_surrogate(n_matches=args.matches, seed=args.seed,
                                     save_path=args.out, away_styles=styles,

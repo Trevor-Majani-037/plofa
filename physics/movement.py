@@ -88,6 +88,10 @@ class MovementMemory:
     target: Optional[Tuple[float, float]] = None
     #: Seconds of reaction still owed on the current target.
     reaction_left: float = 0.0
+    #: The last per-tick destination the body was driving to. Held while a
+    #: reaction is pending so the delay is in his *information*, not his legs:
+    #: he keeps running toward where he thought things were for 0.2 s.
+    last_waypoint: Optional[Tuple[float, float]] = None
     #: Ticks spent in the current state — used only for reporting.
     ticks: int = 0
 
@@ -95,6 +99,7 @@ class MovementMemory:
         self.vx = self.vy = 0.0
         self.target = None
         self.reaction_left = 0.0
+        self.last_waypoint = None
         self.ticks = 0
 
     @property
@@ -163,6 +168,7 @@ def step(
     dt: float,
     *,
     reach: Optional[float] = None,
+    speed_cap: Optional[float] = None,
 ) -> Tuple[float, float, float]:
     """Advance the body one tick. Returns ``(x, y, distance_moved)``.
 
@@ -170,12 +176,19 @@ def step(
     this is a true integration rather than a per-tick speed assignment. All
     decision-making about *which* target is in :func:`perceive`. ``dt`` must be
     the real simulated step; the caller owns the clock.
+
+    ``speed_cap`` is the tactical pace budget for this tick (see
+    :func:`physics.player_motion.integrate`). Without it the body runs to
+    ``profile.max_speed`` — its capability, not its decision — and covers far
+    more ground than any real player does.
     """
     if dt <= 0.0:
         return position[0], position[1], 0.0
 
     state = KinematicState(position[0], position[1], memory.vx, memory.vy)
     kwargs = {"reach": reach} if reach is not None else {}
+    if speed_cap is not None:
+        kwargs["speed_cap"] = speed_cap
     new = integrate(state, target, dt, profile, **kwargs)
 
     memory.vx, memory.vy = new.vx, new.vy

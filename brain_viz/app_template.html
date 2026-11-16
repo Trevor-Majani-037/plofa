@@ -1,0 +1,1576 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PLOFA · Situational Brain Observatory</title>
+<style>
+/* ───────────────────────── design tokens ───────────────────────── */
+:root{
+  --bg:#04070c; --bg2:#060b13;
+  --panel:#0a121c; --panel2:#0d1826; --panel3:#101e2e;
+  --line:rgba(132,170,210,.14); --line2:rgba(132,170,210,.07);
+  --txt:#e7eff9; --dim:#8497ae; --dim2:#5a6b80;
+  --cyan:#3ee0ff; --cyan2:#1aa9c7;
+  --lime:#b9ff63; --amber:#ffc266; --rose:#ff7495; --violet:#a795ff;
+  --mate:#3ee0ff; --opp:#ff7495;
+  --mono:ui-monospace,"Cascadia Code","SFMono-Regular",Consolas,monospace;
+  --sans:"Segoe UI",Inter,system-ui,-apple-system,sans-serif;
+  --r:16px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;color:var(--txt);font-family:var(--sans);font-size:14px;line-height:1.45;
+  background:
+    radial-gradient(1100px 600px at 8% -8%, rgba(30,140,190,.16), transparent 60%),
+    radial-gradient(900px 500px at 96% 0%, rgba(120,90,220,.12), transparent 60%),
+    radial-gradient(1200px 800px at 50% 108%, rgba(80,220,140,.06), transparent 60%),
+    var(--bg);
+  min-height:100vh;-webkit-font-smoothing:antialiased;
+}
+::selection{background:rgba(62,224,255,.25)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#1b2a3d;border-radius:8px;border:2px solid var(--bg)}
+::-webkit-scrollbar-track{background:transparent}
+button{font-family:inherit;color:inherit;cursor:pointer}
+h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
+p{margin:0}
+
+.app{max-width:1780px;margin:0 auto;padding:0 22px 60px}
+
+/* ───────────────────────── top bar ───────────────────────── */
+.topbar{
+  display:flex;align-items:center;gap:20px;padding:18px 2px 14px;
+  position:sticky;top:0;z-index:40;
+  background:linear-gradient(180deg,rgba(4,7,12,.96) 55%,rgba(4,7,12,0));
+  backdrop-filter:blur(10px);
+}
+.brand{display:flex;align-items:center;gap:13px;min-width:0}
+.mark{
+  width:42px;height:42px;border-radius:13px;display:grid;place-items:center;
+  background:linear-gradient(145deg,#0f3040,#0a1622);
+  border:1px solid rgba(62,224,255,.4);
+  box-shadow:0 0 26px rgba(62,224,255,.18),inset 0 1px 0 rgba(255,255,255,.08);
+  font-family:var(--mono);font-weight:700;font-size:19px;color:var(--cyan);
+  flex:0 0 auto;
+}
+.brand h1{font-size:17px;letter-spacing:.14em;text-transform:uppercase}
+.brand p{font-size:11px;color:var(--dim);font-family:var(--mono);letter-spacing:.04em;margin-top:2px}
+.topmeta{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center}
+.topmeta .stat{
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);
+  border:1px solid var(--line);border-radius:999px;padding:5px 10px;
+  background:rgba(10,20,32,.7);white-space:nowrap;
+}
+.topmeta .stat b{color:var(--txt);font-weight:600}
+.btn{
+  border:1px solid var(--line);background:rgba(12,24,38,.8);border-radius:10px;
+  padding:8px 13px;font-size:11px;font-family:var(--mono);letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dim);transition:.18s;
+}
+.btn:hover{color:var(--txt);border-color:rgba(62,224,255,.45);background:rgba(16,40,56,.8)}
+.btn.primary{color:#04121a;background:linear-gradient(135deg,#5ce8ff,#9dfc9d);border:0;font-weight:700}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+
+/* ───────────────────────── brain rail ───────────────────────── */
+.brainrail{
+  display:flex;gap:8px;overflow-x:auto;padding:8px 2px 14px;margin-bottom:12px;
+  scrollbar-width:thin;
+}
+.brainrail .grp{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.brainrail .glabel{
+  font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--dim2);
+  writing-mode:vertical-rl;transform:rotate(180deg);padding:2px 0;
+}
+.bchip{
+  flex:0 0 auto;min-width:88px;padding:9px 12px;border-radius:12px;
+  border:1px solid var(--line);background:linear-gradient(180deg,#0b1521,#081019);
+  text-align:left;transition:.16s;position:relative;overflow:hidden;
+}
+.bchip:hover{border-color:rgba(62,224,255,.35);transform:translateY(-1px)}
+.bchip .bp{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.04em}
+.bchip .bf{font-size:9px;font-family:var(--mono);color:var(--dim2);letter-spacing:.1em;text-transform:uppercase;margin-top:2px}
+.bchip .bmini{display:flex;gap:2px;margin-top:6px;height:4px;align-items:end}
+.bchip .bmini i{flex:1;background:var(--dim2);border-radius:1px;opacity:.5;display:block}
+.bchip.on{
+  border-color:rgba(62,224,255,.7);background:linear-gradient(180deg,#0e2634,#0a1723);
+  box-shadow:0 0 0 1px rgba(62,224,255,.15),0 8px 30px rgba(62,224,255,.08);
+}
+.bchip.on .bp{color:var(--cyan)}
+.bchip.on .bmini i{background:var(--cyan);opacity:.85}
+
+/* ───────────────────────── control bar ───────────────────────── */
+.controlbar{
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  border:1px solid var(--line);border-radius:var(--r);
+  background:linear-gradient(180deg,rgba(13,24,38,.85),rgba(8,16,26,.85));
+  padding:12px 14px;margin-bottom:14px;
+}
+.chainwrap{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chainwrap .clabel{font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--dim2);margin-right:2px}
+.chain{
+  border:1px solid var(--line);background:rgba(10,20,32,.6);border-radius:11px;
+  padding:8px 13px;text-align:left;transition:.16s;max-width:280px;
+}
+.chain:hover{border-color:rgba(62,224,255,.35)}
+.chain .ct{font-size:12px;font-weight:600}
+.chain .cs{font-size:10px;color:var(--dim2);margin-top:1px}
+.chain.on{border-color:rgba(185,255,99,.55);background:rgba(30,48,22,.35)}
+.chain.on .ct{color:var(--lime)}
+.stepper{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+.stepPills{display:flex;gap:6px;align-items:center}
+.pill{
+  width:34px;height:34px;border-radius:10px;border:1px solid var(--line);
+  background:rgba(10,20,32,.7);font-family:var(--mono);font-size:12px;color:var(--dim);
+  display:grid;place-items:center;position:relative;transition:.16s;
+}
+.pill small{position:absolute;bottom:-14px;font-size:7.5px;color:var(--dim2);letter-spacing:.05em}
+.pill:hover{color:var(--txt);border-color:rgba(62,224,255,.4)}
+.pill.on{background:linear-gradient(135deg,#124b5c,#0e2b3a);border-color:rgba(62,224,255,.7);color:#fff}
+.arrow{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:rgba(10,20,32,.7);font-size:15px;color:var(--dim)}
+.arrow:hover{color:var(--txt);border-color:rgba(62,224,255,.4)}
+.stepper .hint{font-family:var(--mono);font-size:9px;color:var(--dim2);letter-spacing:.08em}
+
+/* ───────────────────────── layout ───────────────────────── */
+.grid3{display:grid;grid-template-columns:minmax(330px,.92fr) minmax(370px,1.12fr) minmax(330px,.96fr);gap:14px;align-items:start}
+.grid2{display:grid;grid-template-columns:1.02fr 1fr;gap:14px;margin-top:14px;align-items:start}
+.panel{
+  border:1px solid var(--line);border-radius:var(--r);
+  background:linear-gradient(180deg,rgba(12,22,34,.92),rgba(7,14,23,.94));
+  box-shadow:0 18px 50px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.03);
+  overflow:hidden;
+}
+.panel > header{
+  display:flex;align-items:center;gap:10px;padding:12px 15px;
+  border-bottom:1px solid var(--line2);
+  background:linear-gradient(180deg,rgba(18,32,48,.55),rgba(10,18,28,.15));
+}
+.panel > header h3{font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--dim)}
+.panel > header .tag{
+  margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--dim2);
+  border:1px solid var(--line);border-radius:999px;padding:3px 8px;letter-spacing:.06em;white-space:nowrap;
+}
+.panel .body{padding:14px 15px 15px}
+.sechead{display:flex;align-items:baseline;gap:8px;margin:16px 0 9px}
+.sechead:first-child{margin-top:0}
+.sechead h4{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim2)}
+.sechead .line{flex:1;height:1px;background:linear-gradient(90deg,var(--line2),transparent)}
+
+/* ───────────────────────── pitch ───────────────────────── */
+.canvasWrap{position:relative;padding:10px 10px 0}
+#pitch{display:block;width:100%;aspect-ratio:105/68;border-radius:12px;background:#07130d;cursor:crosshair}
+.tip{
+  position:absolute;pointer-events:none;z-index:20;min-width:120px;max-width:250px;
+  background:rgba(6,14,22,.97);border:1px solid rgba(62,224,255,.3);border-radius:9px;
+  padding:8px 10px;font-size:11px;box-shadow:0 12px 34px rgba(0,0,0,.6);
+  opacity:0;transform:translateY(4px);transition:opacity .1s,transform .1s;
+}
+.tip.on{opacity:1;transform:none}
+.tip b{display:block;font-size:11.5px;margin-bottom:2px}
+.tip .trow{display:flex;justify-content:space-between;gap:12px;color:var(--dim);font-family:var(--mono);font-size:10px}
+.tip .trow span:last-child{color:var(--txt)}
+.factrow{display:flex;gap:6px;flex-wrap:wrap;padding:11px 10px 12px}
+.fact{
+  border:1px solid var(--line);border-radius:9px;padding:5px 9px;
+  background:rgba(10,20,32,.6);font-family:var(--mono);font-size:9.5px;color:var(--dim);
+  letter-spacing:.02em;white-space:nowrap;
+}
+.fact b{color:var(--txt);font-weight:600}
+.legend{display:flex;gap:12px;flex-wrap:wrap;padding:0 12px 10px;font-size:9.5px;color:var(--dim2);font-family:var(--mono)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+
+/* ───────────────────────── tape / cells ───────────────────────── */
+.tapeblock{margin-bottom:11px}
+.tbhead{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.tbhead .tn{font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--dim2)}
+.tbhead .td{font-family:var(--mono);font-size:9px;color:var(--dim2);margin-left:auto}
+.cells{display:grid;grid-template-columns:repeat(var(--n,12),minmax(0,1fr));gap:3px}
+.cell{
+  position:relative;border:1px solid rgba(0,0,0,.35);border-radius:6px;
+  min-height:30px;padding:2px;overflow:hidden;transition:transform .12s,box-shadow .12s;
+  display:flex;align-items:flex-end;justify-content:flex-end;
+}
+.cell:hover{transform:translateY(-2px);z-index:3;box-shadow:0 8px 18px rgba(0,0,0,.5)}
+.cell .vv{font-family:var(--mono);font-size:8px;line-height:1;opacity:.85;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.cell.lbl{align-items:flex-start;justify-content:flex-start;min-height:40px;padding:3px 3px 2px;flex-direction:column;gap:1px}
+.cell.lbl .nm{font-family:var(--mono);font-size:7.5px;line-height:1.05;letter-spacing:.01em;opacity:.92;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
+.cell.lbl .vv{font-size:8.5px;align-self:flex-end;margin-top:auto}
+.cell[data-dp]::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--dc);opacity:.9}
+.cell .sup{position:absolute;top:2px;right:3px;font-size:7px;color:var(--dc)}
+.cells.key .cell{min-height:34px}
+.hintline{font-size:10px;color:var(--dim2);margin-top:8px;font-family:var(--mono);letter-spacing:.02em}
+.hintline b{color:var(--dim)}
+
+/* attention rows */
+.attrow{
+  display:grid;grid-template-columns:20px 1fr 44px;gap:8px;align-items:center;
+  padding:5px 6px;border-radius:8px;border:1px solid transparent;transition:.12s;cursor:default;
+}
+.attrow:hover,.attrow.on{background:rgba(62,224,255,.07);border-color:rgba(62,224,255,.22)}
+.attrow .rk{font-family:var(--mono);font-size:10px;color:var(--dim2);text-align:right}
+.attrow.top .rk{color:var(--cyan)}
+.attmain{min-width:0}
+.attname{display:flex;align-items:center;gap:6px;font-size:11.5px}
+.attname b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-family:var(--mono);font-size:8px;letter-spacing:.05em;padding:2px 5px;border-radius:4px;border:1px solid var(--line);color:var(--dim)}
+.badge.mate{color:var(--cyan);border-color:rgba(62,224,255,.3);background:rgba(62,224,255,.07)}
+.badge.opp{color:var(--rose);border-color:rgba(255,116,149,.3);background:rgba(255,116,149,.07)}
+.badge.press{color:var(--amber);border-color:rgba(255,194,102,.35);background:rgba(255,194,102,.08)}
+.attbar{height:5px;border-radius:3px;background:rgba(255,255,255,.06);margin-top:4px;overflow:hidden}
+.attbar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#1aa9c7,#3ee0ff);width:0;transition:width .5s cubic-bezier(.2,.8,.2,1)}
+.attpct{font-family:var(--mono);font-size:11px;text-align:right;color:var(--txt)}
+.attmeta{font-size:9px;color:var(--dim2);font-family:var(--mono);margin-top:1px}
+
+/* ───────────────────────── decide / bars ───────────────────────── */
+.hero{
+  border:1px solid rgba(185,255,99,.25);border-radius:13px;
+  background:linear-gradient(145deg,rgba(50,80,30,.28),rgba(10,20,30,.4));
+  padding:13px 14px;margin-bottom:13px;
+}
+.hero .hl{font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--dim2)}
+.hero .hv{font-size:23px;font-weight:700;letter-spacing:-.02em;margin-top:3px;color:var(--lime);line-height:1.1}
+.hero .hs{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:5px}
+.hero .hs b{color:var(--txt)}
+.hero .hdraw{font-family:var(--mono);font-size:9.5px;color:var(--dim2);margin-top:6px;border-top:1px dashed var(--line);padding-top:6px}
+.probar{margin-bottom:7px}
+.probar .pl{display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px;font-family:var(--mono)}
+.probar .pl span:first-child{color:var(--dim);letter-spacing:.02em}
+.probar .pl span:last-child{color:var(--txt)}
+.probar .ptrack{height:9px;border-radius:5px;background:rgba(255,255,255,.055);overflow:hidden;position:relative}
+.probar .pfill{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,#164a58,#2f9fb8);width:0;transition:width .55s cubic-bezier(.2,.8,.2,1)}
+.probar.lead .pfill{background:linear-gradient(90deg,#3b6b1e,#b9ff63)}
+.probar.lead .pl span:first-child{color:var(--lime)}
+.probar .mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--amber);box-shadow:0 0 6px var(--amber);display:none}
+.probar.sampled .mark{display:block}
+.metaGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.metaBox{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:rgba(8,16,26,.6)}
+.metaBox .mk{font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;color:var(--dim2)}
+.metaBox .mv{font-family:var(--mono);font-size:14px;margin-top:2px}
+.planhead{margin-top:14px;border-top:1px solid var(--line2);padding-top:12px}
+.planrow{display:grid;grid-template-columns:1fr 42px;gap:8px;align-items:center;margin-bottom:6px;font-size:10px}
+.planrow .pn{color:var(--dim);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.planrow .pb{grid-column:1/3;height:4px;border-radius:2px;background:rgba(255,255,255,.05);margin-top:-3px;overflow:hidden}
+.planrow .pb i{display:block;height:100%;background:linear-gradient(90deg,#7a6220,#ffc266);width:0;transition:width .5s}
+.planrow .pv{font-family:var(--mono);font-size:10px;text-align:right;color:var(--dim)}
+.planrow.on .pn{color:var(--amber)}
+.planrow.on .pv{color:var(--txt)}
+.planstatus{font-size:10.5px;color:var(--dim);border-left:2px solid rgba(255,194,102,.5);padding-left:9px;margin-top:10px;line-height:1.5}
+
+/* ───────────────────────── GRU ───────────────────────── */
+.grumetrics{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.gm{border:1px solid var(--line);border-radius:9px;padding:6px 9px;background:rgba(8,16,26,.55);font-family:var(--mono)}
+.gm .gk{font-size:8px;letter-spacing:.1em;color:var(--dim2);display:block}
+.gm .gv{font-size:13px;color:var(--txt)}
+.gm .gv small{font-size:8px;color:var(--dim2)}
+.gstrip{margin-bottom:9px}
+.gsh{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.gsh .gt{font-family:var(--mono);font-size:9px;letter-spacing:.12em;color:var(--dim)}
+.gsh .gd{font-size:9px;color:var(--dim2);margin-left:auto}
+.gcells{display:grid;grid-template-columns:repeat(16,minmax(0,1fr));gap:3px}
+.gcell{
+  height:20px;border-radius:5px;border:1px solid rgba(0,0,0,.3);
+  display:grid;place-items:center;font-family:var(--mono);font-size:7px;
+  color:rgba(255,255,255,.75);transition:.12s;position:relative;
+}
+.gcell:hover{transform:translateY(-1px);box-shadow:0 6px 14px rgba(0,0,0,.5);z-index:2}
+.gcell.sel{outline:2px solid #fff;outline-offset:1px}
+.hsplit{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* ───────────────────────── neurons ───────────────────────── */
+.neuronwrap{display:grid;grid-template-columns:minmax(240px,1.25fr) minmax(210px,.9fr);gap:14px;align-items:start}
+.ngrid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px}
+.ncell{
+  border:1px solid rgba(0,0,0,.35);border-radius:8px;aspect-ratio:1/1;position:relative;
+  display:flex;flex-direction:column;justify-content:space-between;padding:4px;
+  font-family:var(--mono);transition:.12s;overflow:hidden;
+}
+.ncell:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.55);z-index:2}
+.ncell .ni{font-size:8px;opacity:.65}
+.ncell .nv{font-size:8.5px;align-self:flex-end;opacity:.95}
+.ncell.sel{outline:2px solid #fff;outline-offset:1px}
+.ncell.silent{opacity:.38;border-style:dashed}
+.toggle{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-left:auto}
+.toggle button{border:0;background:transparent;padding:5px 9px;font-family:var(--mono);font-size:8.5px;letter-spacing:.07em;color:var(--dim2)}
+.toggle button.on{background:rgba(62,224,255,.14);color:var(--cyan)}
+.nlegend{display:flex;gap:10px;font-family:var(--mono);font-size:8.5px;color:var(--dim2);margin-top:8px;flex-wrap:wrap}
+.nlegend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;vertical-align:middle}
+.inspector{border:1px solid var(--line);border-radius:12px;background:rgba(8,16,26,.6);padding:11px 12px;min-height:260px}
+.inspector .ihead{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+.inspector .ihead b{font-size:15px}
+.inspector .ihead span{font-family:var(--mono);font-size:9px;color:var(--dim2);letter-spacing:.08em}
+.irow{display:flex;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:10px;padding:3px 0;border-bottom:1px dashed var(--line2)}
+.irow:last-child{border-bottom:0}
+.irow span:first-child{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.irow span:last-child{color:var(--txt);white-space:nowrap}
+.drv{display:grid;grid-template-columns:1fr auto;gap:8px;font-family:var(--mono);font-size:9.5px;padding:3px 0;align-items:center}
+.drv .dl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.drv .dv{color:var(--txt);white-space:nowrap}
+.gtag{display:inline-block;font-size:7.5px;padding:1px 4px;border-radius:3px;margin-right:4px;border:1px solid var(--line);color:var(--dim2)}
+.gtag.n{color:var(--lime);border-color:rgba(185,255,99,.3)}
+.gtag.z{color:var(--cyan);border-color:rgba(62,224,255,.3)}
+.gtag.r{color:var(--violet);border-color:rgba(167,149,255,.3)}
+.minibars{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+.mbrow{display:grid;grid-template-columns:78px 1fr 38px;gap:6px;align-items:center;font-family:var(--mono);font-size:8px;color:var(--dim2)}
+.mbrow .mbtrack{height:4px;background:rgba(255,255,255,.05);border-radius:2px;position:relative;overflow:hidden}
+.mbrow .mbtrack i{position:absolute;top:0;bottom:0;border-radius:2px}
+.mbrow.pos .mbtrack i{background:linear-gradient(90deg,#2a7a52,#b9ff63)}
+.mbrow.neg .mbtrack i{background:linear-gradient(90deg,#8c3350,#ff7495)}
+
+/* ───────────────────────── mechanism stack ───────────────────────── */
+.stacksec{margin-top:20px}
+.stacktitle{display:flex;align-items:center;gap:12px;margin:0 2px 12px}
+.stacktitle h2{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.stacktitle .line{flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+.stacktitle .sub{font-family:var(--mono);font-size:9px;color:var(--dim2);letter-spacing:.06em}
+.stackgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
+.mech .body{padding:12px 14px 14px}
+.mech .mhead{display:flex;align-items:baseline;gap:8px;margin-bottom:9px}
+.mech .mbig{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--cyan);line-height:1}
+.mech .msmall{font-family:var(--mono);font-size:9px;color:var(--dim2);letter-spacing:.06em}
+.mech .mnote{font-size:10px;color:var(--dim2);line-height:1.55;margin-top:9px;border-left:2px solid var(--line);padding-left:9px}
+.mechrow{display:grid;grid-template-columns:1fr auto;gap:10px;font-family:var(--mono);font-size:9.5px;padding:3.5px 0;border-bottom:1px dashed var(--line2);align-items:center}
+.mechrow:last-child{border-bottom:0}
+.mechrow .k{color:var(--dim2);letter-spacing:.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mechrow .v{color:var(--txt);text-align:right;white-space:normal;overflow-wrap:anywhere}
+.mechrow .v b{color:var(--cyan);font-weight:600}
+.mechrow .v .warn{color:var(--amber)}
+.mtrack{height:5px;border-radius:3px;background:rgba(255,255,255,.055);overflow:hidden;margin:3px 0 7px}
+.mtrack i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#1aa9c7,#3ee0ff);width:0;transition:width .5s cubic-bezier(.2,.8,.2,1)}
+.mtrack.amber i{background:linear-gradient(90deg,#7a6220,#ffc266)}
+.mtrack.rose i{background:linear-gradient(90deg,#8c3350,#ff7495)}
+.epi{display:grid;grid-template-columns:1fr 54px;gap:4px 8px;padding:5px 0;border-bottom:1px dashed var(--line2);font-family:var(--mono);font-size:9.5px}
+.epi:last-child{border-bottom:0}
+.epi .et{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.epi .ew{text-align:right;color:var(--txt)}
+.epi .eb{grid-column:1/3;height:4px;border-radius:2px;background:rgba(255,255,255,.05);overflow:hidden;margin-top:-1px}
+.epi .eb i{display:block;height:100%;background:linear-gradient(90deg,#7a6220,#ffc266);border-radius:2px}
+.badge2{display:inline-block;font-family:var(--mono);font-size:8px;letter-spacing:.05em;padding:2px 6px;border-radius:5px;border:1px solid var(--line);color:var(--dim)}
+.badge2.ok{color:var(--lime);border-color:rgba(185,255,99,.35);background:rgba(185,255,99,.07)}
+.badge2.no{color:var(--dim2);border-color:var(--line)}
+.badge2.hot{color:var(--amber);border-color:rgba(255,194,102,.35);background:rgba(255,194,102,.07)}
+.dotrow{display:flex;gap:5px;align-items:center;margin:5px 0 2px}
+.dot{width:100%;height:6px;border-radius:3px;background:rgba(255,255,255,.06);position:relative;overflow:hidden}
+.dot i{position:absolute;inset:0;background:linear-gradient(90deg,#1aa9c7,#3ee0ff);width:0;transition:width .5s}
+.dot i.on{background:linear-gradient(90deg,#3b6b1e,#b9ff63)}
+.hlist{max-height:132px;overflow:auto;padding-right:2px}
+.hrow{display:grid;grid-template-columns:1fr 48px;gap:8px;font-family:var(--mono);font-size:9px;padding:3px 0;border-bottom:1px dashed var(--line2);color:var(--dim)}
+.hrow:last-child{border-bottom:0}
+.hrow .hw{text-align:right;color:var(--dim2)}
+.hrow .why{grid-column:1/3;font-size:8px;color:var(--dim2);margin-top:-1px}
+.stagechain{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.stage{border:1px solid var(--line);border-radius:11px;background:rgba(8,16,26,.55);padding:9px 10px;position:relative}
+.stage.dashed{border-style:dashed;opacity:.82}
+.stage .sn{font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:var(--dim2);text-transform:uppercase}
+.stage .st2{font-size:11px;font-weight:650;margin:2px 0 6px}
+.stage .sd{font-family:var(--mono);font-size:8px;color:var(--dim2);line-height:1.4;margin-bottom:7px;min-height:22px}
+.stage .srowx{display:grid;grid-template-columns:1fr 30px;gap:6px;align-items:center;font-family:var(--mono);font-size:8px;color:var(--dim);margin-bottom:4px}
+.stage .srowx .sbar{height:4px;border-radius:2px;background:rgba(255,255,255,.06);grid-column:1/3;overflow:hidden;margin-top:-1px}
+.stage .srowx .sbar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,#164a58,#3ee0ff);width:0}
+.stage .srowx.top{color:var(--lime)}
+.stage .srowx.top .sbar i{background:linear-gradient(90deg,#3b6b1e,#b9ff63)}
+.stage .sdelta{font-family:var(--mono);font-size:8px;color:var(--dim2);margin-top:5px;border-top:1px dashed var(--line2);padding-top:5px}
+
+@media (max-width:1280px){
+  .stackgrid{grid-template-columns:1fr 1fr}
+  .stagechain{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (max-width:760px){
+  .stackgrid{grid-template-columns:1fr}
+  .stagechain{grid-template-columns:1fr 1fr}
+  .stagechain .stage:last-child{grid-column:1/-1}
+}
+
+/* ───────────────────────── evidence / narrative ───────────────────────── */
+.evgrid{display:grid;grid-template-columns:1fr 1.05fr;gap:22px}
+.blockbars{display:flex;flex-direction:column;gap:9px}
+.bbar{display:grid;grid-template-columns:88px 1fr 54px;gap:10px;align-items:center;font-family:var(--mono);font-size:10px}
+.bbar .bl{color:var(--dim);letter-spacing:.03em}
+.bbar .btrack{height:12px;border-radius:6px;background:rgba(255,255,255,.04);position:relative;overflow:hidden}
+.bbar .btrack::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.18)}
+.bbar .btrack i{position:absolute;top:0;bottom:0;border-radius:6px;transition:width .5s,left .5s}
+.bbar .bv{text-align:right;color:var(--txt)}
+.bbar .bv small{display:block;font-size:7.5px;color:var(--dim2);letter-spacing:.03em}
+.srow{display:grid;grid-template-columns:20px 1fr 46px;gap:8px;align-items:center;padding:4px 0;border-bottom:1px dashed var(--line2);font-family:var(--mono);font-size:10px}
+.srow .sblk{font-size:7px;letter-spacing:.05em;color:var(--dim2);text-transform:uppercase}
+.srow .sl{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .sv{text-align:right;font-weight:600}
+.dpn{color:var(--lime)}
+.dpp{color:var(--rose)}
+.evsum{margin-top:12px;font-size:11px;color:var(--dim);line-height:1.6;border-left:2px solid var(--line);padding-left:10px}
+.narr{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.ncard{border:1px solid var(--line);border-radius:12px;background:rgba(8,16,26,.5);padding:11px 12px;position:relative;overflow:hidden}
+.ncard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--nc,var(--cyan))}
+.ncard .nt{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;color:var(--nc,var(--cyan));text-transform:uppercase;margin-bottom:4px}
+.ncard .nh{font-size:11.5px;font-weight:650;margin-bottom:4px}
+.ncard .nx{font-size:10.5px;color:var(--dim);line-height:1.5}
+.prov{display:grid;grid-template-columns:1.2fr 1fr;gap:20px}
+.prov .plist{display:flex;flex-direction:column;gap:7px}
+.prov .pitem{display:flex;gap:9px;align-items:flex-start;font-family:var(--mono);font-size:10px;color:var(--dim)}
+.prov .pitem b{color:var(--cyan);font-weight:600;font-size:9px;min-width:18px}
+.prov .pitem span{line-height:1.45}
+.prov .note{font-size:10.5px;color:var(--dim2);line-height:1.65;border-left:2px solid rgba(167,149,255,.4);padding-left:11px}
+.prov .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-family:var(--mono);font-size:9.5px;margin-top:10px}
+.prov .kv span:nth-child(odd){color:var(--dim2)}
+.prov .kv span:nth-child(even){color:var(--txt)}
+.footer{margin-top:26px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:9px;color:var(--dim2);letter-spacing:.06em;border-top:1px solid var(--line2);padding-top:14px}
+.kbd{border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--dim);font-size:8.5px}
+.flash{animation:flash .45s ease}
+@keyframes flash{0%{opacity:.55;transform:translateY(3px)}100%{opacity:1;transform:none}}
+
+@media (max-width:1280px){
+  .grid3{grid-template-columns:1fr 1fr}
+  .grid3 .pitchpanel{grid-column:1/-1}
+  .narr{grid-template-columns:repeat(2,1fr)}
+}
+@media (max-width:980px){
+  .grid3,.grid2,.evgrid,.prov,.neuronwrap,.hsplit{grid-template-columns:1fr}
+  .topbar{position:static;flex-wrap:wrap}
+  .topmeta{margin-left:0}
+  .brainrail{overflow-x:auto}
+}
+@media (max-width:640px){
+  .app{padding:0 12px 40px}
+  .cells{grid-template-columns:repeat(8,minmax(0,1fr))!important}
+  .narr{grid-template-columns:1fr}
+  .gcells{grid-template-columns:repeat(8,minmax(0,1fr))}
+  .stepper{margin-left:0}
+  .hero .hv{font-size:19px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── top bar ─────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">Ψ</div>
+      <div>
+        <h1>Brain Observatory</h1>
+        <p>v5_situational · attention · GRU · memory · plan</p>
+      </div>
+    </div>
+    <div class="topmeta" id="topmeta"></div>
+    <div style="display:flex;gap:8px;margin-left:12px">
+      <button class="btn" id="exportBtn" title="Download this thought as JSON">Export</button>
+      <button class="btn primary" id="playBtn">▶ Watch it think</button>
+    </div>
+  </header>
+
+  <!-- ── brain rail ──────────────────────────────────────────── -->
+  <nav class="brainrail" id="brainrail" aria-label="Position brains"></nav>
+
+  <!-- ── scenario controls ───────────────────────────────────── -->
+  <section class="controlbar">
+    <div class="chainwrap" id="chains"></div>
+    <div class="stepper">
+      <span class="hint">TOUCH</span>
+      <button class="arrow" id="prevBtn" aria-label="Previous touch">←</button>
+      <div class="stepPills" id="stepPills"></div>
+      <button class="arrow" id="nextBtn" aria-label="Next touch">→</button>
+    </div>
+  </section>
+
+  <main>
+    <!-- ── row 1 ─────────────────────────────────────────────── -->
+    <section class="grid3">
+      <article class="panel pitchpanel">
+        <header>
+          <h3>What he sees</h3>
+          <span class="tag" id="pitchTag">perceived frame</span>
+        </header>
+        <div class="canvasWrap">
+          <canvas id="pitch"></canvas>
+          <div class="tip" id="tip"></div>
+        </div>
+        <div class="factrow" id="facts"></div>
+        <div class="legend">
+          <span><i style="background:var(--mate)"></i>teammate</span>
+          <span><i style="background:var(--opp)"></i>opponent</span>
+          <span><i style="background:transparent;border:1px dashed var(--dim2)"></i>outside his view</span>
+          <span><i style="background:transparent;border:1px dashed var(--cyan2)"></i>field of view</span>
+          <span><i style="background:var(--amber)"></i>number = attention rank</span>
+        </div>
+      </article>
+
+      <article class="panel">
+        <header>
+          <h3>What it is fed</h3>
+          <span class="tag">47-d situation + 16 tokens</span>
+        </header>
+        <div class="body">
+          <div class="sechead"><h4>Attention — the 16 entity tokens</h4><div class="line"></div></div>
+          <div id="attention"></div>
+          <div class="sechead"><h4>The input tape · click a cell for attribution</h4><div class="line"></div></div>
+          <div id="tape"></div>
+          <div class="hintline">Cell colour = normalised value. <b>Underline</b> = how much that input alone held the choice up (gold) or pushed against it (rose).</div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <header>
+          <h3>What it chooses</h3>
+          <span class="tag" id="brainTag">—</span>
+        </header>
+        <div class="body">
+          <div id="decision"></div>
+          <div id="planhead"></div>
+        </div>
+      </article>
+    </section>
+
+    <!-- ── row 2 ─────────────────────────────────────────────── -->
+    <section class="grid2">
+      <article class="panel">
+        <header>
+          <h3>Inside the cell — the GRU</h3>
+          <span class="tag">32 units · z / r / n · h carried</span>
+        </header>
+        <div class="body" id="gru"></div>
+      </article>
+
+      <article class="panel">
+        <header>
+          <h3>The 32 neurons</h3>
+          <div class="toggle" id="metricToggle">
+            <button data-m="act" class="on">Activation</button>
+            <button data-m="con">Contribution</button>
+          </div>
+        </header>
+        <div class="body">
+          <div class="neuronwrap">
+            <div>
+              <div class="ngrid" id="neurons"></div>
+              <div class="nlegend">
+                <span><i style="background:var(--cyan)"></i>positive</span>
+                <span><i style="background:var(--rose)"></i>negative</span>
+                <span><i style="background:transparent;border:1px dashed var(--dim2)"></i>silent</span>
+                <span>click a unit to inspect its drivers</span>
+              </div>
+            </div>
+            <div class="inspector" id="inspector"></div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- ── row 2b: the rest of the mechanism stack ──────────────── -->
+    <section class="stacksec" id="stack">
+      <div class="stacktitle">
+        <h2>The full mechanism stack</h2>
+        <span class="line"></span>
+        <span class="sub">perceive · remember · store · plan · instruct · judge · sample</span>
+      </div>
+      <div class="stackgrid">
+        <article class="panel mech">
+          <header>
+            <h3>Perception — what reaches him</h3>
+            <span class="tag" id="perTag">—</span>
+          </header>
+          <div class="body" id="perception"></div>
+        </article>
+
+        <article class="panel mech">
+          <header>
+            <h3>Memory &amp; temperament</h3>
+            <span class="tag" id="memTag">—</span>
+          </header>
+          <div class="body" id="memorydeep"></div>
+        </article>
+
+        <article class="panel mech">
+          <header>
+            <h3>The neural store — what survives the touch</h3>
+            <span class="tag" id="storeTag">—</span>
+          </header>
+          <div class="body" id="store"></div>
+        </article>
+
+        <article class="panel mech">
+          <header>
+            <h3>Team plan — the hysteresis</h3>
+            <span class="tag" id="planTag">—</span>
+          </header>
+          <div class="body" id="planstate"></div>
+        </article>
+
+        <article class="panel mech">
+          <header>
+            <h3>Coach instruction — the manager's say</h3>
+            <span class="tag" id="coachTag">—</span>
+          </header>
+          <div class="body" id="coach"></div>
+        </article>
+
+        <article class="panel mech">
+          <header>
+            <h3>Consequence — what the critic expects</h3>
+            <span class="tag" id="consTag">—</span>
+          </header>
+          <div class="body" id="consequence"></div>
+        </article>
+      </div>
+
+      <section class="panel" style="margin-top:14px">
+        <header>
+          <h3>The decision pipeline — every seam, in order</h3>
+          <span class="tag" id="pipeTag">net → coach → critic → temperature → draw</span>
+        </header>
+        <div class="body">
+          <div class="stagechain" id="pipeline"></div>
+          <div class="hintline">Each stage is applied by the shipped function named on the card. The dashed stage is the cognition route: it is <b>not</b> active in this scene, so it is shown as a counterfactual, not as the executed path.</div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ── row 3 ─────────────────────────────────────────────── -->
+    <section class="panel" style="margin-top:14px">
+      <header>
+        <h3>Why this choice — ablation evidence</h3>
+        <span class="tag" id="evTag">zero one input, measure the change</span>
+      </header>
+      <div class="body evgrid" id="evidence"></div>
+    </section>
+
+    <!-- ── row 4 ─────────────────────────────────────────────── -->
+    <section class="panel" style="margin-top:14px">
+      <header>
+        <h3>What it thinks</h3>
+        <span class="tag">generated from the tensors above</span>
+      </header>
+      <div class="body">
+        <div class="narr" id="narrative"></div>
+      </div>
+    </section>
+
+    <!-- ── row 5 ─────────────────────────────────────────────── -->
+    <section class="panel" style="margin-top:14px">
+      <header>
+        <h3>Provenance — how this page was made</h3>
+        <span class="tag" id="provTag">—</span>
+      </header>
+      <div class="body prov" id="provenance"></div>
+    </section>
+
+    <footer class="footer">
+      <span>PLOFA · per-decision observatory · offline, self-contained</span>
+      <span>keys: <span class="kbd">←</span> <span class="kbd">→</span> touch · <span class="kbd">[</span> <span class="kbd">]</span> brain</span>
+    </footer>
+  </main>
+</div>
+
+<script>
+"use strict";
+const DATA = /*__BRAIN_DATA__*/null;
+
+/* ───────────────────────── helpers ───────────────────────── */
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : Number(v).toFixed(d);
+const pct = (v, d = 0) => (v === null || v === undefined) ? "—" : (v * 100).toFixed(d) + "%";
+const sgn = (v, d = 1) => (v >= 0 ? "+" : "") + Number(v).toFixed(d);
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const ease = t => 1 - Math.pow(1 - t, 3);
+
+const HEAT = [[0,[13,22,33]],[.42,[13,84,99]],[.72,[52,175,164]],[1,[185,255,99]]];
+function heat(v){
+  v = clamp01(v);
+  for(let i=1;i<HEAT.length;i++){
+    if(v <= HEAT[i][0]){
+      const [a,ca]=HEAT[i-1], [b,cb]=HEAT[i];
+      const t=(v-a)/(b-a||1);
+      const c=ca.map((x,k)=>Math.round(x+(cb[k]-x)*t));
+      return `rgb(${c[0]},${c[1]},${c[2]})`;
+    }
+  }
+  return "rgb(185,255,99)";
+}
+function divColor(v){
+  const a = Math.min(1, Math.abs(v));
+  return v >= 0
+    ? `rgba(62,224,255,${0.10 + 0.72 * a})`
+    : `rgba(255,116,149,${0.10 + 0.72 * a})`;
+}
+const INTENTS = DATA.intents.map(i => i.name);
+const INTENT_SHORT = DATA.intents.map(i => i.short);
+const STATE = DATA.stateLabels;
+const MEM = DATA.memoryLabels;
+const PLAN = DATA.planLabels;
+
+/* ───────────────────────── state ───────────────────────── */
+const S = {
+  brain: 0, chain: 0, step: 0,
+  unit: null, metric: "act", hover: null,
+  timer: null,
+};
+const brain = () => DATA.brains[S.brain];
+const chain = () => brain().chains[S.chain];
+const step = () => chain().steps[S.step];
+
+/* ───────────────────────── render: rail / controls ───────────────────────── */
+function renderRail(){
+  const groups = [
+    ["GK", ["GK"]],
+    ["DEF", ["CB","LB","RB"]],
+    ["MID", ["CDM","CM","CAM"]],
+    ["ATT", ["LW","RW","ST","CF"]],
+  ];
+  const rail = $("#brainrail");
+  rail.innerHTML = groups.map(([label, ids]) => `
+    <div class="grp">
+      <span class="glabel">${label}</span>
+      ${ids.map(id => {
+        const idx = DATA.brains.findIndex(b => b.id === id);
+        const b = DATA.brains[idx];
+        const probs = b.chains[0].steps[0].out.probs;
+        const top = [0,1,2].map(i => `<i style="height:${8 + probs[i]*26}px"></i>`).join("");
+        return `<button class="bchip ${idx===S.brain?"on":""}" data-i="${idx}" title="${esc(b.id)} · ${b.params.toLocaleString()} parameters">
+          <span class="bp">${esc(b.id)}</span>
+          <span class="bf">${esc(b.family)} family</span>
+          <span class="bmini">${top}</span>
+        </button>`;
+      }).join("")}
+    </div>`).join("");
+  rail.querySelectorAll(".bchip").forEach(el => el.onclick = () => {
+    S.brain = +el.dataset.i; S.chain = 0; S.step = 0; S.unit = null; S.hover = null;
+    render();
+  });
+}
+
+function renderControls(){
+  const b = brain(), c = chain();
+  $("#chains").innerHTML = `<span class="clabel">SITUATION</span>` + b.chains.map((ch, i) => `
+    <button class="chain ${i===S.chain?"on":""}" data-i="${i}">
+      <div class="ct">${esc(ch.label)}</div>
+      <div class="cs">${esc(ch.sub)}</div>
+    </button>`).join("");
+  $("#chains").querySelectorAll(".chain").forEach(el => el.onclick = () => {
+    S.chain = +el.dataset.i; S.step = 0; S.unit = null; S.hover = null; render();
+  });
+  $("#stepPills").innerHTML = c.steps.map((st, i) => `
+    <button class="pill ${i===S.step?"on":""}" data-i="${i}" title="${esc(st.label)}">
+      ${i+1}<small>${Math.round(st.minute)}'</small>
+    </button>`).join("");
+  $("#stepPills").querySelectorAll(".pill").forEach(el => el.onclick = () => {
+    S.step = +el.dataset.i; S.unit = null; S.hover = null; render();
+  });
+  $("#prevBtn").disabled = S.step === 0;
+  $("#nextBtn").disabled = S.step === c.steps.length - 1;
+}
+
+/* ───────────────────────── canvas ───────────────────────── */
+const cv = $("#pitch");
+const ctx = cv.getContext("2d");
+let hitboxes = [];
+let sizeCache = { w: 0, h: 0, dpr: 1 };
+
+function layoutCanvas(){
+  const rect = cv.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if(Math.abs(rect.width - sizeCache.w) < 0.5 && Math.abs(rect.height - sizeCache.h) < 0.5 && dpr === sizeCache.dpr) return;
+  sizeCache = { w: rect.width, h: rect.height, dpr };
+  cv.width = Math.max(2, Math.round(rect.width * dpr));
+  cv.height = Math.max(2, Math.round(rect.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawPitch(){
+  layoutCanvas();
+  const W = sizeCache.w, H = sizeCache.h;
+  ctx.clearRect(0, 0, W, H);
+  const pad = 14;
+  const sx = (W - pad*2) / 105, sy = (H - pad*2) / 68;
+  const X = x => pad + x * sx, Y = y => pad + y * sy;
+  const st = step();
+
+  // grass
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#0a1c12"); g.addColorStop(1, "#07140d");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for(let i=0;i<10;i++){
+    ctx.fillStyle = i % 2 ? "rgba(255,255,255,.014)" : "rgba(0,0,0,.05)";
+    ctx.fillRect(X(i*10.5), Y(0), 10.5*sx, H);
+  }
+  // lines
+  ctx.strokeStyle = "rgba(190,225,205,.28)"; ctx.lineWidth = 1;
+  const rect = (x0,y0,x1,y1) => { ctx.strokeRect(X(x0), Y(y0), (x1-x0)*sx, (y1-y0)*sy); };
+  rect(0,0,105,68);
+  ctx.beginPath(); ctx.moveTo(X(52.5), Y(0)); ctx.lineTo(X(52.5), Y(68)); ctx.stroke();
+  ctx.beginPath(); ctx.arc(X(52.5), Y(34), 9.15*sx, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(X(52.5), Y(34), 2.2, 0, Math.PI*2); ctx.fillStyle="rgba(190,225,205,.35)"; ctx.fill();
+  rect(0, 13.84, 16.5, 54.16); rect(88.5, 13.84, 105, 54.16);
+  rect(0, 24.84, 5.5, 43.16); rect(99.5, 24.84, 105, 43.16);
+  // penalty spots
+  ctx.fillStyle = "rgba(190,225,205,.4)";
+  ctx.beginPath(); ctx.arc(X(11), Y(34), 1.6, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(X(94), Y(34), 1.6, 0, Math.PI*2); ctx.fill();
+  // goals
+  const goal = (x, w) => {
+    ctx.fillStyle = "rgba(255,194,102,.10)";
+    ctx.fillRect(X(x), Y(30.34), w*sx, 7.32*sy);
+    ctx.strokeStyle = "rgba(255,194,102,.55)"; ctx.lineWidth = 1.5;
+    ctx.strokeRect(X(x), Y(30.34), w*sx, 7.32*sy);
+  };
+  goal(0, -2.2); goal(105, 2.2);
+
+  // field of view — the cone perception actually let through
+  if(st.perception){
+    const half = st.perception.fov * Math.PI / 360;
+    const rr = st.perception.radius * sx;
+    const fcx = st.carrier.pos[0], fcy = st.carrier.pos[1];
+    ctx.beginPath();
+    ctx.moveTo(X(fcx), Y(fcy));
+    ctx.arc(X(fcx), Y(fcy), rr, -half, half);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(62,224,255,.045)";
+    ctx.fill();
+    ctx.setLineDash([5,5]);
+    ctx.strokeStyle = "rgba(62,224,255,.22)";
+    ctx.lineWidth = 1; ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // goal mouth cone from carrier
+  const cx = st.carrier.pos[0], cy = st.carrier.pos[1];
+  const mouth = st.facts.mouthRatio;
+  ctx.beginPath(); ctx.moveTo(X(cx), Y(cy));
+  ctx.lineTo(X(105), Y(30.34)); ctx.lineTo(X(105), Y(37.66)); ctx.closePath();
+  ctx.fillStyle = `rgba(255,194,102,${0.04 + 0.09 * mouth})`; ctx.fill();
+  ctx.strokeStyle = `rgba(255,194,102,${0.18 + 0.25 * mouth})`; ctx.lineWidth = 1; ctx.stroke();
+
+  // attention links (top 6)
+  const tops = st.tokens.map((t,i)=>({t,i})).filter(o=>o.t.mask>0).sort((a,b)=>b.t.alpha-a.t.alpha).slice(0,6);
+  for(const {t} of tops){
+    const p = st.actors.find(a => a.rank === st.tokens.indexOf(t));
+    const pos = p ? (p.seenPos || p.pos) : null;
+    if(!pos) continue;
+    ctx.beginPath(); ctx.moveTo(X(cx), Y(cy)); ctx.lineTo(X(pos[0]), Y(pos[1]));
+    ctx.strokeStyle = `rgba(62,224,255,${0.05 + 0.4*t.alpha})`;
+    ctx.lineWidth = 0.6 + 3.2*t.alpha; ctx.stroke();
+  }
+
+  // actors
+  hitboxes = [];
+  const hoverName = S.hover;
+  for(const a of st.actors){
+    const pos = a.seen ? (a.seenPos || a.pos) : a.pos;
+    const px = X(pos[0]), py = Y(pos[1]);
+    const tok = a.rank !== null && a.rank !== undefined ? st.tokens[a.rank] : null;
+    const att = tok && tok.mask > 0 ? tok.alpha : 0;
+    const base = a.team === "mate" ? [62,224,255] : [255,116,149];
+    const isCar = a.name === st.carrier.name;
+
+    if(a.rank !== null && a.rank !== undefined && att > 0.015){
+      const rr = 5 + 22 * att;
+      const rg = ctx.createRadialGradient(px, py, 1, px, py, rr);
+      rg.addColorStop(0, `rgba(${base[0]},${base[1]},${base[2]},${0.30 + 0.5*att})`);
+      rg.addColorStop(1, `rgba(${base[0]},${base[1]},${base[2]},0)`);
+      ctx.fillStyle = rg;
+      ctx.beginPath(); ctx.arc(px, py, rr, 0, Math.PI*2); ctx.fill();
+    }
+
+    const r = isCar ? 5.2 : 4.1;
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
+    if(!a.inFrame && !a.seen){
+      ctx.fillStyle = "rgba(120,140,160,.16)";
+      ctx.setLineDash([2,2]); ctx.strokeStyle = "rgba(140,160,180,.35)"; ctx.lineWidth = 1;
+      ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+    } else if(isCar){
+      ctx.fillStyle = "#f4fbff"; ctx.fill();
+      ctx.strokeStyle = "rgba(62,224,255,.9)"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 11 + 2*Math.sin(Date.now()/600), 0, Math.PI*2);
+      ctx.strokeStyle = "rgba(62,224,255,.22)"; ctx.lineWidth = 1.2; ctx.stroke();
+    } else {
+      ctx.fillStyle = `rgba(${base[0]},${base[1]},${base[2]},${a.rank!==null?0.95:0.5})`;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 1; ctx.stroke();
+      if(tok && tok.presser){ ctx.beginPath(); ctx.arc(px, py, 6.6, 0, Math.PI*2); ctx.strokeStyle="rgba(255,194,102,.65)"; ctx.lineWidth=1.2; ctx.stroke(); }
+    }
+
+    if(a.rank !== null && a.rank !== undefined){
+      const label = String(a.rank + 1);
+      ctx.font = "600 8.5px ui-monospace,Consolas,monospace";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const bx = px + 8, by = py - 8;
+      ctx.fillStyle = "rgba(4,10,16,.88)";
+      ctx.beginPath(); ctx.arc(bx, by, 6, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = `rgba(62,224,255,${0.25 + 0.6*att})`; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = att > 0.12 ? "#bff3ff" : "#7fa0b5"; ctx.fillText(label, bx, by + .5);
+    }
+    if(a.name === hoverName){
+      ctx.beginPath(); ctx.arc(px, py, r + 5, 0, Math.PI*2);
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    hitboxes.push({ px, py, r: Math.max(9, r + 4), actor: a, tok });
+  }
+
+  // carrier label
+  ctx.font = "600 8px ui-monospace,Consolas,monospace";
+  ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  ctx.fillStyle = "rgba(230,245,255,.85)";
+  ctx.fillText(st.carrier.name, X(cx) + 10, Y(cy) + 22);
+}
+
+/* canvas hover */
+cv.addEventListener("mousemove", ev => {
+  const r = cv.getBoundingClientRect();
+  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  let best = null, bd = 14;
+  for(const h of hitboxes){
+    const d = Math.hypot(h.px - mx, h.py - my);
+    if(d < bd){ bd = d; best = h; }
+  }
+  const tip = $("#tip");
+  if(!best){ tip.classList.remove("on"); S.hover = null; markAttRows(); return; }
+  const a = best.actor, t = best.tok;
+  S.hover = a.name;
+  tip.innerHTML = `<b>${esc(a.name)}</b>
+    <div class="trow"><span>${esc(a.team)} · ${esc(a.role)}</span><span>${fmt(a.dist,1)} m</span></div>
+    ${t && t.mask > 0 ? `<div class="trow"><span>attention</span><span>${pct(t.alpha,1)} · rank ${a.rank+1}</span></div>
+      <div class="trow"><span>space to marker</span><span>${fmt(t.feat[5],2)}</span></div>` :
+      `<div class="trow"><span>attention</span><span>${a.inFrame ? "in his frame, no attention mass" : "outside the mind's frame"}</span></div>`}`;
+  const wrap = cv.parentElement.getBoundingClientRect();
+  let lx = ev.clientX - wrap.left + 14, ly = ev.clientY - wrap.top + 14;
+  if(lx > wrap.width - 220) lx -= 240;
+  if(ly > wrap.height - 90) ly -= 90;
+  tip.style.left = lx + "px"; tip.style.top = ly + "px";
+  tip.classList.add("on");
+  drawPitch();
+  markAttRows();
+});
+cv.addEventListener("mouseleave", () => {
+  $("#tip").classList.remove("on"); S.hover = null; drawPitch(); markAttRows();
+});
+cv.addEventListener("click", () => {
+  if(!S.hover) return;
+  const row = document.querySelector(`.attrow[data-name="${CSS.escape(S.hover)}"]`);
+  if(row) row.scrollIntoView({block:"nearest", behavior:"smooth"});
+});
+
+/* ───────────────────────── facts ───────────────────────── */
+function renderFacts(){
+  const st = step(), f = st.facts;
+  const ang = Math.abs(f.goalDeg) < 1 ? "dead ahead" : `${Math.abs(f.goalDeg).toFixed(0)}° ${f.goalDeg>0?"right":"left"}`;
+  $("#facts").innerHTML = [
+    ["FRAME", `${f.mind}/${f.total}`],
+    ["SEEN", `${f.seen}/${f.total}`],
+    ["NEAREST OPP", f.nearestM === null ? ">15 m" : `${fmt(f.nearestM,1)} m`],
+    ["OPP ≤5m", f.def5],
+    ["OPP ≤10m", f.def10],
+    ["GOAL", `${fmt(f.goalM,0)} m · ${ang}`],
+    ["MOUTH", `${fmt(f.mouthDeg,1)}° (${pct(f.mouthRatio,0)})`],
+    ["FATIGUE", pct(f.fatigue,0)],
+    ["ATTENTION", `${fmt(f.entropy,2)} bits · ${pct(f.entropyNorm,0)}`],
+  ].map(([k,v]) => `<span class="fact">${k} <b>${v}</b></span>`).join("");
+  $("#pitchTag").textContent = `${st.touch} / ${chain().steps.length} · ${Math.round(st.minute)}'`;
+}
+
+/* ───────────────────────── attention ───────────────────────── */
+function renderAttention(){
+  const st = step();
+  const rows = st.tokens.map((t,i)=>({t,i})).filter(o=>o.t.mask>0)
+    .sort((a,b)=>b.t.alpha-a.t.alpha);
+  const total = rows.reduce((s,o)=>s+o.t.alpha,0) || 1;
+  $("#attention").innerHTML = rows.map(({t,i}, r) => `
+    <div class="attrow ${r===0?"top":""}" data-name="${esc(t.name)}" data-rank="${i+1}">
+      <div class="rk">${i+1}</div>
+      <div class="attmain">
+        <div class="attname">
+          <b>${esc(t.name)}</b>
+          <span class="badge ${t.team}">${t.team === "mate" ? "MATE" : "OPP"}</span>
+          <span class="badge">${esc(t.role)}</span>
+          ${t.presser ? `<span class="badge press">PRESSER</span>` : ""}
+          ${t.inView === false ? `<span class="badge" style="color:var(--dim2)">OUT OF VIEW</span>` : ""}
+        </div>
+        <div class="attmeta">${fmt(t.dist,1)} m ${t.feat[6] > .5 ? "· ahead" : "· behind"} ${t.feat[7] > .5 ? "· wide" : "· central"}${t.feat[11] > .5 ? " · nearest opponent" : ""}</div>
+        <div class="attbar"><i style="width:${(t.alpha/total*100).toFixed(1)}%"></i></div>
+      </div>
+      <div class="attpct">${pct(t.alpha,1)}</div>
+    </div>`).join("") || `<div class="hintline">No token is visible on this frame.</div>`;
+  $("#attention").querySelectorAll(".attrow").forEach(el => {
+    el.addEventListener("mouseenter", () => { S.hover = el.dataset.name; drawPitch(); markAttRows(); });
+    el.addEventListener("mouseleave", () => { S.hover = null; drawPitch(); markAttRows(); });
+  });
+}
+function markAttRows(){
+  document.querySelectorAll(".attrow").forEach(el =>
+    el.classList.toggle("on", el.dataset.name === S.hover));
+}
+
+/* ───────────────────────── input tape ───────────────────────── */
+function cellHTML(u, block, label, value, dp, cls){
+  const c = cls === "div" ? divColor(value) : heat(value);
+  const txt = cls === "div" ? sgn(value, 2) : fmt(value, 2);
+  const dpAttr = dp !== undefined && Math.abs(dp) >= 0.05
+    ? ` data-dp="${dp}" style="--dc:${dp < 0 ? "rgba(185,255,99,.85)" : "rgba(255,116,149,.8)"}"`
+    : "";
+  const mark = dp !== undefined && Math.abs(dp) >= 0.6 ? `<span class="sup">${dp<0?"▲":"▼"}</span>` : "";
+  const title = `${label} = ${fmt(value,3)}${dp!==undefined?` · removing it changes the choice by ${sgn(dp,1)} pts`:""}`;
+  return `<button class="cell ${cls==="lbl"?"lbl":""}" data-u="${u}" data-block="${block}" title="${esc(title)}"${dpAttr}>
+    ${cls==="lbl" ? `<span class="nm">${esc(label)}</span>` : ""}
+    <span class="vv">${txt}</span>${mark}</button>`;
+}
+
+function renderTape(){
+  const st = step(), fam = brain().family;
+  const roleNames = DATA.roleLabels[fam];
+  const sensorMap = {};
+  st.sensors.forEach(s => sensorMap[s.u] = s);
+  const block = (name, dim, cells, cols, cls) => `
+    <div class="tapeblock">
+      <div class="tbhead"><span class="tn">${name}</span><span class="td">${dim}</span></div>
+      <div class="cells ${cls==="lbl"?"key":""}" style="--n:${cols}">${cells}</div>
+    </div>`;
+  let html = "";
+  html += block("STATE · shared 24-d", "24", st.state.map((v,i) =>
+    cellHTML(i, "state", STATE[i].short, v, sensorMap[i]?.dp, "")).join(""), 12, "");
+  html += block("ROLE · this brain's geometry", "9", st.role.map((v,i) =>
+    cellHTML(24+i, "role", roleNames[i], v, sensorMap[24+i]?.dp, "lbl")).join(""), 9, "lbl");
+  html += block("MEMORY · what happened to him", "8", st.memory.map((v,i) =>
+    cellHTML(33+i, "memory", MEM[i].short, v, sensorMap[33+i]?.dp, "lbl")).join(""), 8, "lbl");
+  html += block("PLAN · the team objective", "6", st.plan.map((v,i) =>
+    cellHTML(41+i, "plan", PLAN[i].name, v, sensorMap[41+i]?.dp, "lbl")).join(""), 6, "lbl");
+  $("#tape").innerHTML = html;
+  $("#tape").querySelectorAll(".cell").forEach(el => {
+    el.addEventListener("mouseenter", () => {
+      const s = sensorMap[+el.dataset.u];
+      const tip = $("#tip");
+      if(!s) return;
+      tip.innerHTML = `<b>${esc(s.label)}</b>
+        <div class="trow"><span>slot</span><span>${s.block} · ${s.u}</span></div>
+        <div class="trow"><span>value</span><span>${fmt(s.value ?? 0, 3)}</span></div>
+        <div class="trow"><span>ablation ΔP</span><span class="${s.dp<0?"dpn":"dpp"}">${sgn(s.dp,1)} pts</span></div>`;
+      tip.style.left = "15px";
+      tip.style.top = "15px";
+      tip.classList.add("on");
+    });
+    el.addEventListener("mouseleave", () => $("#tip").classList.remove("on"));
+  });
+}
+
+/* ───────────────────────── decision ───────────────────────── */
+function renderDecision(){
+  const st = step(), o = st.out, probs = o.probs;
+  const order = probs.map((p,i)=>({p,i})).sort((a,b)=>b.p-a.p);
+  const lead = order[0].i;
+  const chosen = o.chosen;
+  const draw = o.sampled;
+  $("#decision").innerHTML = `
+    <div class="hero">
+      <div class="hl">STRONGEST INTENT · TOUCH ${st.touch}</div>
+      <div class="hv">${esc(INTENT_SHORT[chosen])}</div>
+      <div class="hs"><b>${pct(probs[chosen],1)}</b> · ${Math.round(o.margin*100)} pts clear of ${esc(INTENT_SHORT[o.second])}</div>
+      <div class="hdraw">policy temperature ${fmt(st.facts.temperature,2)} · executed draw:
+        <b style="color:${draw===chosen?"var(--lime)":"var(--amber)"}">${esc(INTENT_SHORT[draw])}</b></div>
+    </div>
+    ${order.map(({p,i}) => `
+      <div class="probar ${i===lead?"lead":""} ${i===draw?"sampled":""}">
+        <div class="pl"><span>${esc(INTENT_SHORT[i])}</span><span>${pct(p,1)}</span></div>
+        <div class="ptrack"><i class="pfill" style="width:${(p*100).toFixed(1)}%"></i>
+          <i class="mark" style="left:${(p*100).toFixed(1)}%"></i></div>
+      </div>`).join("")}
+    <div class="metaGrid">
+      <div class="metaBox"><div class="mk">MARGIN</div><div class="mv">${Math.round(o.margin*100)} pts</div></div>
+      <div class="metaBox"><div class="mk">CONFIDENCE</div><div class="mv">${pct(o.chosenProb,1)}</div></div>
+    </div>`;
+
+  const ph = st.planHead;
+  $("#planhead").innerHTML = `
+    <div class="planhead">
+      <div class="sechead" style="margin-top:0"><h4>Plan head — what the team should do next</h4><div class="line"></div></div>
+      ${st.out.planProbs.map((p,i) => `
+        <div class="planrow ${i===ph.proposed?"on":""}">
+          <div class="pn">${esc(PLAN[i].name)}</div><div class="pv">${pct(p,1)}</div>
+          <div class="pb"><i style="width:${(p*100).toFixed(1)}%"></i></div>
+        </div>`).join("")}
+      <div class="planstatus">${esc(ph.status)}</div>
+    </div>`;
+  $("#brainTag").textContent = `${brain().id} · ${step().out.argmax === step().out.sampled ? "argmax executed" : "sampled"} `;
+}
+
+/* ───────────────────────── GRU ───────────────────────── */
+function gateCell(g, i, v, signed){
+  const bg = signed ? divColor(v) : heat(v);
+  return `<div class="gcell ${S.unit===i?"sel":""}" data-g="${g}" data-i="${i}"
+    style="background:${bg}" title="${g}[${i}] = ${sgn(v,3)}">${i}</div>`;
+}
+function renderGRU(){
+  const st = step(), g = st.gates, f = st.facts;
+  $("#gru").innerHTML = `
+    <div class="grumetrics">
+      <div class="gm"><span class="gk">KEEPS PREVIOUS h</span><span class="gv">${pct(f.meanZ,0)} <small>mean z</small></span></div>
+      <div class="gm"><span class="gk">READS PREVIOUS h</span><span class="gv">${pct(f.meanR,0)} <small>mean r</small></span></div>
+      <div class="gm"><span class="gk">UNITS FIRING</span><span class="gv">${f.active}<small>/32</small></span></div>
+      <div class="gm"><span class="gk">ATTENTION CONTEXT</span><span class="gv">${fmt(g.ctxNorm,2)} <small>L2</small></span></div>
+    </div>
+    <div class="gstrip">
+      <div class="gsh"><span class="gt">UPDATE GATE z — how much memory survives</span><span class="gd">0 forgets · 1 keeps</span></div>
+      <div class="gcells">${g.z.map((v,i)=>gateCell("z",i,v,false)).join("")}</div>
+    </div>
+    <div class="gstrip">
+      <div class="gsh"><span class="gt">RESET GATE r — how much of the past is read</span><span class="gd">0 ignores · 1 reads</span></div>
+      <div class="gcells">${g.r.map((v,i)=>gateCell("r",i,v,false)).join("")}</div>
+    </div>
+    <div class="gstrip">
+      <div class="gsh"><span class="gt">CANDIDATE n — the new thought</span><span class="gd">−1 · +1</span></div>
+      <div class="gcells">${g.n.map((v,i)=>gateCell("n",i,v,true)).join("")}</div>
+    </div>
+    <div class="gstrip">
+      <div class="gsh"><span class="gt">HIDDEN h — the state that leaves this touch</span><span class="gd">passes to the next touch</span></div>
+      <div class="gcells">${g.h.map((v,i)=>gateCell("h",i,v,true)).join("")}</div>
+    </div>
+    <div class="hintline">Click any unit to inspect it. h = (1 − z) · n + z · h<sub>prev</sub> — the cell does not replace its state, it blends it.</div>`;
+  $("#gru").querySelectorAll(".gcell").forEach(el => el.onclick = () => {
+    S.unit = +el.dataset.i; renderGRU(); renderNeurons(); renderInspector();
+  });
+}
+
+/* ───────────────────────── neurons ───────────────────────── */
+function unitValue(u){
+  return S.metric === "act" ? u.h : u.contrib[step().out.chosen];
+}
+function renderNeurons(){
+  const st = step();
+  const maxAbs = Math.max(0.001, ...st.units.map(u => Math.abs(unitValue(u))));
+  $("#neurons").innerHTML = st.units.map(u => {
+    const v = unitValue(u);
+    const norm = v / maxAbs;
+    const bg = S.metric === "act" ? divColor(norm) : divColor(norm);
+    const silent = S.metric === "act" && Math.abs(u.h) < 0.05;
+    return `<button class="ncell ${S.unit===u.i?"sel":""} ${silent?"silent":""}" data-i="${u.i}"
+      style="background:${bg}" title="unit ${u.i} · ${S.metric==="act"?`h ${sgn(u.h,3)}`:`contribution ${sgn(v,3)}`}">
+      <span class="ni">${u.i}</span><span class="nv">${sgn(v, S.metric==="act"?1:2)}</span></button>`;
+  }).join("");
+  $("#neurons").querySelectorAll(".ncell").forEach(el => el.onclick = () => {
+    S.unit = +el.dataset.i; renderNeurons(); renderGRU(); renderInspector();
+  });
+  if(S.unit === null && st.units.length) S.unit = st.units.reduce((a,b)=>Math.abs(b.h)>Math.abs(a.h)?b:a).i;
+}
+
+function renderInspector(){
+  const st = step();
+  const u = st.units[S.unit ?? 0];
+  if(!u) return;
+  const chosen = st.out.chosen;
+  const cont = u.contrib;
+  const maxC = Math.max(0.0001, ...cont.map(v=>Math.abs(v)));
+  const order = cont.map((v,i)=>({v,i})).sort((a,b)=>Math.abs(b.v)-Math.abs(a.v)).slice(0,5);
+  $("#inspector").innerHTML = `
+    <div class="ihead"><b>Unit ${u.i}</b><span>${Math.abs(u.h) < 0.05 ? "SILENT" : "FIRING"}</span></div>
+    <div class="irow"><span>activation h</span><span style="color:${u.h>=0?"var(--cyan)":"var(--rose)"}">${sgn(u.h,3)}</span></div>
+    <div class="irow"><span>update z · reset r</span><span>${fmt(u.z,2)} · ${fmt(u.r,2)}</span></div>
+    <div class="irow"><span>candidate n</span><span>${sgn(u.n,3)}</span></div>
+    <div class="irow"><span>previous h</span><span>${sgn(u.prev,3)}</span></div>
+    <div class="sechead" style="margin:10px 0 4px"><h4>Input-side drivers</h4><div class="line"></div></div>
+    ${u.drivers.map(d => `<div class="drv">
+      <span class="dl"><span class="gtag ${d.gate}">${d.gate}</span>${esc(d.label)}</span>
+      <span class="dv">${sgn(d.w,3)}</span></div>`).join("")}
+    <div class="sechead" style="margin:10px 0 4px"><h4>Its pull on each intent</h4><div class="line"></div></div>
+    <div class="minibars">
+      ${order.map(o => {
+        const w = Math.abs(o.v)/maxC*50;
+        return `<div class="mbrow ${o.v>=0?"pos":"neg"}">
+          <span>${esc(INTENT_SHORT[o.i])}</span>
+          <span class="mbtrack"><i style="${o.v>=0?`left:50%;width:${w}%`:`right:50%;width:${w}%`}"></i></span>
+          <span style="text-align:right;color:${o.v>=0?"var(--lime)":"var(--rose)"}">${sgn(o.v,3)}</span>
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="hintline">h<sub>${u.i}</sub> × w<sub>o</sub>[${u.i}, k] for the five intents it moves most. The chosen intent is ${esc(INTENT_SHORT[chosen])}.</div>`;
+}
+
+/* ───────────────────────── mechanism stack ───────────────────────── */
+const pretty = s => String(s).replace(/_/g, " ");
+
+function renderPerception(){
+  const st = step(), p = st.perception;
+  if(!p){ $("#perception").innerHTML = `<div class="hintline">No perception block.</div>`; return; }
+  const share = p.seen / Math.max(1, p.total);
+  const frameShare = p.mindSeen / Math.max(1, p.total);
+  $("#perTag").textContent = `${p.mindSeen} in frame → ${p.seen} in view`;
+  $("#perception").innerHTML = `
+    <div class="mhead">
+      <span class="mbig">${p.mindSeen} → ${p.seen}</span>
+      <span class="msmall">mind's frame → cone · of ${p.total} others. ${fmt(p.fov,0)}° field of view</span>
+    </div>
+    <div class="mtrack"><i style="width:${(share*100).toFixed(1)}%"></i><i style="width:${(frameShare*100).toFixed(1)}%;opacity:.35;margin-top:-5px"></i></div>
+    <div class="mechrow"><span class="k">the mind's frame <span style="color:var(--dim2)">· builds the tokens</span></span><span class="v"><b>${p.mindSeen}</b> of ${p.total} · ≤${p.mindCapT} + ${p.mindCapO} inside ${fmt(p.mindRadius,0)} m</span></div>
+    <div class="mechrow"><span class="k">the cone on its own</span><span class="v"><b>${p.coneAll}</b> of ${p.total} inside ${fmt(p.fov,0)}°</span></div>
+    <div class="mechrow"><span class="k">both gates <span style="color:var(--dim2)">· the 24-d state</span></span><span class="v"><b>${p.seen}</b> of ${p.total} · attention slots used ${p.mindSeen}/${p.tokenSlots}</span></div>
+    <div class="mechrow"><span class="k">perception radius</span><span class="v"><b>${fmt(p.radius,1)} m</b></span></div>
+    <div class="mechrow"><span class="k">positional noise σ</span><span class="v"><b>${fmt(p.sigma,2)} m</b></span></div>
+    <div class="mechrow"><span class="k">vision power · accuracy</span><span class="v">${pct(p.power)} · ${pct(p.accuracy)}</span></div>
+    <div class="mechrow"><span class="k">role range / noise scale</span><span class="v">×${fmt(p.rangeScale,2)} · ×${fmt(p.noiseScale,2)}</span></div>
+    <div class="mechrow"><span class="k">relevance top-k cap</span><span class="v">${p.cap === null ? "none" : p.cap} ${p.capped ? `<span class="warn">· cut ${p.visibleBeforeCap - p.cap}</span>` : ""}</span></div>
+    <div class="mechrow"><span class="k">ball</span><span class="v">at his feet · exact</span></div>
+    <div class="sechead" style="margin:11px 0 4px"><h4>Withheld — and which gate took him</h4><div class="line"></div></div>
+    <div class="hlist">
+      ${p.hidden.length ? p.hidden.map(h => `<div class="hrow">
+        <span>${esc(h.name)}</span><span class="hw">${fmt(h.dist,1)} m</span>
+        <span class="why">${esc(h.why)}</span></div>`).join("")
+        : `<div class="hintline">Everyone is inside both gates.</div>`}
+    </div>
+    <div class="mnote"><b style="color:var(--dim)">Attention is not perception.</b> The mind's frame runs first — 25 m, the nearest two teammates and two opponents, and <b style="color:var(--dim)">no angle test</b> — and the attention tokens are built from it. The cone (${fmt(p.fov,0)}°, range-scaled) runs afterwards and gates only the <b style="color:var(--dim)">24-d state</b> and the <b style="color:var(--dim)">role block</b>. So an actor can be attended to while the state has already thrown him out, and the 16 token slots are capacity: this touch uses ${p.mindSeen}.</div>`;
+}
+
+function renderMemoryDeep(){
+  const st = step(), m = st.memoryDeep;
+  $("#memTag").textContent = `${m.events.length} episode${m.events.length===1?"":"s"}`;
+  const maxW = Math.max(0.001, ...m.events.map(e => e.weight));
+  $("#memorydeep").innerHTML = `
+    <div class="mhead">
+      <span class="mbig">${m.events.length ? m.events.length : "0"}</span>
+      <span class="msmall">${m.events.length ? "episodes this mind is still carrying" : "no scars — temperament is identity"}</span>
+    </div>
+    ${m.events.length ? m.events.map(e => `
+      <div class="epi">
+        <span class="et">${esc(pretty(e.tag))}</span>
+        <span class="ew">${fmt(e.weight,2)}</span>
+        <span class="eb"><i style="width:${(e.weight/maxW*100).toFixed(1)}%"></i></span>
+        <span class="why" style="grid-column:1/3;font-size:8px;color:var(--dim2)">age ${fmt(e.age,1)} involvements · severity ${fmt(e.severity,2)} × recency ${fmt(e.recency,3)} = ${fmt(e.weight,2)}</span>
+      </div>`).join("") : `<div class="hintline">Nothing significant has happened to him yet, so the eight memory features are near-zero.</div>`}
+    <div class="sechead" style="margin:11px 0 4px"><h4>Temperament it produces</h4><div class="line"></div></div>
+    ${[
+      ["confidence", m.confidence, ">1 sharpens the policy, <1 flattens it"],
+      ["risk in box", m.risk, "fear damps THROUGH_BALL / DRIBBLE / CROSS / SHOOT"],
+      ["tackle aggression", m.aggression, "how hard he commits to the duel"],
+    ].map(([k,v,d]) => `<div class="mechrow"><span class="k" title="${esc(d)}">${esc(k)}</span>
+      <span class="v" style="color:${Math.abs(v-1)<1e-3?"var(--dim2)":(v>1?"var(--lime)":"var(--rose)")}">${fmt(v,3)} <span style="color:var(--dim2)">(${sgn((v-1)*100,0)}%)</span></span></div>`).join("")}
+    <div class="mnote">What the brain reads is <b style="color:var(--dim)">linear recency</b>, not exponential: each episode contributes <i>severity / (1 + age/${fmt(m.recencyScale,0)})</i>. Age counts <b style="color:var(--dim)">involvements</b>, not seconds, so a scar from twenty touches ago is still worth 0.67 of a fresh one. The episodic store separately decays severity by ${m.decay} per involvement when a later event is written, forgetting below ${m.forgetBelow} — which is why an old scar is faint here rather than absent.</div>`;
+}
+
+function renderStore(){
+  const st = step(), v = st.store;
+  $("#storeTag").textContent = v.touch === 1 ? "cold start" : "carried";
+  $("#store").innerHTML = `
+    <div class="mhead">
+      <span class="mbig">h ${fmt(v.hOutNorm,2)}</span>
+      <span class="msmall">L2 of the hidden vector leaving this touch</span>
+    </div>
+    <div class="mechrow"><span class="k">touch in this possession</span><span class="v"><b>${v.touch}</b></span></div>
+    <div class="mechrow"><span class="k">hidden carried in / out</span><span class="v">${fmt(v.hInNorm,2)} → ${fmt(v.hOutNorm,2)}</span></div>
+    <div class="mechrow"><span class="k">cosine(in, out)</span><span class="v">${fmt(v.cosine,3)}</span></div>
+    <div class="mechrow"><span class="k">fraction of h kept</span><span class="v">${pct(v.carry)}</span></div>
+    <div class="mechrow"><span class="k">last executed intent</span><span class="v">${v.prevIntent ? esc(INTENT_SHORT[INTENTS.indexOf(v.prevIntent)]) : "—"}</span></div>
+    <div class="mechrow"><span class="k">state size</span><span class="v">${v.hiddenD}-d <span style="color:var(--dim2)">· per player</span></span></div>
+    <div class="mnote"><b style="color:var(--dim)">Reset rules.</b> ${esc(v.resetRule)} It is owned by the player, not the brain: every centre-back shares one <i>SituationalBrain</i> object, so state on the brain would be shared by eleven men. A substitution drops the state with the player (<i>remove_player</i>); a new season clears every state and every plan (<i>reset()</i>).</div>`;
+}
+
+function renderPlanState(){
+  const st = step(), p = st.planState;
+  const hitsPct = Math.min(1, p.hits / p.needed) * 100;
+  const okHits = p.hits >= p.needed, okConf = p.candidateConf >= p.threshold;
+  const tag = p.adopted ? "adopted" : (okHits && !okConf ? "confidence gate" : `${p.hits}/${p.needed} hits`);
+  $("#planTag").textContent = tag;
+  $("#planstate").innerHTML = `
+    <div class="mhead">
+      <span class="mbig" style="color:var(--amber)">${p.hits}/${p.needed}</span>
+      <span class="msmall">consecutive proposals of the same candidate plan</span>
+    </div>
+    <div class="mtrack amber"><i style="width:${hitsPct.toFixed(1)}%"></i></div>
+    <div class="mechrow"><span class="k">plan fed to the brain</span><span class="v"><b>${esc(PLAN[p.fedPlan]?.name || "none")}</b> · ${pct(p.fedConf)}</span></div>
+    <div class="mechrow"><span class="k">plan head proposes</span><span class="v">${esc(PLAN[p.proposed].name)} · ${pct(p.prob)}</span></div>
+    <div class="mechrow"><span class="k">candidate on the table</span><span class="v">${(p.adopted ? p.candidate : p.candidateAfter) < 0 ? "none" : esc(PLAN[p.adopted ? p.candidate : p.candidateAfter].name)}</span></div>
+    <div class="mechrow"><span class="k">gate 1 · two hits</span><span class="v"><span class="badge2 ${okHits?"ok":"no"}">${okHits ? "PASSED" : `needs ${p.needed - p.hits} more`}</span></span></div>
+    <div class="mechrow"><span class="k">gate 2 · best confidence ≥ ${fmt(p.threshold,2)}</span><span class="v"><span class="badge2 ${okConf?"ok":"hot"}">${pct(p.candidateConf)} · ${okConf ? "PASSED" : "SHORT"}</span></span></div>
+    <div class="mechrow"><span class="k">adopted now</span><span class="v"><span class="badge2 ${p.adopted?"ok":"no"}">${p.adopted ? "YES — THE PLAN SWITCHED" : "NO"}</span></span></div>
+    <div class="mechrow"><span class="k">switches this possession</span><span class="v">${p.switches}</span></div>
+    <div class="mnote">${esc(p.statusText)}. <i>TeamPlan.propose()</i> is run for real across these three touches: the candidate must be proposed twice in a row <b style="color:var(--dim)">and</b> clear 0.60 confidence. A change of possession resets the plan entirely.</div>`;
+}
+
+function renderCoach(){
+  const st = step(), c = st.coach;
+  $("#coachTag").textContent = c.active ? c.source : "BALANCED";
+  const top = c.delta.map((d,i)=>({d,i})).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d)).slice(0,3);
+  $("#coach").innerHTML = `
+    <div class="mhead">
+      <span class="mbig" style="color:${c.active?"var(--amber)":"var(--dim2)"}">${esc(c.source)}</span>
+      <span class="msmall">${c.active ? "log-space intent bonus, scaled by how well he listens" : "no instruction — the distribution is untouched"}</span>
+    </div>
+    <div class="mechrow"><span class="k">listener scale</span><span class="v"><b>${fmt(c.listener,2)}</b> / 1.00</span></div>
+    <div class="mechrow"><span class="k">favored flank · width</span><span class="v">${c.flank ? esc(c.flank) : "—"} · ${sgn(c.width,0)}</span></div>
+    ${c.bias.length ? c.bias.map(b => `<div class="mechrow"><span class="k">${esc(pretty(b.intent))}</span><span class="v">${sgn(b.logit,2)} logit → <b>${sgn(b.applied,2)}</b></span></div>`).join("")
+      : `<div class="hintline">The seam returns the forward-pass probabilities byte-identically.</div>`}
+    <div class="sechead" style="margin:11px 0 4px"><h4>Biggest moves on the policy</h4><div class="line"></div></div>
+    ${top.map(({d,i}) => `<div class="mechrow"><span class="k">${esc(INTENT_SHORT[i])}</span>
+      <span class="v" style="color:${d>=0?"var(--lime)":"var(--rose)"}">${sgn(d,2)} pts</span></div>`).join("")}
+    <div class="mnote">The maverick tax is real: the same ATTACK instruction is worth ${fmt(c.listener,2)}× to this player because his decisions/composure are what they are. A low-composure maverick barely hears it.</div>`;
+}
+
+function renderConsequence(){
+  const st = step(), c = st.consequence;
+  if(!c){
+    $("#consTag").textContent = "off";
+    $("#consequence").innerHTML = `<div class="hintline">The consequence critic is unavailable in this build, so the policy is uncorrected.</div>`;
+    return;
+  }
+  $("#consTag").textContent = `blend ${fmt(c.blend,2)}`;
+  const best = c.advantage.map((a,i)=>({a,i})).sort((x,y)=>y.a-x.a);
+  const qs = c.q.slice().sort((a,b)=>a-b);
+  const qspan = Math.max(0.0001, qs[qs.length-1] - qs[0]);
+  const fmtq = v => Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : fmt(v,3);
+  $("#consequence").innerHTML = `
+    <div class="mhead">
+      <span class="mbig" style="color:${c.saturated ? "var(--amber)" : "var(--violet)"}">${c.saturated ? `${c.atHi}/10` : sgn(best[0].a,3)}</span>
+      <span class="msmall">${c.saturated ? "intents clip to the same ceiling — the critic cannot separate them" : `best advantage · ${esc(INTENT_SHORT[best[0].i])}`}</span>
+    </div>
+    <div class="mechrow"><span class="k">critic</span><span class="v">${esc(c.critic)}</span></div>
+    <div class="mechrow"><span class="k">reward band (clip)</span><span class="v">${fmt(c.band[0],2)} … ${fmt(c.band[1],2)}</span></div>
+    <div class="mechrow"><span class="k">raw q range</span><span class="v">${fmtq(Math.min(...c.qRaw))} … ${fmtq(Math.max(...c.qRaw))}</span></div>
+    <div class="mechrow"><span class="k">blend strength</span><span class="v"><b>${fmt(c.blend,2)}</b> · log(p) + blend × advantage</span></div>
+    ${c.saturated ? `<div class="mechrow"><span class="k">band saturation</span><span class="v"><span class="badge2 hot">${c.atHi}/10 at the ceiling</span></span></div>` : ""}
+    <div class="sechead" style="margin:10px 0 4px"><h4>Expected payoff q · advantage</h4><div class="line"></div></div>
+    ${best.slice(0,5).map(({a,i}) => {
+      const w = (c.q[i] - qs[0]) / qspan * 100;
+      return `<div class="mechrow" style="grid-template-columns:64px 1fr 58px">
+        <span class="k" title="raw critic output ${fmtq(c.qRaw[i])}">${esc(INTENT_SHORT[i])}</span>
+        <span class="mtrack" style="margin:0"><i style="width:${Math.max(4,w).toFixed(1)}%"></i></span>
+        <span class="v" style="color:${a>=0?"var(--lime)":"var(--rose)"}">${sgn(a,3)}</span></div>`;
+    }).join("")}
+    <div class="sechead" style="margin:10px 0 4px"><h4>Correction applied</h4><div class="line"></div></div>
+    ${c.delta.map((d,i)=>({d,i})).sort((x,y)=>Math.abs(y.d)-Math.abs(x.d)).slice(0,3).map(({d,i}) =>
+      `<div class="mechrow"><span class="k">${esc(INTENT_SHORT[i])}</span>
+       <span class="v" style="color:${d>=0?"var(--lime)":"var(--rose)"}">${sgn(d,3)} pts</span></div>`).join("")}
+    <div class="mnote">${c.saturated
+      ? `The critic extrapolates far outside its band on this state — raw q reaches <b style="color:var(--amber)">${fmtq(Math.max(...c.qRaw))}</b>, so ${c.atHi} of 10 intents clip to the ceiling and their advantages collapse. The trigger is slot 18, the score difference: at <b style="color:var(--dim)">−0.20</b> (one goal down) the critic's weights explode, while every level or leading state on this page rates inside the band. The correction is therefore nearly inert whenever a team is losing. This is the shipped behaviour, surfaced rather than hidden.`
+      : "The critic predicts a payoff per intent from the same 24-d perceived state the network read. Advantages are measured against the policy's own expected payoff in this state, so the correction is relative — it cannot hand out an absolute bonus."}</div>`;
+}
+
+function stageCard(n, title, sub, probs, opts = {}){
+  const order = probs.map((p,i)=>({p,i})).sort((a,b)=>b.p-a.p).slice(0,3);
+  const top = opts.top;
+  return `<div class="stage ${opts.dashed?"dashed":""}">
+    <div class="sn">${n}</div>
+    <div class="st2">${esc(title)}</div>
+    <div class="sd">${sub}</div>
+    ${order.map(({p,i}) => `<div class="srowx ${top===i?"top":""}">
+      <span>${esc(INTENT_SHORT[i])}</span><span style="text-align:right">${(p*100).toFixed(1)}%</span>
+      <span class="sbar"><i style="width:${(p*100).toFixed(1)}%"></i></span></div>`).join("")}
+    ${opts.delta === undefined ? "" : `<div class="sdelta">${opts.delta}</div>`}
+  </div>`;
+}
+
+function renderPipeline(){
+  const st = step(), o = st.out, c = st.coach, k = st.consequence,
+        t = st.temper, sp = st.sampling;
+  const post = k ? k.probs : c.probs;
+  const moveTxt = (a, b) => {
+    const d = a.map((v,i)=>({v:v-b[i],i})).sort((x,y)=>Math.abs(y.v)-Math.abs(x.v))[0];
+    if(Math.abs(d.v) < 0.0005) return "no change";
+    return `${INTENT_SHORT[d.i]} ${sgn(d.v*100,2)} pts`;
+  };
+  const cards = [
+    stageCard("01 · forward", "The net speaks", `47-d + 16 tokens → 10 intents`, o.probs, {top:o.chosen}),
+    stageCard("02 · coach", c.active ? `${c.source} instruction` : "No instruction",
+      c.active ? `×${fmt(c.listener,2)} listener · log-space bonus` : "BALANCED returns probs untouched",
+      c.probs, {delta:`moves ${moveTxt(c.probs,o.probs)}`}),
+    stageCard("03 · critic", k ? `Consequence blend ${fmt(k.blend,2)}` : "Consequence off",
+      k ? (k.saturated ? "band saturated — the correction cannot discriminate" : "expected payoff corrects the policy") : "critic unavailable", post,
+      {delta: k ? `moves ${moveTxt(post, c.probs)}` : "unchanged"}),
+    stageCard("04 · temper", "Temperament (cognition route)", "counterfactual — mind not engaged here",
+      t.probs, {dashed:true, delta:`moves ${moveTxt(t.probs, post)}`}),
+    stageCard("05 · sample", `T = ${fmt(sp.temperature,3)}`, sp.deterministic ? "T ≈ 0 → pure argmax" : `sharpened · draw ${fmt(sp.draw,3)}`,
+      sp.sharpened, {top:sp.sampled, delta:`entropy ${fmt(sp.entropyBefore,2)} → ${fmt(sp.entropyAfter,2)} bits · executes ${esc(INTENT_SHORT[sp.sampled])}`}),
+  ];
+  $("#pipeline").innerHTML = cards.join("");
+  $("#pipeTag").textContent = `T ${fmt(sp.temperature,3)} · executes ${INTENT_SHORT[sp.sampled]}`;
+}
+
+function renderMechanisms(){
+  renderPerception();
+  renderMemoryDeep();
+  renderStore();
+  renderPlanState();
+  renderCoach();
+  renderConsequence();
+  renderPipeline();
+}
+
+/* ───────────────────────── evidence ───────────────────────── */
+function renderEvidence(){
+  const st = step(), abl = st.abl, o = st.out;
+  const blocks = [
+    ["STATE", abl.state], ["ROLE", abl.role], ["MEMORY", abl.memory],
+    ["PLAN", abl.plan], ["ATTENTION", abl.attention],
+  ];
+  const maxA = Math.max(1, ...blocks.map(b=>Math.abs(b[1])));
+  const bars = blocks.map(([n,v]) => {
+    const w = Math.abs(v)/maxA*50;
+    const left = v < 0 ? 50 - w : 50;
+    return `<div class="bbar">
+      <span class="bl">${n}</span>
+      <span class="btrack"><i style="left:${left}%;width:${w}%;background:${v<0?"linear-gradient(90deg,#2a7a52,#b9ff63)":"linear-gradient(90deg,#ff7495,#8c3350)"}"></i></span>
+      <span class="bv ${v<0?"dpn":"dpp"}">${sgn(v,1)}<small>pts</small></span>
+    </div>`;
+  }).join("");
+
+  const top = [...st.sensors].sort((a,b)=>Math.abs(b.dp)-Math.abs(a.dp)).slice(0,10);
+  const rows = top.map(s => `<div class="srow">
+      <span class="sblk">${s.block.slice(0,3)}</span>
+      <span class="sl" title="${esc(s.label)}">${esc(s.label)}</span>
+      <span class="sv ${s.dp<0?"dpn":"dpp"}">${sgn(s.dp,1)}</span>
+    </div>`).join("");
+
+  const worst = blocks.slice().sort((a,b)=>a[1]-b[1])[0];
+  const big = top[0];
+  $("#evidence").innerHTML = `
+    <div>
+      <div class="sechead" style="margin-top:0"><h4>Block ablation — zero the whole block</h4><div class="line"></div></div>
+      <div class="blockbars">${bars}</div>
+      <div class="evsum">A <b style="color:var(--lime)">negative</b> bar means the block was holding this choice up: remove it and confidence falls. A <b style="color:var(--rose)">positive</b> bar was pushing against it. The strongest support here is <b>${worst[0]}</b> (${sgn(worst[1],1)} pts).</div>
+    </div>
+    <div>
+      <div class="sechead" style="margin-top:0"><h4>Single inputs — one slot at a time</h4><div class="line"></div></div>
+      <div>${rows}</div>
+      <div class="evsum">The largest single input is <b>${esc(big.label)}</b> (${esc(big.block)}, ${sgn(big.dp,1)} pts). ${Math.abs(big.dp) < 0.5 ? "No single slot dominates: this choice is a distributed read of the whole situation." : "This one slot measurably moves the decision on its own."}</div>
+    </div>`;
+  $("#evTag").textContent = `${st.sensors.length} single-input ablations + 5 block ablations`;
+}
+
+/* ───────────────────────── narrative ───────────────────────── */
+const NCOL = {
+  situation:"var(--dim)", sees:"var(--cyan)", attention:"var(--violet)",
+  memory:"var(--amber)", plan:"var(--amber)", recurrence:"var(--lime)",
+  choice:"var(--lime)", evidence:"var(--rose)",
+};
+function renderNarrative(){
+  const st = step();
+  $("#narrative").innerHTML = st.narrative.map(n => `
+    <div class="ncard" style="--nc:${NCOL[n.tag] || "var(--cyan)"}">
+      <div class="nt">${esc(n.tag)}</div>
+      <div class="nh">${esc(n.title)}</div>
+      <div class="nx">${esc(n.text)}</div>
+    </div>`).join("");
+}
+
+/* ───────────────────────── provenance ───────────────────────── */
+function renderProvenance(){
+  const b = brain(), st = step();
+  $("#provTag").textContent = b.file;
+  $("#provenance").innerHTML = `
+    <div>
+      <div class="sechead" style="margin-top:0"><h4>The production path</h4><div class="line"></div></div>
+      <div class="plist">
+        ${DATA.provenance.pipeline.map((p,i) => `<div class="pitem"><b>${String(i+1).padStart(2,"0")}</b><span>${esc(p)}</span></div>`).join("")}
+      </div>
+      <div class="kv">
+        <span>brain</span><span>${esc(b.id)} · ${esc(b.family)} family</span>
+        <span>schema</span><span>${esc(b.meta.sensor_schema)} · arch ${b.meta.arch_version}</span>
+        <span>training</span><span>${esc(b.meta.training_method)}</span>
+        <span>parameters</span><span>${b.params.toLocaleString()}</span>
+        <span>input / hidden</span><span>47 → 32 (GRU) → 10 intents + 4 plans</span>
+        <span>role block</span><span>${esc(st.roleNote)}</span>
+        <span>this touch</span><span>${esc(st.id)}</span>
+      </div>
+    </div>
+    <div>
+      <div class="sechead" style="margin-top:0"><h4>Honesty</h4><div class="line"></div></div>
+      <div class="note">${esc(DATA.provenance.note)}</div>
+      <div class="sechead" style="margin-top:14px"><h4>What is computed here</h4><div class="line"></div></div>
+      <div class="kv">
+        <span>attention α</span><span>softmax(k·q / √32), masked over 16 tokens</span>
+        <span>GRU</span><span>z, r, n and h computed by the shipped forward pass</span>
+        <span>ablations</span><span>re-run of the same forward pass with one input zeroed</span>
+        <span>perception</span><span>_is_visible() cone + range + role top-k, from the live profile</span>
+        <span>plan block</span><span>TeamPlan.summary() → 6-d, read by the plan head</span>
+        <span>plan switch</span><span>TeamPlan.propose() hysteresis across the three touches</span>
+        <span>coach</span><span>_apply_coach_bias() at listener_scale(player)</span>
+        <span>critic</span><span>ConsequenceEvaluator.correct_policy(), blend 0.30</span>
+        <span>draw</span><span>_decision_temperature() → _sample_from_probs()</span>
+        <span>scene</span><span>authored geometry; every derived number is computed</span>
+      </div>
+    </div>`;
+}
+
+/* ───────────────────────── top meta ───────────────────────── */
+function renderTopMeta(){
+  const b = brain();
+  $("#topmeta").innerHTML = `
+    <span class="stat"><b>${DATA.schema.name}</b></span>
+    <span class="stat"><b>47</b>-d in</span>
+    <span class="stat"><b>32</b>-unit GRU</span>
+    <span class="stat"><b>16</b> tokens</span>
+    <span class="stat"><b>${b.params.toLocaleString()}</b> params</span>
+    <span class="stat">${esc(b.meta.training_method)}</span>`;
+}
+
+/* ───────────────────────── master render ───────────────────────── */
+function render(){
+  const st = step();
+  if(S.unit === null){
+    S.unit = st.units.reduce((a,b)=>Math.abs(b.h)>Math.abs(a.h)?b:a).i;
+  }
+  renderTopMeta();
+  renderRail();
+  renderControls();
+  renderFacts();
+  renderAttention();
+  renderTape();
+  renderDecision();
+  renderGRU();
+  renderNeurons();
+  renderInspector();
+  renderMechanisms();
+  renderEvidence();
+  renderNarrative();
+  renderProvenance();
+  drawPitch();
+  markAttRows();
+  const main = document.querySelector("main");
+  main.classList.remove("flash"); void main.offsetWidth; main.classList.add("flash");
+}
+
+/* ───────────────────────── wiring ───────────────────────── */
+$("#prevBtn").onclick = () => { if(S.step>0){ S.step--; S.unit=null; render(); } };
+$("#nextBtn").onclick = () => { if(S.step<chain().steps.length-1){ S.step++; S.unit=null; render(); } };
+$("#metricToggle").querySelectorAll("button").forEach(btn => btn.onclick = () => {
+  S.metric = btn.dataset.m;
+  $("#metricToggle").querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+  renderNeurons();
+});
+$("#exportBtn").onclick = () => {
+  const doc = { brain: brain().id, chain: chain().id, step: step() };
+  const blob = new Blob([JSON.stringify(doc, null, 2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `brain_${brain().id}_${chain().id}_t${step().touch}.json`;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+};
+function stopPlay(){
+  if(S.timer){ clearInterval(S.timer); S.timer = null; }
+  $("#playBtn").textContent = "▶ Watch it think";
+}
+$("#playBtn").onclick = () => {
+  if(S.timer){ stopPlay(); return; }
+  $("#playBtn").textContent = "■ Stop";
+  S.timer = setInterval(() => {
+    if(S.step < chain().steps.length - 1){
+      S.step++; S.unit = null; render();
+    } else {
+      stopPlay();
+    }
+  }, 1600);
+};
+document.addEventListener("keydown", ev => {
+  if(ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA") return;
+  if(ev.key === "ArrowRight"){ ev.preventDefault(); $("#nextBtn").click(); }
+  if(ev.key === "ArrowLeft"){ ev.preventDefault(); $("#prevBtn").click(); }
+  if(ev.key === "]"){ ev.preventDefault(); S.brain = (S.brain+1)%DATA.brains.length; S.chain=0; S.step=0; S.unit=null; render(); }
+  if(ev.key === "["){ ev.preventDefault(); S.brain = (S.brain-1+DATA.brains.length)%DATA.brains.length; S.chain=0; S.step=0; S.unit=null; render(); }
+});
+let resizeRaf = null;
+new ResizeObserver(() => {
+  if(resizeRaf) cancelAnimationFrame(resizeRaf);
+  resizeRaf = requestAnimationFrame(drawPitch);
+}).observe(cv.parentElement);
+
+/* carrier pulse */
+setInterval(() => { if(!document.hidden) drawPitch(); }, 900);
+
+render();
+</script>
+</body>
+</html>

@@ -166,6 +166,10 @@ def offball_press_prob(engine: Any, pname: str, position: str, team: str,
             teammates=teammates, defenders=defenders,
             position_engine=engine.position_engine,
             attacks_right=attacks_right,
+            # SCANNING: the cone follows the runner's head, which turns toward
+            # the ball he is checking for, and fatigue degrades it exactly as
+            # it degrades his ball-vision.
+            ball_x=px, ball_y=py, match_minute=float(minute),
         )
         from brain_sensors import extract_offball_sensors
         sensors = extract_offball_sensors(

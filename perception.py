@@ -45,6 +45,7 @@ Threaded through ``NeuralDecisionBrain.decide``; global switch via
 
 from __future__ import annotations
 
+import math
 import os
 import zlib
 from dataclasses import dataclass, field
@@ -138,8 +139,12 @@ class PerceptionConfig:
     # Per-snapshot positional sigma (m) at midfield distance for low mental
     # DNA; shrinks toward ~0 for elite vision/anticipation/composure.
     ball_noise: float = 2.5
-    # Uncertainty growth while the ball is out of sight (m per simulated
-    # second since it last entered the player's view).
+    # Uncertainty growth while the ball is out of sight, in METRES PER MINUTE
+    # of match clock (`elapsed` passed to `perceive_ball` is minutes).  Was
+    # documented as "per simulated second", which the code never did: the
+    # caller supplied whole minutes, so 8.0 was 8 m per minute = 0.13 m/s.
+    # Since 2026-11-05 the caller supplies a continuous clock, so this is a
+    # smooth 8 m/min instead of a step every 60 s.
     ball_stale_growth: float = 8.0
     # OFF-BALL ACTOR HONESTY (2026-09-20): the off-ball press brains used to
     # see all 21 other players at TRUE positions AND the true ball.  With
@@ -303,38 +308,69 @@ def _forward_angle(attacks_right: bool) -> float:
 
 def _facing_angle(player: Any, from_x: float, from_y: float,
                   ball_x: float, ball_y: float,
-                  attacks_right: bool) -> float:
+                  attacks_right: bool,
+                  fov_half: float = np.pi / 2.0) -> float:
     """Per-player facing angle (radians).
 
     On-ball players face the opponent goal (attacking direction), same as
     the legacy constant.  Off-ball players turn their HEAD toward the ball
-    when it sits behind their forward-facing cone — a realistic shoulder
+    when it sits outside their forward-facing cone — a realistic shoulder
     check.  The turn magnitude is modulated by vision + anticipation,
     so an elite reader of the game checks more often and sees more.
 
-    The maximum head turn is ~60° (0.6 on the blend) so the player never
-    faces fully backward — that's what the full-body turn (a 180° pivot)
-    is for, which costs time and is not modeled here.
+    THE TURN IS "JUST ENOUGH", NOT A FIXED FRACTION OF 80 DEGREES
+    -------------------------------------------------------------
+    This used to be::
+
+        turn = MAX_HEAD_TURN * engagement * behind_frac
+
+    where ``behind_frac`` ramped from 0 at 90° to 1 at 180°.  That is
+    inverted at the edge, and it left a dead band: a ball 95° off the front
+    is outside a 150° FOV (edge at 75°) and got a 0.6° head turn, so it
+    stayed invisible while the code claimed the player had turned to look at
+    it.  Everything between the FOV edge and ~110° was permanently unseen —
+    the exact region a shoulder check exists for.
+
+    Now the head turns only as far as it has to (``need``), capped by how
+    much lateral range this player actually uses (``reach``, scaled by
+    vision+anticipation):
+
+        need  = how far outside the cone the ball is
+        reach = MAX_HEAD_TURN * (0.4 + 0.6 * engagement)
+        turn  = sign(diff) * min(need, reach)
+
+    So a ball just past the FOV edge is brought IN by a 20° glance, a ball
+    at 150° needs 75°, and a ball directly behind at 180° needs 105° —
+    more than the neck has, which is why it takes a full scan sweep
+    (``ball_vision``) or a body turn to find.  That is the distinction the
+    scan model is supposed to be about.
+
+    ``fov_half`` lets each caller pass the cone it will actually test with
+    (role FOV on the actor path, ``ball_fov_deg`` on the ball path), so the
+    turn and the visibility test agree by construction.
+
+    The ball-at-feet guard matters: on the carrier's own call the ball is
+    at (from_x, from_y), and `arctan2(0, 0)` would otherwise spin the head
+    to a random direction and change what he can see.
     """
     forward = 0.0 if attacks_right else np.pi
+    if math.hypot(ball_x - from_x, ball_y - from_y) < 2.0:
+        return forward          # ball at his feet: no look target
     # Angle from the player to the ball
     ball_angle = np.arctan2(ball_y - from_y, ball_x - from_x)
     diff = (ball_angle - forward + np.pi) % (2 * np.pi) - np.pi
-    # Ball is within ±90° of forward -> face forward (can see it without
-    # turning the head).
-    if abs(diff) <= np.pi / 2.0:
+    # Ball is inside the cone -> face forward (it is already in view).
+    if abs(diff) <= fov_half:
         return forward
-    # Ball is behind the shoulder — turn the head toward it.
-    # ``engagement`` captures how much this player bothers to scan, scaled by
-    # how far behind the ball actually is (a ball at 90° gets a light glance;
-    # a ball at 180° gets a full shoulder check).
+    # Outside the cone: turn just far enough to bring it in, up to this
+    # player's lateral range.
     mental = getattr(getattr(player, "dna", None), "mental", None)
     vision = _clamp(_get_attr(mental, "vision", 60.0) / 100.0)
     anticipation = _clamp(_get_attr(mental, "anticipation", 60.0) / 100.0)
     engagement = 0.5 * vision + 0.5 * anticipation
-    # How far past 90° the ball is (0 = at shoulder, 1 = directly behind)
-    behind_frac = min(1.0, (abs(diff) - np.pi / 2.0) / (np.pi / 2.0))
-    turn = _MAX_HEAD_TURN_RAD * engagement * behind_frac
+    need = abs(diff) - fov_half
+    reach = _MAX_HEAD_TURN_RAD * (0.4 + 0.6 * engagement)
+    turn = min(need, reach)
     return forward + float(np.sign(diff)) * turn
 
 
@@ -606,6 +642,9 @@ def perceive_offball_actors(
     attacks_right: bool,
     config: Optional[PerceptionConfig] = None,
     return_meta: bool = False,
+    ball_x: Optional[float] = None,
+    ball_y: Optional[float] = None,
+    match_minute: Optional[float] = None,
 ):
     """Gate + degrade the off-ball vision lists like the on-ball gate.
 
@@ -613,6 +652,19 @@ def perceive_offball_actors(
     (or no geometry) returns the ORIGINAL lists and engine — byte-identical
     to the pre-actor-honesty feed.  ``return_meta`` adds ``{"seen", "sigma",
     "radius"}`` for the diagnostic.
+
+    SCANNING (2026-11-05)
+    ---------------------
+    When ``ball_x/ball_y`` are supplied the cone is centred on the player's
+    HEAD-TURN facing (``_facing_angle``) instead of the constant attacking
+    direction.  This is what makes a shoulder check worth anything: a glance
+    toward the ball rotates the world he can see, so the press he is checking
+    for becomes visible.  Without them the old constant-forward cone is used,
+    so every existing caller and test is unchanged.
+
+    ``match_minute`` likewise brings this path onto the same fatigue curve
+    ``ball_vision`` already uses (a gassed player perceives worse); omitted,
+    fatigue is zero and the numbers are the pre-2026-11-05 ones.
     """
     cfg = config if config is not None else _DEFAULT_CONFIG
     if (not cfg.enabled) or (not cfg.offball_actor_perception) \
@@ -623,7 +675,13 @@ def perceive_offball_actors(
 
     pos = getattr(player, "position", "")
     prof = _resolve_profile(pos, cfg)
-    power, acc = _mental_scale(player)
+    fatigue = 0.0
+    if match_minute is not None:
+        mental_for_fatigue = getattr(getattr(player, "dna", None), "physical", None)
+        stamina = _clamp(_get_attr(mental_for_fatigue, "stamina", 65.0) / 100.0)
+        match_frac = max(0.0, min(1.15, float(match_minute) / 90.0))
+        fatigue = max(0.0, min(1.0, match_frac * (1.35 - stamina)))
+    power, acc = _mental_scale(player, fatigue=fatigue)
     radius = (cfg.range_min + (cfg.range_max - cfg.range_min) * power) * \
         prof["range_scale"]
     fov_rad = np.deg2rad(prof["fov_deg"])
@@ -635,11 +693,22 @@ def perceive_offball_actors(
         except Exception:
             return None
 
+    facing: Optional[float] = None
+    if ball_x is not None and ball_y is not None:
+        facing = _facing_angle(player, x, y, ball_x, ball_y, attacks_right,
+                               fov_half=fov_rad / 2.0)
+
     def _visible(a):
         p = _truth(getattr(a, "name", ""))
         if p is None:
             return True  # no geometry -> optimistically seen
-        return _is_visible(x, y, p[0], p[1], attacks_right, radius, fov_rad)
+        if math.hypot(p[0] - x, p[1] - y) > radius:
+            return False
+        if facing is None:
+            half = _bearing_diff(x, y, p[0], p[1], _forward_angle(attacks_right))
+        else:
+            half = _bearing_diff(x, y, p[0], p[1], facing)
+        return abs(half) <= fov_rad / 2.0
 
     seen_defs = [d for d in (defenders or []) if _visible(d)]
     seen_tms = [t for t in (teammates or []) if _visible(t)]

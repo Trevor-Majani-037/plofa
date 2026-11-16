@@ -266,6 +266,17 @@ predictability. That is the honest description: the situation moves the choice, 
 same situation does not reliably produce the same choice. Whether that is appropriate
 variation or sampling noise is the next question, and it is now a measurable one.
 
+> **CORRECTION 2026-11-08 — the "noisy" half of that verdict was measuring the key, not
+> the brain.** Re-estimated with a k-NN estimator in the full 24-d sensor space instead of
+> the 6-bit bucket: `H(intent | state)` falls from **2.698 to 1.772 bits** (of 3.063), and
+> the excess information over a shuffle null rises from **0.319 to 0.582 bits**. The
+> coarse key understates situational information by ~1.8×. Restricted-feature controls
+> show why: `x, y` alone carry 0.121 bits, pressure/proximity/space 0.304, all 24 slots
+> 0.582 — the brain is using context, not location. And a spatial holdout shows no
+> memorisation signature (striker and keeper extrapolate into unseen regions with no loss
+> of accuracy). The correct verdict is **"context-sensitive, and more so than the
+> surrogate can see"**. Method and tables: `docs/RETRAIN_PLAN_2026-11-08.md` §11.
+
 **And the one thing that is broken: `SHOOT`.** Of 109 shot decisions, **zero** produced a
 shot. All 109 were executed as passes — 101 `PASS`, 6 `PROGRESSIVE_PASS`, 2
 `SWITCH_OF_PLAY`. Every other intent obeys at 88–100%:
@@ -599,6 +610,12 @@ fits the existing architecture without reshaping anything.
 **This is now the highest-value item on the list** — higher than the home advantage or the
 xG drift, because it is the one where the network is provably blind rather than merely
 miscalibrated.
+
+> **The retrain is planned in `docs/RETRAIN_PLAN_2026-11-08.md`.** It is not a training
+> run: five of the six stages of the learning loop are broken, and the training corpus
+> predates the goal-vision change (`slot2 == slot0` in 4,933 / 4,933 samples). That
+> document contains the repair sequence, the acceptance test, the name for the next
+> generation of brains, and the research on what a real player has that PLOFA does not.
 
 ### Tier 2 — close the two live football gaps (one day)
 

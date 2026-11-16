@@ -54,12 +54,24 @@ def _human(s: float) -> str:
 
 
 def collect(corpus_path: str, n_matches: int, seed: int, styles: list[str],
-            decision: str, targeted: bool) -> list:
-    """Run real matches and return the NEW (sensor,intent,success,act,pos) pairs."""
+            decision: str, targeted: bool, explore: float = 0.0,
+            explore_situational: bool = False) -> list:
+    """Run real matches and return the NEW (sensor,intent,success,act,pos) pairs.
+
+    ``explore`` is forwarded to the collection path.  At its default of 0.0 the
+    corpus contains only what the policy already chooses, which is why a brain
+    that never shoots can never learn to shoot from its own corpus: the
+    exploration that exists to cover rare actions was unreachable from here
+    (see ``surrogate_rebuild._run_matches``).
+    """
     print(f"\n[1/6] COLLECT  {n_matches} {'targeted ' if targeted else ''}"
-          f"real matches ({decision}, opponents={styles})...")
+          f"real matches ({decision}, opponents={styles}, "
+          f"explore={explore:.2f}"
+          f"{'/situational' if explore_situational else ''})...")
     t0 = time.time()
-    data = _run_matches(n_matches, seed, styles, targeted, decision)
+    data = _run_matches(n_matches, seed, styles, targeted, decision,
+                        explore=explore,
+                        explore_situational=explore_situational)
     print(f"       collected {len(data)} new samples in {_human(time.time()-t0)}")
 
     prior = _load_raw(corpus_path)
@@ -229,6 +241,14 @@ def main():
                         "neural = trained XI (shoots from scoring positions).")
     p.add_argument("--targeted", action="store_true", default=True,
                    help="CAM home / CF away so all 11 positions get samples.")
+    p.add_argument("--explore", type=float, default=0.0,
+                   help="ε-exploration during collection: the chance a decision "
+                        "is replaced by another action the role can perform, so "
+                        "the corpus covers the rare actions the policy never "
+                        "chooses. 0.0 records only the policy's own choices.")
+    p.add_argument("--explore-situational", action="store_true",
+                   help="Weight the exploration by situation (SHOOT is 8x more "
+                        "likely to be tried in a goal-close state).")
     p.add_argument("--no-collect", action="store_true", help="Skip collection.")
     p.add_argument("--no-evolve", action="store_true", help="Skip evolution.")
     p.add_argument("--smoke", action="store_true",
@@ -248,6 +268,10 @@ def main():
         args.states = 40
         args.workers = 2
         args.goal_bias = 0.25
+        # Exercise the exploration path in smoke: a plumbing test that skips
+        # the code it just gained is not testing it.
+        args.explore = max(args.explore, 0.15)
+        args.explore_situational = True
         # SMOKE MUST NEVER TOUCH PRODUCTION.  A 2-gen random challenger can
         # win a single lucky gate match and get promoted.  Run the gate and
         # the promotion TARGET against a throwaway copy of the incumbent so
@@ -269,7 +293,8 @@ def main():
 
     if not args.no_collect:
         collect(corpus, args.matches, args.seed, styles, args.decision,
-                args.targeted)
+                args.targeted, explore=args.explore,
+                explore_situational=args.explore_situational)
 
     if not os.path.exists(corpus):
         raise SystemExit(f"! no corpus at {corpus} (ran with --no-collect on a "

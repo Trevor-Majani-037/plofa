@@ -43,8 +43,8 @@ from manager_profile import ManagerPool
 SOUL_PLAYERS = {
 
     # ── Percy — Hartwell City RW — ATTACKING PROPHET ──────────
-    "Perçy Luka": PlayerSoul(
-        player_name="Percy",
+    "Perćy Luka": PlayerSoul(
+        player_name="Perćy Luka",
         archetype=SoulArchetype.ATTACKING_PROPHET,
         pillars=GreatnessPillars(
             hardwork=0.97,   # Relentless. Never stops.
@@ -91,6 +91,11 @@ SOUL_PLAYERS = {
         archetype=SoulArchetype.DEFENSIVE_PURIST,
         pillars=GreatnessPillars(hardwork=0.77, talent=0.77, luck=0.63)
     ),
+    "Zachery Worth": PlayerSoul(
+        player_name="Zachery Worth",
+        archetype=SoulArchetype.FLAIR_DRIBBLER,
+        pillars=GreatnessPillars(hardwork=0.90, talent=0.99, luck=0.99)
+    )
 }
 
 
@@ -207,8 +212,8 @@ HOME_SUBS = [
     ("Calvin Pryce",  "ST",  ["poacher", "fox_in_box"],             27, 75),  # sub at 75'
 ]
 
-HOME_SUPERSTARS    = ["Perçy Luka", "Dragan Novak"]
-HOME_SP_TAKERS     = ["Perçy Luka", "Kofi Mensah"]   # set piece takers
+HOME_SUPERSTARS    = ["Perćy Luka", "Dragan Novak"]
+HOME_SP_TAKERS     = ["Perćy Luka", "Kofi Mensah"]   # set piece takers
 
 
 # ─────────────────────────────────────────────

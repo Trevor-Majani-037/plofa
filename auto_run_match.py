@@ -86,18 +86,18 @@ class _BuiltSquad(TypedDict):
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Match basics ───────────────────────────────────────────────────────
-MATCH_DATE   = date(2026, 10, 24) # Year, Month, Day
-MATCHDAY     = 8 # League matchday number (1–34)
+MATCH_DATE   = date(2026, 11, 8) # Year, Month, Day
+MATCHDAY     = 10 # League matchday number (1–34)
 SEASON       = "26/27"
 COMPETITION  = "PLOFA"
 
 # ── Teams — use exact names from the Excel (see TEAM_CATALOG below) ───
-HOME_TEAM  = "Lige-8"
-AWAY_TEAM  = "Trendboys"
+HOME_TEAM  = "Rodice"
+AWAY_TEAM  = "Seafcea"
 
 # ── Venue — leave "" to auto-fill "<HomeTeam> Stadium" ────────────────
-VENUE     = "West 1977 City"
-CAPACITY  = 65_000
+VENUE     = "Rodice Field"
+CAPACITY  = 17_000
 
 # ── Referee (auto-assigned by default) ──────────────────────────────
 # Set FORCE_REF to a referee name to override rotation (e.g. for a derby).
@@ -1402,6 +1402,27 @@ def run(force_replay: bool = False):
         print(f"\n  ⚠️  Export failed: {e}")
         print(f"  Season state was already saved — you can re-run without losing progress.")
         raise
+
+    # ── Brain observatory sidecar (read-only) ─────────────────
+    # The stats sheets keep outcomes, not intents, so "how did they think?"
+    # is not answerable from them.  The timeline does carry every on-ball
+    # decision's intent / confidence / reason (`metadata.active_brain`), so
+    # write that ledger plus a readable report beside the match package.
+    # Deliberately additive and failure-isolated: a tracing bug must never
+    # change a result or abort a season.  Opt out with PLOFA_NO_BRAIN_TRACE=1.
+    if os.environ.get("PLOFA_NO_BRAIN_TRACE", "") not in ("1", "true", "True"):
+        try:
+            from brain_observatory import analyse_match, write_report, write_trace
+            trace_path = os.path.join(
+                output_path, f"{folder_name}_brain_trace.json")
+            write_trace(result, trace_path, engine=engine)
+            report = analyse_match(result, engine=engine)
+            paths = write_report(
+                report, output_path, stem=f"{folder_name}_brain_report",
+                include_log=False)
+            print(f"\n  🧠 Brain report → {paths['markdown']}")
+        except Exception as exc:
+            print(f"\n  ⚠️  Brain observatory skipped: {exc}")
 
     # ── Soul player report ────────────────────────────────────
     if souls_attached:

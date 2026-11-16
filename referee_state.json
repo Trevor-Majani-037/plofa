@@ -15,9 +15,12 @@
       ],
       "teams_seen": {
         "Avada Zenith": 3,
-        "Pearls": 1,
         "Claw": 1,
-        "Red Wolves": 1
+        "Red Wolves": 1,
+        "Tryox City": 1,
+        "Telbey": 1,
+        "Triumpher": 1,
+        "Natrican": 1
       },
       "last_matchday": 3
     },
@@ -37,9 +40,9 @@
       "teams_seen": {
         "Justice": 2,
         "Ganester": 1,
-        "Avada Zenith": 1,
+        "Avada Zenith": 2,
         "Club Chovers": 1,
-        "Play City": 1,
+        "Play City": 2,
         "Telbey": 1
       },
       "last_matchday": 4
@@ -59,9 +62,10 @@
       ],
       "teams_seen": {
         "Claw": 1,
-        "Play City": 1,
         "Triumpher": 1,
-        "Ganester": 1
+        "Ganester": 1,
+        "Red Wolves": 1,
+        "Justice": 1
       },
       "last_matchday": 4
     },
@@ -73,22 +77,22 @@
       "experience_years": 9,
       "bias_home": 0.01,
       "bias_away": -0.02,
-      "matches_officiated": 3,
+      "matches_officiated": 2,
       "matchdays_refd": [
         2,
-        4,
-        8
+        4
       ],
       "teams_seen": {
         "Rodice": 1,
         "Telbey": 1,
-        "Claw": 1,
+        "Claw": 2,
         "Red Wolves": 1,
         "Oxton": 1,
         "Lige-8": 1,
-        "Trendboys": 1
+        "Trendboys": 1,
+        "Seafcea": 1
       },
-      "last_matchday": 8
+      "last_matchday": 4
     },
     {
       "name": "Ashley Mantu",
@@ -98,18 +102,22 @@
       "experience_years": 11,
       "bias_home": -0.02,
       "bias_away": 0.01,
-      "matches_officiated": 2,
+      "matches_officiated": 3,
       "matchdays_refd": [
         2,
-        4
+        4,
+        10
       ],
       "teams_seen": {
         "Triumpher": 1,
         "Trendboys": 1,
         "Pearls": 1,
-        "Oxton": 1
+        "Oxton": 2,
+        "Club Chovers": 1,
+        "Rodice": 1,
+        "Seafcea": 1
       },
-      "last_matchday": 4
+      "last_matchday": 10
     },
     {
       "name": "Feriza Maria",
@@ -142,10 +150,11 @@
       "experience_years": 13,
       "bias_home": 0.0,
       "bias_away": 0.01,
-      "matches_officiated": 2,
+      "matches_officiated": 3,
       "matchdays_refd": [
         2,
-        4
+        4,
+        8
       ],
       "teams_seen": {
         "Seafcea": 1,
@@ -153,9 +162,11 @@
         "Avada Zenith": 1,
         "Rodice": 1,
         "Trendboys": 1,
-        "Red Wolves": 1
+        "Red Wolves": 1,
+        "Uditon": 1,
+        "Play City": 1
       },
-      "last_matchday": 4
+      "last_matchday": 8
     },
     {
       "name": "Jofart Eli",
@@ -197,7 +208,10 @@
         "Uditon": 1,
         "Lige-8": 1,
         "Red Wolves": 1,
-        "Play City": 1
+        "Play City": 2,
+        "Triumpher": 2,
+        "Tryox City": 1,
+        "Claw": 1
       },
       "last_matchday": 4
     },
@@ -215,12 +229,15 @@
         3
       ],
       "teams_seen": {
-        "Play City": 1,
         "Natrican": 1,
-        "Telbey": 1,
+        "Telbey": 2,
         "Red Wolves": 1,
-        "Justice": 1,
-        "Triumpher": 1
+        "Pearls": 1,
+        "Uditon": 1,
+        "Trendboys": 1,
+        "Club Chovers": 1,
+        "Lige-8": 1,
+        "Ganester": 1
       },
       "last_matchday": 3
     },
@@ -241,7 +258,8 @@
         "Iron FC": 1,
         "Rock FC": 1,
         "Lige-8": 1,
-        "Telbey": 1
+        "Ganester": 1,
+        "Red Wolves": 1
       },
       "last_matchday": 4
     },
@@ -262,7 +280,9 @@
         "Ganester": 1,
         "Uditon": 1,
         "Tryox City": 2,
-        "Club Chovers": 1
+        "Club Chovers": 1,
+        "Telbey": 1,
+        "Trendboys": 1
       },
       "last_matchday": 3
     },
@@ -280,12 +300,13 @@
         3
       ],
       "teams_seen": {
-        "Club Chovers": 1,
         "Rodice": 1,
-        "Oxton": 1,
+        "Oxton": 2,
         "Triumpher": 1,
         "Justice": 1,
-        "Natrican": 1
+        "Natrican": 1,
+        "Uditon": 1,
+        "Avada Zenith": 1
       },
       "last_matchday": 3
     },
@@ -320,18 +341,20 @@
       "experience_years": 14,
       "bias_home": 0.01,
       "bias_away": 0.01,
-      "matches_officiated": 2,
+      "matches_officiated": 3,
       "matchdays_refd": [
         2,
-        4
+        4,
+        9
       ],
       "teams_seen": {
         "Natrican": 2,
         "Avada Zenith": 1,
-        "Rodice": 1,
-        "Ganester": 1
+        "Rodice": 2,
+        "Ganester": 1,
+        "Justice": 1
       },
-      "last_matchday": 4
+      "last_matchday": 9
     },
     {
       "name": "Nabil Zarouk",
@@ -352,7 +375,8 @@
         "Play City": 1,
         "Lige-8": 1,
         "Seafcea": 1,
-        "Pearls": 1
+        "Pearls": 2,
+        "Natrican": 1
       },
       "last_matchday": 5
     },

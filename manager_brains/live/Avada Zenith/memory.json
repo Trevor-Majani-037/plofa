@@ -4,19 +4,19 @@
   "decay": 0.97,
   "table": {
     "('level', '75-90', 'DEFEND')": {
-      "wins": 0,
+      "wins": 2,
       "draws": 0,
-      "losses": 1,
-      "xg_for": 1.12,
-      "xg_against": 0.95,
+      "losses": 2,
+      "xg_for": 3.8600000000000003,
+      "xg_against": 5.71,
       "count": 0
     },
     "('level', '75-90', 'BALANCED')": {
-      "wins": 0,
+      "wins": 2,
       "draws": 0,
-      "losses": 1,
-      "xg_for": 1.12,
-      "xg_against": 0.95,
+      "losses": 2,
+      "xg_for": 3.8600000000000003,
+      "xg_against": 5.71,
       "count": 1
     }
   }

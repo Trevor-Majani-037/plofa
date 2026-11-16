@@ -156,12 +156,43 @@ def entity_tokens(player: Any, x: float, y: float,
 
     row = 0
     for group, is_teammate in ((mates, True), (foes, False)):
-        others = foes if is_teammate else mates
+        # ── THE SPACE FEATURE WAS MEASURING THE CORNER FLAG ────────────
+        #
+        # `collect()` returns TUPLES ``(distance, player, px, py)``, and
+        # ``others`` was passed to ``_nearest_opponent_gap`` as-is.  That
+        # helper calls ``_pos_of`` on each element, and a tuple has no
+        # ``.name`` — so ``_pos_of`` fell through to its ``(0.0, 0.0)``
+        # branch and every "gap to the nearest marker" was really
+        # **the distance from that player to the pitch ORIGIN**.
+        #
+        # Measured 2026-11-16 with ``tools/diag/_mirror_symmetry_probe.py``:
+        # for one state, feature [5] read 0.412 / 0.653 / 1.09 / 1.159 /
+        # 1.487 on the home side and the 1.5 clamp on every single token of
+        # the mirrored away side, because the away players are all ~90 m from
+        # the corner instead of ~30 m.
+        #
+        # It went unnoticed because the origin is a fixed point: on the home
+        # half it correlates with attacking progress, so the feature looked
+        # plausible, and the corpus was 100 % attacking-right so nothing ever
+        # asked it to be symmetric.
+        others = [o[1] for o in (foes if is_teammate else mates)]
         for _d, p, px, py in group:
             if row >= N_MAX:
                 break
             dx = (px - x) if attacks_right else (x - px)
-            dy = py - y
+            # THE LATERAL OFFSET MUST BE DIRECTION-RELATIVE TOO.
+            #
+            # `dx` above is already flipped for the away team; `dy` was not.
+            # So the signed lateral feature was measured in ABSOLUTE y, and a
+            # 180-degree rotation (y -> 68 - y) flips its sign even though the
+            # player's own left/right is unchanged.  Home and away therefore
+            # saw OPPOSITE conventions for the same relative geometry — and
+            # because the collected corpus was 100 % attacking-right (the
+            # `attacks_right` off-by-one), the network only ever learned one
+            # of them.  Measured 2026-11-16 by
+            # `tools/diag/_mirror_symmetry_probe.py`: the token set disagreed
+            # under mirror by 4.9e-2 mean before this line, 0 after.
+            dy = (py - y) if attacks_right else (y - py)
             dist = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
             gap = _nearest_opponent_gap(px, py, others, position_engine)
             pos = _position_of(p)

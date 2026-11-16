@@ -69,21 +69,48 @@ def _clear_chance_buckets():
 
 
 def _run_matches(n_matches, seed, away_styles, targeted, decision,
-                 home_template=None, away_template=None):
+                 home_template=None, away_template=None,
+                 explore=0.0, explore_situational=False):
     """Run real matches and return (sensor, intent, success, action, pos) pairs.
 
     Collects through the live NeuralDecisionBrain entry point (which the
     collector patches).  If ``decision == 'heuristic'`` the heuristic is
-    pinned first; if ``'neural'`` the trained XI auto-loads and actually
-    shoots from scoring positions (real outcomes).
+    pinned first; if ``'neural'`` the trained XI decides.
+
+    ``explore`` / ``explore_situational``
+        ε-exploration, forwarded to ``surrogate_collect._explore_intent``.
+        ``0.0`` (the default, and the historical behaviour) records ONLY what
+        the policy chose.
+
+        WHY THIS PARAMETER EXISTS (2026-11-08).  It did not, so
+        ``_EXPLORE_EPS`` kept its module default of ``0.0`` and the trainer's
+        collection never explored — the corpus could not contain an action the
+        policy does not choose.  The docstring here used to claim the neural XI
+        "actually shoots from scoring positions (real outcomes)".  Measured,
+        that is false: 0 shots from 109 SHOOT intents (audit §6.6).  The
+        exploration machinery that exists precisely to cover those rare
+        actions was dead code on this path.
+
+    The globals are SAVED AND RESTORED around the run, not just set: the
+    trainer collects and then gates inside one process, and an exploration
+    rate leaking into the gate arm would make the challenger and the incumbent
+    play different games.
     """
     import random
 
+    import surrogate_collect as sc
     from surrogate_collect import _install_collector, _restore_collector, _template_name
 
     if decision == "heuristic":
         _pin_heuristic()
     # neural: leave NeuralDecisionBrain auto-loading the trained XI
+
+    saved = (sc._EXPLORE_EPS, sc._EXPLORE_SITUATIONAL, sc._EXPLORE_RNG,
+             sc._EXPLORED)
+    sc._EXPLORE_EPS = float(explore)
+    sc._EXPLORE_SITUATIONAL = bool(explore_situational)
+    sc._EXPLORE_RNG = random.Random(seed + 977)
+    sc._EXPLORED = 0
 
     _install_collector()
     all_paired = []
@@ -117,15 +144,36 @@ def _run_matches(n_matches, seed, away_styles, targeted, decision,
                 "Probe FC", "Rival FC", "attacking", opp_style,
                 home_template=ht, away_template=at)
             result = eng.simulate()
-            paired = _correlate_outcomes_causal(_CHAIN_CALLS)
+            # THE TIMELINE IS NOT OPTIONAL.  `_correlate_outcomes_causal` only
+            # answers a SHOOT decision with the shot it caused when it is given
+            # `timeline`; without it, `timeline is None` short-circuits that
+            # branch and EVERY shoot decision is joined to the chain-local
+            # ZERO-LENGTH marker carry, whose threat change is exactly 0.0.
+            #
+            # That is not a subtle bias, it is the whole signal: measured on
+            # 9,109 samples collected through this call site, no sample
+            # anywhere exceeded reward 0.38 and 36.5% of shoot samples were
+            # EXACTLY 0.0, mean +0.0009 — while `threat_reward.GOAL_VALUE` is
+            # 1.0.  Goals were being credited to nobody, so the surrogate could
+            # not express "shooting is worth it" and the GA duly learned not to
+            # shoot.  The docstring above the correlator describes this exact
+            # failure and the fix for it; the fix was simply never wired.
+            paired = _correlate_outcomes_causal(
+                _CHAIN_CALLS, timeline=result.timeline)
             all_paired.extend(paired)
             _COLLECTOR.clear()
             print(f"  match {m+1}: collected {len(paired)} pairs "
-                  f"(opp={opp_style}, template={tpl_tag}, decision={decision})")
+                  f"(opp={opp_style}, template={tpl_tag}, decision={decision}, "
+                  f"explore={explore:.2f}"
+                  f"{'/situational' if explore_situational else ''})")
+        if explore > 0.0:
+            print(f"  exploration replaced {sc._EXPLORED} decisions")
     finally:
         _restore_collector()
         if decision == "heuristic":
             _restore_neural()
+        (sc._EXPLORE_EPS, sc._EXPLORE_SITUATIONAL, sc._EXPLORE_RNG,
+         sc._EXPLORED) = saved
     return all_paired
 
 

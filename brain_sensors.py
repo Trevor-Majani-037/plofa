@@ -185,7 +185,28 @@ def _goal_geometry(
 
     a_top = math.atan2(_GOAL_CENTER_Y + _GOAL_POST_HALF_WIDTH - y, dx)
     a_bottom = math.atan2(_GOAL_CENTER_Y - _GOAL_POST_HALF_WIDTH - y, dx)
-    mouth = abs(a_top - a_bottom) / _REFERENCE_MOUTH_ANGLE
+    # THE BRANCH CUT, AND WHY `abs(a_top - a_bottom)` WAS WRONG
+    # ---------------------------------------------------------
+    # ``atan2`` returns (-pi, pi].  When the two posts fall on OPPOSITE sides
+    # of that cut, the raw difference is a full turn minus the true angle.  For
+    # a player attacking LEFT the goal is at x = 0, so ``dx`` is negative and
+    # both angles sit near +-pi — which is exactly when the cut bites.
+    #
+    # Measured 2026-11-16 on a mirrored pair (pitch 105 x 68):
+    #
+    #   attacking right, (85, 34) -> mouth 0.563   <- correct, 20 m central
+    #   attacking left,  (20, 34) -> mouth 1.000   <- 5.92 rad / reference
+    #
+    # It only mis-fired near the centre line (|y - 34| small), i.e. DEAD IN
+    # FRONT OF GOAL, where the mouth reads "as wide as a penalty spot" no
+    # matter how far out the player is.  Half of every match was played with
+    # that reading, and the surrogate's A/M/D bucket consumed it directly
+    # (``mouth_bin`` saturated at 2 for every central away-team position).
+    #
+    # Wrapping the difference into (-pi, pi] is the whole fix: the mouth is an
+    # ANGLE BETWEEN TWO RAYS, so it must be measured the short way round.
+    delta = (a_top - a_bottom + math.pi) % (2.0 * math.pi) - math.pi
+    mouth = abs(delta) / _REFERENCE_MOUTH_ANGLE
     return angle_norm, _clamp(mouth, 0.0, 1.0)
 
 

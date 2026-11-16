@@ -71,6 +71,13 @@ MIN_VELOCITY_SAMPLE_S = 1e-3
 #: little slack; unbounded would be a slow leak in a long match.
 VELOCITY_HISTORY = 3
 
+#: Arrival band used when the target handed to the integrator is a per-tick
+#: *waypoint* rather than a destination. A waypoint is one tick's travel away
+#: (0.1-0.7 m), so the library default of 0.8 m would mark the player "already
+#: there" on every tick and he would never move. Small enough to be a rounding
+#: term, not an arrival test.
+WAYPOINT_REACH_M = 0.02
+
 
 @dataclass
 class _Sample:
@@ -636,6 +643,9 @@ class EngineAdapter:
     def offball_step(self, player_name: str,
                      target: Tuple[float, float],
                      dt: float,
+                     *,
+                     speed_cap: Optional[float] = None,
+                     waypoint: Optional[Tuple[float, float]] = None,
                      ) -> Optional[Tuple[float, float, float, float]]:
         """Move one outfield player one tick, physically. Or decline.
 
@@ -644,25 +654,28 @@ class EngineAdapter:
         caller then uses the engine's own movement unchanged, which is the
         whole safety property: a physics problem costs realism, never a match.
 
-        What this adds over the engine's own step
-        -------------------------------------------
-        The engine moves a player by assigning him a scalar speed and
-        displacing him along the straight line to his shape target. That is
-        time-stepped and pace-capped, but it means:
+        Three inputs, three jobs — this split is load-bearing
+        -----------------------------------------------------
+        ``target``
+            The real tactical target (the shape slot, the block slot). The
+            **reaction gate** reads this, so a genuinely new picture costs
+            him ``OUTFIELD_REACTION_S``. It is *not* what the body drives to.
+        ``waypoint``
+            The endpoint the engine already decided for this tick. The body
+            drives here. It is continuous across every engine branch — run to
+            slot, patrol orbit, block shuffle — so the distance the engine
+            intended survives the handover, including the orbit.
+        ``speed_cap``
+            The pace the engine intended. See
+            :func:`physics.player_motion.integrate`; without it every player
+            accelerates to DNA ``max_speed`` and a winger covers 16.7 km.
 
-          * **no momentum** — he can reverse at full pace, because direction is
-            recomputed from scratch every tick;
-          * **no acceleration limit on turning** — the chase ramp limits speed,
-            not heading;
-          * **no fatigue in the legs** — the engine's top speed is
-            ``5.0 + pace * 0.042`` from DNA alone, so a player on 20% stamina
-            runs as fast as one on 100%;
-          * **no reaction delay** — a changed target is acted on instantly.
-
-        :meth:`profile_of` supplies a stamina-scaled max speed, so fatigue
-        reaches the legs here for the first time; ``movement.perceive`` holds
-        the previous target while a reaction is pending, so the player runs on
-        toward where he *thought* the ball was rather than freezing.
+        Why not one target for all three: measured (2026-11-01), driving to
+        ``target`` instead of ``waypoint`` makes the player converge on the
+        slot, sit inside ``reach``, coast to a halt and stand — a winger fell
+        from 9.97 km to 8.00 km. Driving to the *orbit point* was worse: the
+        target flips 4 m as the player crosses the engine's arrive band, the
+        reaction gate re-arms on every flip and he chases a stale belief.
         """
         pos = self.position_of(player_name)
         if pos is None:
@@ -676,10 +689,27 @@ class EngineAdapter:
             memory = self._movement[player_name] = MovementMemory()
 
         from physics import movement as M
-        believed = M.perceive(memory, target, dt)
-        if believed is None:
+
+        # Advance the reaction state machine on the TACTICAL target. The
+        # return value is the believed target, which the waypoint path does
+        # not need -- what matters is `memory.reacting`, which says whether he
+        # has corrected yet.
+        M.perceive(memory, target, dt)
+
+        wp = waypoint if waypoint is not None else memory.target
+        if wp is None:
             return None
-        x, y, moved = M.step(memory, pos, believed, profile, dt)
+        if memory.reacting and memory.last_waypoint is not None:
+            # Still digesting: keep running toward where he thought it was.
+            wp = memory.last_waypoint
+        else:
+            memory.last_waypoint = wp
+
+        # `reach` is small on purpose. A waypoint is one tick's travel away
+        # (0.1-0.7 m), so the default 0.8 m arrival band would put the player
+        # "already there" on every tick and he would never move.
+        x, y, moved = M.step(memory, pos, wp, profile, dt,
+                             reach=WAYPOINT_REACH_M, speed_cap=speed_cap)
         return x, y, moved, (moved / dt if dt > 0 else 0.0)
 
     def keeper_save_multiplier(self, save_mult: float, shot_x: float,

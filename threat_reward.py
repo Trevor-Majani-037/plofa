@@ -77,7 +77,7 @@ Pure functions.  No RNG.  Reads only ``MatchEvent`` fields and the grid.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import momentum_model as _mm
 
@@ -197,25 +197,153 @@ def _xg_of(ev: Any, grid, attacks_right: bool) -> float:
 
 # ── the reward ──────────────────────────────────────────────────────────
 
+def stakes(score_diff: int, minute: float) -> float:
+    """How much this moment's swing is WORTH, relative to a neutral moment.
+
+    WHY THIS EXISTS
+    ---------------
+    Measured 2026-11-16 (`tools/diag/_indifference_probe.py`): the shipped
+    striker's intent distribution moves 0.025 in total variation when the
+    scoreline sweeps from -3 to +3, against 0.466 for moving him ten metres.
+    The clock is the same: 0.020.  Sensor `[18] score_diff` and `[19]
+    minute_norm` were verified to carry the values correctly, so the policy is
+    discarding information it has.
+
+    The cause is here.  This module had no reference to the scoreline or the
+    clock anywhere — a goal was worth ``GOAL_VALUE`` at 0-0 in the first minute
+    and at 0-1 down in the 89th.  The brain ignores the score because the
+    objective it was trained on has no score.
+
+    Football does not work that way.  A goal that wins a game is worth more than
+    one that makes it 4-0; a goal when you are two down late is worth more still,
+    because it is the one that keeps the season alive.  That is not pitch
+    geometry and no xT grid can express it, so it enters here, as a multiplier.
+
+    THE SHAPE, AND WHY IT IS A FIRST PASS
+    -------------------------------------
+    ``late`` ramps from 0 at minute 60 to 1 at minute 90, and the scoreline
+    decides the direction: chasing is worth more, cruising is worth less, and a
+    level game late is the most valuable of all (one goal decides it).
+
+    These constants are football judgement, not measurement.  They are published
+    in ``describe()`` so an export can cite them, and they are deliberately
+    mild: the range is 0.65 .. 1.60, because a multiplier that swings the reward
+    by an order of magnitude would drown the geometry the reward already gets
+    right.  Treat them as the first pass to be tuned against goals-per-situation,
+    not as truth.
+    """
+    late = max(0.0, min(1.0, (float(minute) - 60.0) / 30.0))
+    sd = int(score_diff)
+    if sd >= 2:
+        return 1.0 - 0.35 * late      # the game is won; a goal buys little
+    if sd == 1:
+        return 1.0 - 0.15 * late      # ahead: protect, do not chase
+    if sd == 0:
+        return 1.0 + 0.50 * late      # level and late: one goal decides it
+    if sd == -1:
+        return 1.0 + 0.60 * late      # a goal rescues a point
+    return 1.0 + 0.25 * late          # two or more down: worth more, but less likely
+
+
+def stakes_pair(score_diff: int, minute: float) -> Tuple[float, float]:
+    """``(gain_mult, loss_mult)`` — the ASYMMETRIC worth of this moment.
+
+    WHY ``stakes()`` ALONE CANNOT WORK
+    ----------------------------------
+    ``stakes()`` multiplies the WHOLE return by one number.  Multiplying a set
+    of values by a positive constant cannot change their order, so if the
+    corpus labels of every intent in a situation are scaled by the same ``k``,
+    the preferred intent is *identical* before and after.  Splitting the
+    surrogate's cells by scoreline would then produce sub-cells that all rank
+    their intents the same way, and the policy would stay indifferent no
+    matter how long the collection ran.
+
+    That is not a hypothesis, it is arithmetic: ``k·a > k·b`` exactly when
+    ``a > b`` for ``k > 0``.  A uniform multiplier can only change how
+    *confidently* an action is preferred, never *which* action is preferred.
+
+    THE FOOTBALL FIX: GAINS AND LOSSES ARE NOT WORTH THE SAME THING
+    ---------------------------------------------------------------
+    Win probability is not linear in the scoreline — it is convex when you are
+    behind and concave when you are ahead.  Two goals down with five minutes
+    left, the upside of a chance is worth everything and the downside of a
+    turnover is worth almost nothing, because you were losing anyway.  One goal
+    up with five minutes left, it is the reverse: a goal settles it and buys
+    little, while a turnover in your own third is the counterattack that costs
+    the lead.  So the reward must scale POSITIVE returns and NEGATIVE returns
+    by different factors, and *that* is what changes the ranking: a long shot
+    carries a big upside and a real downside, a safe square ball carries
+    almost only upside, so damping gains and amplifying losses makes the safe
+    ball win — and reversing both makes the shot win.
+
+    THE SHAPE
+    ---------
+    ``late`` ramps 0 at minute 60 to 1 at minute 90, as in ``stakes()``.  Bands
+    are the player's own frame (see ``brain_integration._player_score_diff``).
+
+    ==================  ============  ============  ==========================
+    band                gain          loss          football reading
+    ==================  ============  ============  ==========================
+    2+ down             1 + 0.25·late 1 - 0.55·late desperate: maximum risk
+    1 down              1 + 0.60·late 1 - 0.35·late chasing: a goal rescues it
+    level               1 + 0.35·late 1 + 0.20·late one goal decides either way
+    1 up                1 - 0.25·late 1 + 0.45·late protecting: turnovers kill
+    2+ up               1 - 0.35·late 1 + 0.20·late cushion: the game is won
+    ==================  ============  ============  ==========================
+
+    At 88' this reads: 2+ down (1.23, 0.49), 1 down (1.56, 0.67), level
+    (1.33, 1.19), 1 up (0.77, 1.42), 2+ up (0.67, 1.19).  A team two down is
+    told a turnover is worth half of what it normally is and a goal is worth
+    more; a team one up is told the opposite.  That is the shape a manager
+    would describe, and it is the shape that makes the same player choose
+    differently in the same place.
+
+    These are football judgement, like ``stakes()``, not measurement — and
+    they are deliberately mild (0.45 .. 1.60) so the geometry the reward
+    already gets right is not drowned.  ``describe()`` publishes them.
+    """
+    late = max(0.0, min(1.0, (float(minute) - 60.0) / 30.0))
+    sd = int(score_diff)
+    if sd >= 2:
+        return 1.0 - 0.35 * late, 1.0 + 0.20 * late
+    if sd == 1:
+        return 1.0 - 0.25 * late, 1.0 + 0.45 * late
+    if sd == 0:
+        return 1.0 + 0.35 * late, 1.0 + 0.20 * late
+    if sd == -1:
+        return 1.0 + 0.60 * late, 1.0 - 0.35 * late
+    return 1.0 + 0.25 * late, 1.0 - 0.55 * late
+
+
 def threat_return(ev: Any, grid: Optional[Sequence[Sequence[float]]] = None,
-                  attacks_right: bool = True) -> float:
+                  attacks_right: bool = True,
+                  stakes_mult: float = 1.0) -> float:
     """Threat return of ONE event for the team that played it.
 
     Positive = the team made itself more likely to score, negative = it made
     itself less likely (a backward ball, or a loss in a dangerous place).
+
+    ``stakes_mult`` scales the WHOLE return, not just goals, and that is
+    deliberate: when you are chasing a game late, winning the ball forty metres
+    up the pitch is worth more *and* losing it there costs more.  Scaling only
+    the goal would leave a chasing team's turnovers as cheap as a cruising
+    team's.  Default 1.0 reproduces the old behaviour exactly, so every existing
+    corpus, report and comparison is untouched until a caller passes something
+    else — see ``stakes()`` for what to pass and why.
     """
     if grid is None:
         grid = default_grid()
     et = event_type_name(ev)
+    s = float(stakes_mult)
 
     if et in _GOAL_TYPES:
-        return GOAL_VALUE
+        return GOAL_VALUE * s
     if et in _MISS_TYPES:
-        return -SHOT_OFF_TARGET_FRAC * _xg_of(ev, grid, attacks_right)
+        return -SHOT_OFF_TARGET_FRAC * _xg_of(ev, grid, attacks_right) * s
     if et in _SHOT_ON_TYPES:
-        return _xg_of(ev, grid, attacks_right)
+        return _xg_of(ev, grid, attacks_right) * s
     if et in _SHOT_OFF_TYPES:
-        return SHOT_OFF_TARGET_FRAC * _xg_of(ev, grid, attacks_right)
+        return SHOT_OFF_TARGET_FRAC * _xg_of(ev, grid, attacks_right) * s
 
     start = _xy(ev, "location_x", "location_y")
     end = _xy(ev, "end_x", "end_y")
@@ -223,17 +351,18 @@ def threat_return(ev: Any, grid: Optional[Sequence[Sequence[float]]] = None,
 
     if et in _MOVER_TYPES:
         if done:
-            return _phi(grid, end, attacks_right) - _phi(grid, start, attacks_right)
+            return (_phi(grid, end, attacks_right) -
+                    _phi(grid, start, attacks_right)) * s
         # Lost here. Charge what the OPPONENT now has, from where the ball
         # died (or where it was played from, if the event records no end).
         pt = end or start
         opp = _mm.zone_value(grid, pt[0], pt[1], not attacks_right) if pt else 0.0
-        return -LOSS_WEIGHT * opp
+        return -LOSS_WEIGHT * opp * s
 
     if et in _LOSS_TYPES:
         opp = _mm.zone_value(grid, start[0], start[1], not attacks_right) \
             if start else 0.0
-        return -LOSS_WEIGHT * opp
+        return -LOSS_WEIGHT * opp * s
 
     return 0.0
 
@@ -248,6 +377,25 @@ def describe() -> Dict[str, Any]:
         "shot_off_target_frac": SHOT_OFF_TARGET_FRAC,
         "loss_weight": LOSS_WEIGHT,
         "default": 0.0,
+        "stakes": {
+            "form": "1 +- k(late) by score_diff, multiplies the whole return",
+            "range": [0.65, 1.60],
+            "measured": ("policy moves 0.025 TV for score_diff -3..+3 vs 0.466 "
+                         "for +-10 m of geometry (2026-11-16) — the reward had "
+                         "no scoreline at all"),
+            "note": ("A UNIFORM multiplier cannot change which intent is "
+                     "preferred: k*a > k*b exactly when a > b. It is kept for "
+                     "reporting; the corpus labels use `stakes_pair`."),
+        },
+        "stakes_pair": {
+            "form": "separate gain and loss multipliers by score_diff band",
+            "at_88": {str(sd): [round(stakes_pair(sd, 88.0)[0], 4),
+                                round(stakes_pair(sd, 88.0)[1], 4)]
+                      for sd in (-2, -1, 0, 1, 2)},
+            "why": ("chasing is convex (upside up, downside down), protecting "
+                    "is concave; that asymmetry is what lets a scoreline "
+                    "change a preference"),
+        },
         "notes": (
             "Failures are charged the opponent's threat at the loss point, "
             "not a penalty on an intent. No diversity/dominance penalty."

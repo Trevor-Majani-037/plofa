@@ -341,7 +341,7 @@ class SeasonStatsAccumulator:
                 try:
                     with open(full, encoding="utf-8-sig") as f:
                         data = json.load(f)
-                    if "match" in data and "players" in data:
+                    if "match" in data and isinstance(data.get("players"), dict):
                         return full
                 except (json.JSONDecodeError, IOError):
                     continue
@@ -376,6 +376,9 @@ class SeasonStatsAccumulator:
         self.matches_processed.append(match_record)
 
         players_data = data.get("players", {})
+        if not isinstance(players_data, dict):
+            # Some output files (e.g. brain_reports) store players as a list
+            return
         for pname, pstats in players_data.items():
             # A named substitute who never entered is not a match
             # participant. Keep unused bench rows out of per-matchday and

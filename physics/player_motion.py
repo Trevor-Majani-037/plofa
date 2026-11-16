@@ -207,6 +207,7 @@ def integrate(
     profile,
     *,
     reach: float = REACH_M,
+    speed_cap: Optional[float] = None,
 ) -> KinematicState:
     """Advance a player's kinematic state by ``dt`` seconds toward ``target``.
 
@@ -215,6 +216,30 @@ def integrate(
     ``target`` is ``None`` the player coasts and bleeds off speed through
     ``deceleration``, because a decelerating body is the default and an
     instantaneous stop is a teleport.
+
+    ``speed_cap`` — the tactical pace budget
+    ----------------------------------------
+    **This parameter exists because its absence was a 60% distance inflation.**
+
+    ``profile.max_speed`` is a *capability*: the fastest this body can run. It
+    is not a *decision*: how fast a player chooses to run to hold a shape. The
+    engine already makes that decision every tick — the jog ladder, the
+    far-side involvement gate (0.3x jog), the chase ramp, the block recovery,
+    the set-piece approach, the cover run — and then hands the physics a
+    target. Without a cap the physics runs every player at ``max_speed`` for
+    the whole match, which measured as 16.7 km and 280 "sprints" for a winger.
+    Real is ~11-12.5 km and 20-40.
+
+    So the caller passes the pace it actually intended, and the body still
+    supplies everything the engine cannot: momentum through a turn, an
+    acceleration limit on the heading, stamina in the legs, and a reaction
+    delay. The division stays "engine decides where AND how fast; physics
+    decides how the body gets there".
+
+    A cap is a *brake*, never a teleport. A player already over the cap decelerates
+    to it at ``profile.deceleration``; he is never snapped down to it, because
+    a body that changes speed instantaneously is exactly the artefact this
+    module exists to prevent.
 
     Speed is clamped to :data:`ABSOLUTE_SPEED_CEILING` on the way out, so a
     miscalibrated profile degrades into "suspiciously fast" rather than into an
@@ -227,8 +252,15 @@ def integrate(
 
     speed = state.speed
 
+    #: The speed this body is allowed to hold this tick.
+    vmax = min(profile.max_speed, ABSOLUTE_SPEED_CEILING)
+    if speed_cap is not None:
+        vmax = min(vmax, max(0.0, float(speed_cap)))
+
     if target is None or distance((state.x, state.y), target) <= reach:
-        # Coasting to a stop.
+        # Coasting to a stop -- or, if the cap dropped below the current
+        # speed, braking down to the cap rather than to zero (the brake is
+        # `deceleration`, so the cap is approached over time, never snapped to).
         new_speed = max(0.0, speed - profile.deceleration * dt)
         if speed < REST_EPSILON:
             return KinematicState(state.x, state.y, 0.0, 0.0)
@@ -236,6 +268,7 @@ def integrate(
         return KinematicState(state.x + state.vx * dt,
                               state.y + state.vy * dt,
                               state.vx * scale, state.vy * scale)
+
 
     desired = unit_towards((state.x, state.y), target)
     v_along = state.vx * desired[0] + state.vy * desired[1]
@@ -258,7 +291,12 @@ def integrate(
     # to grow the backwards component. He coasts to a stop, then drives the
     # other way. Which is what a body does.
     if v_along >= 0.0:
-        new_along = min(profile.max_speed, v_along + profile.acceleration * dt)
+        if v_along > vmax:
+            # The cap dropped below the speed he is carrying (the tactical
+            # picture changed). Brake to it; do not snap to it.
+            new_along = max(vmax, v_along - profile.deceleration * dt)
+        else:
+            new_along = min(vmax, v_along + profile.acceleration * dt)
     else:
         new_along = min(0.0, v_along + profile.deceleration * dt)
 
@@ -276,8 +314,13 @@ def integrate(
         nvy = new_along * desired[1] + perp_y * scale
 
     final_speed = math.hypot(nvx, nvy)
-    if final_speed > ABSOLUTE_SPEED_CEILING:
-        scale = ABSOLUTE_SPEED_CEILING / final_speed
+    # Never exceed the ceiling, and never exceed the cap by more than the
+    # braking a body can actually do this tick. `max(vmax, speed - a*dt)` is
+    # what makes a dropped cap a deceleration rather than a teleport.
+    allowed = min(ABSOLUTE_SPEED_CEILING,
+                  max(vmax, speed - profile.deceleration * dt))
+    if final_speed > allowed:
+        scale = allowed / final_speed
         nvx, nvy = nvx * scale, nvy * scale
 
     return KinematicState(state.x + nvx * dt, state.y + nvy * dt, nvx, nvy)

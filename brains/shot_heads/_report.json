@@ -1,0 +1,544 @@
+{
+  "GK": {
+    "position": "GK",
+    "role_family": "GK",
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 role family GK has no SHOOT in its vocabulary (allowed: ['AM', 'ST', 'WING']). A shot head for this role would be teaching it an action it cannot perform.",
+    "elapsed_s": 0.0
+  },
+  "CB": {
+    "position": "CB",
+    "role_family": "CB",
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 role family CB has no SHOOT in its vocabulary (allowed: ['AM', 'ST', 'WING']). A shot head for this role would be teaching it an action it cannot perform.",
+    "elapsed_s": 0.0
+  },
+  "LB": {
+    "position": "LB",
+    "role_family": "FB",
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 role family FB has no SHOOT in its vocabulary (allowed: ['AM', 'ST', 'WING']). A shot head for this role would be teaching it an action it cannot perform.",
+    "elapsed_s": 0.0
+  },
+  "RB": {
+    "position": "RB",
+    "role_family": "FB",
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 role family FB has no SHOOT in its vocabulary (allowed: ['AM', 'ST', 'WING']). A shot head for this role would be teaching it an action it cannot perform.",
+    "elapsed_s": 0.0
+  },
+  "CDM": {
+    "position": "CDM",
+    "role_family": "DM",
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 role family DM has no SHOOT in its vocabulary (allowed: ['AM', 'ST', 'WING']). A shot head for this role would be teaching it an action it cannot perform.",
+    "elapsed_s": 0.0
+  },
+  "CM": {
+    "position": "CM",
+    "role_family": "CM",
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 role family CM has no SHOOT in its vocabulary (allowed: ['AM', 'ST', 'WING']). A shot head for this role would be teaching it an action it cannot perform.",
+    "elapsed_s": 0.0
+  },
+  "CAM": {
+    "position": "CAM",
+    "role_family": "AM",
+    "states": 2000,
+    "sequences": 400,
+    "seed": 4242,
+    "scoring_frac": 0.5,
+    "shootable_frac": 0.042,
+    "probe_auc_reset": 0.9032,
+    "probe_auc_carried": 0.8862,
+    "baseline_shot_rate": 0.6429,
+    "baseline_auc": 0.2925,
+    "trials": [
+      {
+        "beta": 0.5,
+        "auc": 0.466,
+        "spearman": -0.1021,
+        "clean": 0.9091,
+        "shot_rate": 0.7143,
+        "overrule": 0.06,
+        "silenced": 0.042
+      },
+      {
+        "beta": 1.0,
+        "auc": 0.5856,
+        "spearman": 0.0277,
+        "clean": 0.8303,
+        "shot_rate": 0.7857,
+        "overrule": 0.114,
+        "silenced": 0.08
+      },
+      {
+        "beta": 1.5,
+        "auc": 0.7193,
+        "spearman": 0.1638,
+        "clean": 0.7394,
+        "shot_rate": 0.881,
+        "overrule": 0.178,
+        "silenced": 0.125
+      },
+      {
+        "beta": 2.0,
+        "auc": 0.8156,
+        "spearman": 0.2715,
+        "clean": 0.6788,
+        "shot_rate": 0.9286,
+        "overrule": 0.263,
+        "silenced": 0.198
+      },
+      {
+        "beta": 3.0,
+        "auc": 0.8574,
+        "spearman": 0.3638,
+        "clean": 0.6303,
+        "shot_rate": 0.9286,
+        "overrule": 0.477,
+        "silenced": 0.404
+      },
+      {
+        "beta": 4.0,
+        "auc": 0.8624,
+        "spearman": 0.3823,
+        "clean": 0.6182,
+        "shot_rate": 0.9524,
+        "overrule": 0.612,
+        "silenced": 0.536
+      },
+      {
+        "beta": 6.0,
+        "auc": 0.8518,
+        "spearman": 0.3785,
+        "clean": 0.6182,
+        "shot_rate": 0.9048,
+        "overrule": 0.662,
+        "silenced": 0.586
+      },
+      {
+        "beta": 8.0,
+        "auc": 0.8197,
+        "spearman": 0.3814,
+        "clean": 0.6182,
+        "shot_rate": 0.8571,
+        "overrule": 0.672,
+        "silenced": 0.595
+      }
+    ],
+    "chosen": null,
+    "criteria": {
+      "min_auc": 0.85,
+      "min_clean": 0.9,
+      "min_shot_rate": 0.6,
+      "max_overrule": 0.15,
+      "max_silenced": 0.1,
+      "provisional_auc": 0.8,
+      "provisional_shot_rate": 0.4
+    },
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 this brain does not encode shot viability well enough to act on. Nothing is shipped, and the bar is not lowered.",
+    "elapsed_s": 1.6
+  },
+  "ST": {
+    "position": "ST",
+    "role_family": "ST",
+    "states": 2000,
+    "sequences": 400,
+    "seed": 4242,
+    "scoring_frac": 0.5,
+    "shootable_frac": 0.042,
+    "probe_auc_reset": 0.9295,
+    "probe_auc_carried": 0.8527,
+    "baseline_shot_rate": 0.0238,
+    "baseline_auc": 0.2097,
+    "trials": [
+      {
+        "beta": 0.5,
+        "auc": 0.3559,
+        "spearman": -0.3367,
+        "clean": 1.0,
+        "shot_rate": 0.0714,
+        "overrule": 0.218,
+        "silenced": 0.216
+      },
+      {
+        "beta": 1.0,
+        "auc": 0.634,
+        "spearman": 0.0288,
+        "clean": 0.9927,
+        "shot_rate": 0.0952,
+        "overrule": 0.28,
+        "silenced": 0.272
+      },
+      {
+        "beta": 1.5,
+        "auc": 0.8144,
+        "spearman": 0.31,
+        "clean": 0.9898,
+        "shot_rate": 0.0952,
+        "overrule": 0.283,
+        "silenced": 0.273
+      },
+      {
+        "beta": 2.0,
+        "auc": 0.8516,
+        "spearman": 0.3701,
+        "clean": 0.9883,
+        "shot_rate": 0.0952,
+        "overrule": 0.284,
+        "silenced": 0.273
+      },
+      {
+        "beta": 3.0,
+        "auc": 0.8525,
+        "spearman": 0.3642,
+        "clean": 0.9605,
+        "shot_rate": 0.2857,
+        "overrule": 0.311,
+        "silenced": 0.273
+      },
+      {
+        "beta": 4.0,
+        "auc": 0.842,
+        "spearman": 0.3498,
+        "clean": 0.9035,
+        "shot_rate": 0.4286,
+        "overrule": 0.356,
+        "silenced": 0.273
+      },
+      {
+        "beta": 6.0,
+        "auc": 0.8262,
+        "spearman": 0.3363,
+        "clean": 0.848,
+        "shot_rate": 0.6905,
+        "overrule": 0.405,
+        "silenced": 0.273
+      },
+      {
+        "beta": 8.0,
+        "auc": 0.8102,
+        "spearman": 0.3321,
+        "clean": 0.8099,
+        "shot_rate": 0.6905,
+        "overrule": 0.431,
+        "silenced": 0.273
+      }
+    ],
+    "chosen": null,
+    "criteria": {
+      "min_auc": 0.85,
+      "min_clean": 0.9,
+      "min_shot_rate": 0.6,
+      "max_overrule": 0.15,
+      "max_silenced": 0.1,
+      "provisional_auc": 0.8,
+      "provisional_shot_rate": 0.4
+    },
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 this brain does not encode shot viability well enough to act on. Nothing is shipped, and the bar is not lowered.",
+    "elapsed_s": 1.6
+  },
+  "CF": {
+    "position": "CF",
+    "role_family": "ST",
+    "states": 2000,
+    "sequences": 400,
+    "seed": 4242,
+    "scoring_frac": 0.5,
+    "shootable_frac": 0.042,
+    "probe_auc_reset": 0.9295,
+    "probe_auc_carried": 0.8527,
+    "baseline_shot_rate": 0.0238,
+    "baseline_auc": 0.2097,
+    "trials": [
+      {
+        "beta": 0.5,
+        "auc": 0.3559,
+        "spearman": -0.3367,
+        "clean": 1.0,
+        "shot_rate": 0.0714,
+        "overrule": 0.218,
+        "silenced": 0.216
+      },
+      {
+        "beta": 1.0,
+        "auc": 0.634,
+        "spearman": 0.0288,
+        "clean": 0.9927,
+        "shot_rate": 0.0952,
+        "overrule": 0.28,
+        "silenced": 0.272
+      },
+      {
+        "beta": 1.5,
+        "auc": 0.8144,
+        "spearman": 0.31,
+        "clean": 0.9898,
+        "shot_rate": 0.0952,
+        "overrule": 0.283,
+        "silenced": 0.273
+      },
+      {
+        "beta": 2.0,
+        "auc": 0.8516,
+        "spearman": 0.3701,
+        "clean": 0.9883,
+        "shot_rate": 0.0952,
+        "overrule": 0.284,
+        "silenced": 0.273
+      },
+      {
+        "beta": 3.0,
+        "auc": 0.8525,
+        "spearman": 0.3642,
+        "clean": 0.9605,
+        "shot_rate": 0.2857,
+        "overrule": 0.311,
+        "silenced": 0.273
+      },
+      {
+        "beta": 4.0,
+        "auc": 0.842,
+        "spearman": 0.3498,
+        "clean": 0.9035,
+        "shot_rate": 0.4286,
+        "overrule": 0.356,
+        "silenced": 0.273
+      },
+      {
+        "beta": 6.0,
+        "auc": 0.8262,
+        "spearman": 0.3363,
+        "clean": 0.848,
+        "shot_rate": 0.6905,
+        "overrule": 0.405,
+        "silenced": 0.273
+      },
+      {
+        "beta": 8.0,
+        "auc": 0.8102,
+        "spearman": 0.3321,
+        "clean": 0.8099,
+        "shot_rate": 0.6905,
+        "overrule": 0.431,
+        "silenced": 0.273
+      }
+    ],
+    "chosen": null,
+    "criteria": {
+      "min_auc": 0.85,
+      "min_clean": 0.9,
+      "min_shot_rate": 0.6,
+      "max_overrule": 0.15,
+      "max_silenced": 0.1,
+      "provisional_auc": 0.8,
+      "provisional_shot_rate": 0.4
+    },
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 this brain does not encode shot viability well enough to act on. Nothing is shipped, and the bar is not lowered.",
+    "elapsed_s": 1.5
+  },
+  "LW": {
+    "position": "LW",
+    "role_family": "WING",
+    "states": 2000,
+    "sequences": 400,
+    "seed": 4242,
+    "scoring_frac": 0.5,
+    "shootable_frac": 0.042,
+    "probe_auc_reset": 0.9181,
+    "probe_auc_carried": 0.9049,
+    "baseline_shot_rate": 0.0,
+    "baseline_auc": 0.3543,
+    "trials": [
+      {
+        "beta": 0.5,
+        "auc": 0.8091,
+        "spearman": 0.3938,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 1.0,
+        "auc": 0.8817,
+        "spearman": 0.4685,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 1.5,
+        "auc": 0.8959,
+        "spearman": 0.4712,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 2.0,
+        "auc": 0.9006,
+        "spearman": 0.4683,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 3.0,
+        "auc": 0.9033,
+        "spearman": 0.4677,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 4.0,
+        "auc": 0.8997,
+        "spearman": 0.4737,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 6.0,
+        "auc": 0.8883,
+        "spearman": 0.467,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 8.0,
+        "auc": 0.8805,
+        "spearman": 0.4527,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      }
+    ],
+    "chosen": null,
+    "criteria": {
+      "min_auc": 0.85,
+      "min_clean": 0.9,
+      "min_shot_rate": 0.6,
+      "max_overrule": 0.15,
+      "max_silenced": 0.1,
+      "provisional_auc": 0.8,
+      "provisional_shot_rate": 0.4
+    },
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 this brain does not encode shot viability well enough to act on. Nothing is shipped, and the bar is not lowered.",
+    "elapsed_s": 1.6
+  },
+  "RW": {
+    "position": "RW",
+    "role_family": "WING",
+    "states": 2000,
+    "sequences": 400,
+    "seed": 4242,
+    "scoring_frac": 0.5,
+    "shootable_frac": 0.042,
+    "probe_auc_reset": 0.9181,
+    "probe_auc_carried": 0.9049,
+    "baseline_shot_rate": 0.0,
+    "baseline_auc": 0.3543,
+    "trials": [
+      {
+        "beta": 0.5,
+        "auc": 0.8091,
+        "spearman": 0.3938,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 1.0,
+        "auc": 0.8817,
+        "spearman": 0.4685,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 1.5,
+        "auc": 0.8959,
+        "spearman": 0.4712,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 2.0,
+        "auc": 0.9006,
+        "spearman": 0.4683,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 3.0,
+        "auc": 0.9033,
+        "spearman": 0.4677,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 4.0,
+        "auc": 0.8997,
+        "spearman": 0.4737,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 6.0,
+        "auc": 0.8883,
+        "spearman": 0.467,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      },
+      {
+        "beta": 8.0,
+        "auc": 0.8805,
+        "spearman": 0.4527,
+        "clean": 1.0,
+        "shot_rate": 0.0,
+        "overrule": 0.0,
+        "silenced": 0.0
+      }
+    ],
+    "chosen": null,
+    "criteria": {
+      "min_auc": 0.85,
+      "min_clean": 0.9,
+      "min_shot_rate": 0.6,
+      "max_overrule": 0.15,
+      "max_silenced": 0.1,
+      "provisional_auc": 0.8,
+      "provisional_shot_rate": 0.4
+    },
+    "tier": "REFUSED",
+    "verdict": "REFUSED \u2014 this brain does not encode shot viability well enough to act on. Nothing is shipped, and the bar is not lowered.",
+    "elapsed_s": 1.8
+  }
+}
