@@ -272,3 +272,89 @@ The engine can feed a winger regardless: `Farson Willord` (Claw LW) is at
 3.11 shots/90, 7.25 box touches/90, 0.54 xG/90 in 26/27 — above the old
 workbook's own 0.50 final-third constant. Volume is not capped; distribution
 is.
+
+
+## ATTENTION IS NOT PERCEPTION, AND PRODUCTION ONLY EVER FEEDS IT 4 TOKENS (2026-11-16)
+
+Four gates sit between a player and his decision. Only one of them is a cone,
+and they are applied in this order by `brain_integration._maybe_situational`:
+
+| # | gate | file | tests | feeds |
+|---|---|---|---|---|
+| 1 | mind frame | `cognition/senses.py:88-95` | radius <= 25 m, nearest 2 mates + 2 opps, GKs skipped, **no angle** | the teammate/defender lists |
+| 2 | token builder | `situation_tokens.py:148` | nearest 8 per kind of 16 slots, no radius, **no cone** | the 16 x 12 attention set |
+| 3 | softmax | `situational_brain.py:332-341` | nothing; only distributes mass | alpha, ctx |
+| 4 | the cone | `perception.py:574-591` | role FOV 130-200 deg, range, top-k | the 24-d state + role tail |
+
+`PLOFA_COGNITION` defaults to 1 (`auto_run_match.py:144`) and a fresh
+`PlayerMind` is engaged, so the shipped route is 1 -> 2, never the raw lists.
+Measured over the 66 observatory states: the frame is **2-4 entities** (mean
+3.42, never more than 4), and **80 of 226 attention tokens (35.4%) sit outside
+the cone**. The 16 slots are capacity, not usage.
+
+So alpha does not mean "he saw him", and a token can be a man the 24-d state
+already threw out.
+
+### CORRECTION (same day): the frame was NEVER the training diet
+
+The paragraph above used to end "do not fix this by coning the tokens: the
+shipped brains were distilled on the mind-frame route." **That was wrong**,
+and the corpus says so directly. `surrogate_collect._situational_blocks`
+builds the tokens from `scene` — the list `perceive` kept (cone + range +
+top-k) — so the training token counts (v8 corpus, 6032 steps) reach **12 for
+a GK, 10 for a CB, 8 for a CM, 6 for an ST, mean 4.76**, with only 416/6032
+(6.9 %) empty. A 25 m / 2 + 2 frame cannot produce 12 tokens. Production was
+feeding 3.75 (measured, 2026-11-16 gate) and, in the no-mind branch, the RAW
+lists with no cone at all. Neither matched the corpus.
+
+**The fix (2026-11-16, `situational_decision.py`):** one vision gate. The
+tokens, the 24-d state, the role block and the receiver choice now all read
+the scene `perceive` returned. `PLOFA_TOKEN_SOURCE=legacy` restores the old
+feed for A/B work. 7 matches an arm, seeds 123/223/.../723, same squads:
+
+| | legacy (frame/raw) | scene (corpus feed) |
+|---|---|---|
+| men per decision | 3.75 (max 4) | **5.67 (max 12)** |
+| record | 0-0-7 | **0-2-5** |
+| goals for / against | 3 / 18 | **6 / 13** |
+| xG / xG conceded | 0.32 / 2.55 | **0.51 / 1.59** |
+| shots / on target | 4.1 / 1.3 | **5.7 / 2.3** |
+| passes / completion % | 365 / 87.9 | **437 / 89.3** |
+| turnovers lost | 72.3 | **62.9** |
+| possession % | 43.6 | 43.1 |
+
+Paired by seed the challenger was better in 5 matches and identical in 2;
+none got worse. Regressions to watch: progressive passes 25.6 -> 22.7,
+through balls 1.6 -> 0.6, switches 32.1 -> 15.6 (that volume was not real
+football either). Gate: `tests/gate_token_source.py`.
+
+
+`brain_viz/build_brain_viz.py` now calls `register_mind()` for every carrier,
+so the observatory runs the production order and renders both gates (frame ->
+cone), the per-actor reason he was withheld, and a FRAME fact beside SEEN.
+Before this it silently took the no-mind branch (`get_mind()` -> None, 12
+tokens), which production only reaches with cognition switched off.
+
+### Two measured defects that should gate any plan work
+
+1. **The plan block is fed a distribution it was never trained on.**
+   `surrogate_collect._teacher_forced_plan` pins the corpus block to
+   `one_hot(possession_phase_for(x, y))` with confidence 1.0 and has_plan 1.0.
+   Runtime feeds the hysteretic `TeamPlan`: confidence 0.50-0.99, and **all
+   zeros on the first touch of every possession**. Zeroing the block moves the
+   chosen intent by mean 18.1 pts (max 61.8) on 18 of 22 first touches, so the
+   channel is live, not decorative - just mis-fed. Block ablations (mean
+   |dP| over 66 states): attention 31.6, state 23.5, **plan 15.3**, role 11.8,
+   memory 8.7.
+2. **The consequence critic predates the sensor change.** `critic_v5.json` was
+   trained 2026-09-20; slots 2-3 became goal bearing and mouth width on
+   2026-10-31, so it reads two inputs whose meaning changed. It is on by
+   default (blend 0.30) and is inert whenever a team is losing: `score_diff`
+   explodes raw q to ~9,892 against a [0.20, 1.50] band, 33/33 losing states
+   saturate, 0/33 level-or-leading states do.
+
+The plan vocabulary is `PLAN_OUT_D = 4` outputs and a `PLAN_D = 6` block, and
+both role widths are computed by *subtraction* from the literal 6
+(`situational_brain.py:324`, `brain_integration.py:489`) - widening the plan
+block silently steals role slots. Nothing but `summary()` consumes `plan_id`
+today, so a wider vocabulary needs a consumer before it needs a retrain.

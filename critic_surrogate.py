@@ -22,6 +22,14 @@ unchanged.  Serialized with ``kind: "value_critic"`` and detected by
 
 Usage:
     python critic_surrogate.py --dataset brains_trainer/corpus_consequences.json
+
+DATASET LINEAGE — do not mix these.  `corpus_consequences.json` is the canonical
+post-goal-vision corpus: sensors carry real goal bearing and mouth width at slots
+2-3.  `corpus_consequences_20260920_pregoals.json` is the Sep-20 original, where
+slots 2-3 were exact duplicates of slots 0-1; it is kept only as the known-bad
+anchor for `tests/test_critic_health.py`.  Training on the pre-goal file re-creates
+the blindness the goal-vision work removed, and concatenating the two teaches the
+net that slot 2 means two different things.
 """
 from __future__ import annotations
 
@@ -47,6 +55,14 @@ _REWARD_LO, _REWARD_HI = 0.20, 1.5
 # The count prior is per (position, intent), so rare vertical intents are
 # pulled toward their (noisy) cell mean instead of being fitted as 0/1.
 SHRINK_K = 5.0
+
+# Sensors the critic must ABSTAIN from (zeroed in the fit AND at predict
+# time).  Set by ``--mask-slots``; stamped into the artifact's
+# ``meta["mask_slots"]`` so the served net can never see what the fitted one
+# could not.  Slots 2-3 changed meaning on 2026-10-31 (goal bearing + mouth
+# width, see brain_sensors._goal_geometry), so a critic fitted on the
+# Sep-20 corpus reads angles as coordinates unless it abstains.
+MASK_SLOTS: List[int] = []
 
 
 def _attack_payoff(record: dict) -> float:
@@ -174,7 +190,11 @@ class ValueCritic:
         )
 
     def build_input(self, sensors: np.ndarray, position: str) -> np.ndarray:
-        z = (np.asarray(sensors, dtype=np.float64) - self.sensor_means) / self.sensor_stds
+        s = np.asarray(sensors, dtype=np.float64).copy()
+        for i in (self.meta or {}).get("mask_slots") or []:
+            if 0 <= int(i) < s.shape[0]:
+                s[int(i)] = 0.0
+        z = (s - self.sensor_means) / self.sensor_stds
         return np.concatenate([z, _onehot_position(position)])
 
     def forward_x(self, x: np.ndarray) -> np.ndarray:
@@ -317,6 +337,10 @@ def _prepare(records: list):
         prior = prior_sum[k] / c
         shrink = c / (c + SHRINK_K)
         y[i] = prior + shrink * (y[i] - prior)
+    if MASK_SLOTS:
+        for j in MASK_SLOTS:
+            if 0 <= int(j) < raw.shape[1]:
+                raw[:, int(j)] = 0.0
     means = raw.mean(axis=0)
     stds = raw.std(axis=0) + 1e-9
     z = (raw - means) / stds
@@ -404,7 +428,7 @@ def train_critic_backprop(
     means: np.ndarray, stds: np.ndarray,
     epochs: int = 200,
     batch: int = 512,
-    lr: float = 1e-2,
+    lr: float = 5e-3,
     weight_decay: float = 1e-4,
     patience: int = 25,
     seed: int = 7,
@@ -417,6 +441,18 @@ def train_critic_backprop(
     the training regime the sparse/noisy episode targets need: GA fit the
     constant floor, backprop + early stopping can chase the same loss
     much faster and regularise properly.
+
+    ``lr`` DEFAULTS TO 5e-3, NOT 1e-2 (changed 2026-11-13, with evidence).
+    At 1e-2 the ReLU stack dies: the shipped ``critic_v5.json`` has 30 of 32
+    first-layer and 31 of 32 second-layer units that never activate on any
+    real state, so its whole output range across 12,297 decisions is 0.0123
+    inside a 1.30-wide reward band.  Re-running the exact v5 recipe (TD
+    targets, seed 123, lr 1e-2) reproduces it — 28/32 and 30/32 dead — while
+    the same recipe at 5e-3 keeps 32/32 alive and roughly doubles the
+    holdout rank correlation.  The steps were simply large enough to push
+    every unit's pre-activation negative, after which the gradient through
+    it is exactly zero forever.  Do not raise this without re-running
+    ``critic_health`` on the result.
     """
     rng = np.random.default_rng(seed)
     crit = ValueCritic.random(seed=seed)
@@ -599,10 +635,107 @@ def _scoring_profile(critic: ValueCritic, records: list, pos: str) -> Dict[str, 
     }
 
 
+def critic_health(critic: ValueCritic, X: np.ndarray, I: np.ndarray,
+                  y: np.ndarray, tr: np.ndarray, te: np.ndarray) -> Dict[str, Any]:
+    """Decide whether a trained critic is allowed to ship.
+
+    This exists because ``critic_v5.json`` shipped collapsed and nothing
+    noticed for six weeks.  Measured on 2026-11-13 over 12,297 real decisions:
+    Q spans 0.3115..0.4046 — a range of 0.0123 inside a reward band 1.30 wide —
+    so the blend in ``consequence_decision`` was applying a near-constant
+    vector: an intent prior wearing a neural network, nudging every decision
+    the same way wherever it happened on the pitch.
+
+    A loss number cannot catch that.  The collapsed critic had a perfectly
+    ordinary weighted MSE, because predicting the mean IS the loss-minimising
+    answer once the gradient through every unit is zero.  So the verdict is
+    functional, on two orthogonal questions:
+
+      does it use its band?   Q must span at least a quarter of the reward
+                              band.  A critic that whispers cannot express
+                              "goal" (1.35) against "turnover" (0.20), and its
+                              advantage term is too small to change a decision.
+
+      does it beat a table?   Holdout rank correlation must beat a 10-number
+                              intent-mean lookup fitted on TRAIN only.  If it
+                              does not, the state conditioning is decorative
+                              and a table would be cheaper and easier to audit.
+
+    DEAD UNITS ARE REPORTED BUT DO NOT DECIDE — and that is a measured
+    correction to this function's first draft, which failed any net with more
+    than a quarter of a layer dark.  A 2,000-state synthetic run trained to
+    holdout rank correlation 0.986 while 23 of 32 second-layer units never
+    activated; the surviving units simply carried the function.  Anatomy is a
+    hint, performance is the verdict.
+
+    Returns a dict with the numbers and a PASS/FAIL verdict; never raises.
+    """
+    h1 = np.maximum(0.0, X @ critic.w1 + critic.b1)
+    h2 = np.maximum(0.0, h1 @ critic.w2 + critic.b2)
+    dead1 = int(((h1 > 0.0).sum(axis=0) == 0).sum())
+    dead2 = int(((h2 > 0.0).sum(axis=0) == 0).sum())
+    q = critic.forward_x(X)
+    spread = float(q.max() - q.min())
+
+    qte = critic.forward_x(X[te])[np.arange(len(te)), I[te]]
+    rho_critic = _spearman(qte, y[te])
+    # The prior is fitted on TRAIN only.  Fitting it on holdout would flatter
+    # the baseline and make a real critic look better than it is.
+    prior = np.array([
+        float(y[tr][I[tr] == k].mean()) if (I[tr] == k).any()
+        else float(y[tr].mean())
+        for k in range(OUT)
+    ])
+    rho_prior = _spearman(prior[I[te]], y[te])
+
+    band = _REWARD_HI - _REWARD_LO
+    checks = {
+        "dead_units_h1": dead1,
+        "dead_units_h2": dead2,
+        "q_spread": round(spread, 4),
+        "rho_holdout": round(rho_critic, 4),
+        "rho_prior_holdout": round(rho_prior, 4),
+        "rho_delta": round(rho_critic - rho_prior, 4),
+    }
+    failures, warnings = [], []
+    if spread < 0.25 * band:
+        failures.append(f"Q spans {spread:.4f} < {0.25 * band:.4f} — a quarter "
+                        f"of the {band:.2f} band; the critic cannot express a "
+                        f"goal against a turnover")
+    if rho_critic <= rho_prior:
+        failures.append(f"holdout rank correlation {rho_critic:+.4f} does not "
+                        f"beat the intent prior {rho_prior:+.4f}; the state "
+                        f"conditioning is decorative")
+    if dead1 > H1 // 4 or dead2 > H2 // 4:
+        warnings.append(f"{dead1}/{H1} first-layer and {dead2}/{H2} "
+                        f"second-layer units never activate (capacity lost, "
+                        f"not necessarily function lost)")
+    checks["failures"] = failures
+    checks["warnings"] = warnings
+    checks["verdict"] = "PASS" if not failures else "FAIL"
+    return checks
+
+
+def _print_health(h: Dict[str, Any]) -> None:
+    print(f"\n=== critic health: {h['verdict']} ===")
+    print(f"  Q spread        : {h['q_spread']:.4f} "
+          f"(band is {_REWARD_HI - _REWARD_LO:.2f})")
+    print(f"  holdout rank    : critic {h['rho_holdout']:+.4f} vs "
+          f"intent prior {h['rho_prior_holdout']:+.4f} "
+          f"-> {h['rho_delta']:+.4f}")
+    print(f"  dead units      : {h['dead_units_h1']}/{H1} first, "
+          f"{h['dead_units_h2']}/{H2} second")
+    for w in h["warnings"]:
+        print(f"  WARN: {w}")
+    for f in h["failures"]:
+        print(f"  FAIL: {f}")
+
+
 def build_critic(records: list, out_path: str, report_path: str,
                  generations: int = 100, population: int = 32,
                  seed: int = 123, method: str = "backprop",
-                 epochs: int = 200, target_mode: str = "td") -> ValueCritic:
+                 epochs: int = 200, target_mode: str = "td",
+                 lr: float = 5e-3, allow_unhealthy: bool = False) -> ValueCritic:
     X, I, y, w, means, stds = _prepare(records)
     n = len(records)
     hold = max(1, int(n * 0.2))
@@ -624,7 +757,7 @@ def build_critic(records: list, out_path: str, report_path: str,
             boot, _, _ = train_critic_backprop(
                 X[tr], I[tr], y[tr], w[tr], X[te], I[te], y[te], w[te],
                 means, stds, epochs=max(25, epochs // 6), seed=seed,
-                verbose=False)
+                lr=lr, verbose=False)
             y = _td_bootstrap(records, y, boot, gamma=0.97,
                               lo=_REWARD_LO, hi=_REWARD_HI)
         print(f"{n} records; backprop-training critic on "
@@ -632,8 +765,19 @@ def build_critic(records: list, out_path: str, report_path: str,
               f"batch=512, seed={seed}) ...")
         critic, gen_best, gen_mean = train_critic_backprop(
             X[tr], I[tr], y[tr], w[tr], X[te], I[te], y[te], w[te],
-            means, stds, epochs=epochs, seed=seed,
+            means, stds, epochs=epochs, seed=seed, lr=lr,
         )
+
+    health = critic_health(critic, X, I, y, tr, te)
+    _print_health(health)
+    if health["verdict"] != "PASS" and not allow_unhealthy:
+        raise SystemExit(
+            "REFUSING TO SAVE a collapsed critic. A dead network has an ordinary "
+            "loss, so loss cannot catch this — the checks above did. Retrain at a "
+            "lower --lr (5e-3 works; 1e-2 kills the ReLU stack) or pass "
+            "--allow-unhealthy if you are deliberately shipping a known-bad "
+            "baseline for comparison.")
+
     te_loss = _weighted_mse(critic, X[te], I[te], y[te], w[te])
     q = critic.forward_x(X)
     n_all = X.shape[0]
@@ -672,6 +816,7 @@ def build_critic(records: list, out_path: str, report_path: str,
         "raw_mean": round(base_mean, 4),
         "reward_band": [_REWARD_LO, _REWARD_HI], "shrink_k": SHRINK_K,
         "generations": generations, "population": population, "seed": seed,
+        "lr": lr, "health": health,
         "scoring_profiles": {
             pos: _scoring_profile(critic, records, pos)
             for pos in ["ST", "CM", "CAM", "LW", "RW"]
@@ -696,6 +841,9 @@ def build_critic(records: list, out_path: str, report_path: str,
         "best_loss": round(gen_best[-1], 6),
         "reward_band": [_REWARD_LO, _REWARD_HI],
         "shrink_k": SHRINK_K,
+        "lr": lr,
+        "health": health,
+        "mask_slots": list(MASK_SLOTS),
     }
     critic.save(out_path)
     print(f"Critic -> {out_path}   report -> {report_path}")
@@ -730,14 +878,36 @@ def main() -> None:
                    help="'td' bootstraps episode targets (gamma=0.97); "
                         "'mc' uses single-roll realized returns")
     p.add_argument("--seed", type=int, default=123)
+    p.add_argument("--lr", type=float, default=5e-3,
+                   help="Adam step. 1e-2 collapses the ReLU stack (that is how "
+                        "critic_v5 died); 5e-3 keeps every unit alive.")
+    p.add_argument("--allow-unhealthy", action="store_true",
+                   help="Save even if critic_health says FAIL — only for "
+                        "reproducing a known-bad baseline.")
+    p.add_argument("--mask-slots", default="",
+                   help="Comma-separated sensor slots the critic must ABSTAIN "
+                        "from: zeroed in the fit and zeroed again at predict "
+                        "time (the artifact carries meta['mask_slots']).  Use "
+                        "this for an input whose MEANING changed after the "
+                        "corpus was collected — e.g. slots 2-3 became goal "
+                        "bearing and mouth width on 2026-10-31, so a critic "
+                        "fitted on the Sep-20 corpus reads angles as "
+                        "coordinates.  Masking is cheaper than lying.")
     args = p.parse_args()
 
+    global MASK_SLOTS
+    MASK_SLOTS = [int(v) for v in str(args.mask_slots).replace(" ", "").split(",")
+                  if v.strip() != ""]
     records = _load_dataset(args.dataset)
     print(f"Loaded {len(records)} decision records from {args.dataset}")
+    if MASK_SLOTS:
+        print(f"ABSTAINING from sensor slots {MASK_SLOTS} (zeroed in fit and "
+              f"at predict time via meta['mask_slots']).")
     build_critic(records, args.out, args.report,
                  generations=args.generations, population=args.population,
                  seed=args.seed, method=args.method, epochs=args.epochs,
-                 target_mode=args.target)
+                 target_mode=args.target, lr=args.lr,
+                 allow_unhealthy=args.allow_unhealthy)
 
 
 if __name__ == "__main__":

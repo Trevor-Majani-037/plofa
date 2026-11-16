@@ -91,6 +91,12 @@ plofa_broadcast/replay.json
 plofa_broadcast/broadcast_data.json
 plofa_broadcast/broadcast_standalone.html
 
+# Brain observatory: the builder and its template are source, the page is
+# output.  `build_brain_viz.py` rewrites brain_thinking.html (~2 MB of
+# inlined weights + every observatory state) on each run, the same way
+# broadcast.py rewrites its standalone page.
+brain_viz/brain_thinking.html
+
 # Raw per-tick player path with source tags (PLOFA_TRACE_JUMPS=1): ~750k
 # samples, written by the jump diagnostics. Evidence, not input.
 tools/diag/_raw_player_path.json

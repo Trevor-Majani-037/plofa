@@ -1,0 +1,287 @@
+{
+  "kind": "value_critic",
+  "n_records": 5438,
+  "holdout": 1087,
+  "method": "backprop",
+  "target_mode": "td",
+  "gamma_td": 0.97,
+  "epochs": 200,
+  "train_loss": 0.498583,
+  "test_loss": 0.440797,
+  "rho_all": 0.3369,
+  "rho_holdout": 0.1889,
+  "rho_raw_holdout": 0.0273,
+  "separation_holdout": 0.3498,
+  "payoff_indicator_share": 1.0,
+  "raw_top_decile_catch": 0.3537,
+  "raw_mean": 0.3606,
+  "reward_band": [
+    0.2,
+    1.5
+  ],
+  "shrink_k": 5.0,
+  "generations": 100,
+  "population": 32,
+  "seed": 123,
+  "lr": 0.005,
+  "health": {
+    "dead_units_h1": 0,
+    "dead_units_h2": 0,
+    "q_spread": 4.3732,
+    "rho_holdout": 0.1889,
+    "rho_prior_holdout": 0.0791,
+    "rho_delta": 0.1098,
+    "failures": [],
+    "warnings": [],
+    "verdict": "PASS"
+  },
+  "scoring_profiles": {
+    "ST": {
+      "samples": 1030,
+      "top": [
+        [
+          "PROGRESSIVE_PASS",
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          1.5
+        ],
+        [
+          "THROUGH_BALL",
+          1.5
+        ],
+        [
+          "CARRY",
+          1.5
+        ],
+        [
+          "CROSS",
+          1.5
+        ],
+        [
+          "SHOOT",
+          1.5
+        ]
+      ]
+    },
+    "CM": {
+      "samples": 4080,
+      "top": [
+        [
+          "PROGRESSIVE_PASS",
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          1.5
+        ],
+        [
+          "THROUGH_BALL",
+          1.5
+        ],
+        [
+          "CARRY",
+          1.5
+        ],
+        [
+          "CROSS",
+          1.5
+        ],
+        [
+          "SHOOT",
+          1.5
+        ]
+      ]
+    },
+    "CAM": {
+      "samples": 220,
+      "top": [
+        [
+          "PROGRESSIVE_PASS",
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          1.5
+        ],
+        [
+          "THROUGH_BALL",
+          1.5
+        ],
+        [
+          "CARRY",
+          1.5
+        ],
+        [
+          "CROSS",
+          1.5
+        ],
+        [
+          "SHOOT",
+          1.5
+        ]
+      ]
+    },
+    "LW": {
+      "samples": 310,
+      "top": [
+        [
+          "PROGRESSIVE_PASS",
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          1.5
+        ],
+        [
+          "THROUGH_BALL",
+          1.5
+        ],
+        [
+          "CARRY",
+          1.5
+        ],
+        [
+          "CROSS",
+          1.5
+        ],
+        [
+          "SHOOT",
+          1.5
+        ]
+      ]
+    },
+    "RW": {
+      "samples": 420,
+      "top": [
+        [
+          "PROGRESSIVE_PASS",
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          1.5
+        ],
+        [
+          "THROUGH_BALL",
+          1.5
+        ],
+        [
+          "CARRY",
+          1.5
+        ],
+        [
+          "CROSS",
+          1.5
+        ],
+        [
+          "SHOOT",
+          1.5
+        ]
+      ]
+    }
+  },
+  "synthetic_argmax": {
+    "ST_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "CARRY",
+          0.557,
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          0.43,
+          1.5
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.013,
+          1.5
+        ]
+      ]
+    },
+    "CM_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "CARRY",
+          0.56,
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          0.44,
+          1.5
+        ]
+      ]
+    },
+    "CAM_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "CARRY",
+          0.557,
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          0.43,
+          1.5
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.013,
+          1.5
+        ]
+      ]
+    },
+    "LW_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "CARRY",
+          0.557,
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          0.43,
+          1.5
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.013,
+          1.5
+        ]
+      ]
+    },
+    "RW_scoring": {
+      "n_states": 300,
+      "goal_bias": 1.0,
+      "top": [
+        [
+          "CARRY",
+          0.557,
+          1.5
+        ],
+        [
+          "SAFE_PASS",
+          0.43,
+          1.5
+        ],
+        [
+          "PROGRESSIVE_PASS",
+          0.013,
+          1.5
+        ]
+      ]
+    }
+  }
+}

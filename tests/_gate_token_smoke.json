@@ -1,0 +1,81 @@
+{
+ "arm": "scene",
+ "matches": [
+  {
+   "arm": "scene",
+   "match": 1,
+   "seed": 123,
+   "home_goals": 0,
+   "away_goals": 1,
+   "home_possession": 39.3,
+   "decisions": 1067,
+   "home": {
+    "passes": 426.0,
+    "passes_ok": 376.0,
+    "carries": 187.0,
+    "switches": 17.0,
+    "turnovers": 67.0,
+    "prog_passes": 25.0,
+    "prog_ok": 24.0,
+    "interceptions_won": 9.0,
+    "shots": 5.0,
+    "xg": 0.1381,
+    "shots_on_target": 2.0,
+    "chances": 1.0
+   },
+   "away": {
+    "passes": 511.0,
+    "passes_ok": 455.0,
+    "carries": 319.0,
+    "interceptions_won": 15.0,
+    "turnovers": 77.0,
+    "prog_passes": 25.0,
+    "prog_ok": 23.0,
+    "switches": 24.0,
+    "through_balls": 2.0,
+    "through_ok": 1.0,
+    "shots": 11.0,
+    "xg": 0.9191000000000001,
+    "chances": 1.0,
+    "shots_on_target": 3.0
+   }
+  }
+ ],
+ "tokens": {
+  "decisions": 1067,
+  "mean": 5.764,
+  "max": 12,
+  "zero": 23,
+  "zero_pct": 2.16,
+  "histogram": {
+   "0": 23,
+   "1": 49,
+   "2": 67,
+   "3": 95,
+   "4": 122,
+   "5": 133,
+   "6": 118,
+   "7": 175,
+   "8": 93,
+   "9": 90,
+   "10": 87,
+   "11": 8,
+   "12": 7
+  }
+ },
+ "intents": {
+  "RECYCLE": 224,
+  "PROGRESSIVE_PASS": 188,
+  "SAFE_PASS": 153,
+  "PROTECT_POSSESSION": 133,
+  "SHOOT": 129,
+  "CARRY": 82,
+  "CROSS": 62,
+  "SWITCH": 55,
+  "THROUGH_BALL": 41
+ },
+ "actions": {
+  "PASS": 985,
+  "CARRY": 82
+ }
+}
