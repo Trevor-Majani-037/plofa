@@ -358,3 +358,81 @@ both role widths are computed by *subtraction* from the literal 6
 (`situational_brain.py:324`, `brain_integration.py:489`) - widening the plan
 block silently steals role slots. Nothing but `summary()` consumes `plan_id`
 today, so a wider vocabulary needs a consumer before it needs a retrain.
+
+## DUEL LEDGER: ZERO-SUM REPAIRED, VOLUME IN THE OPTA BAND (2026-11-23)
+
+User's model, confirmed against the code: Opta ground duels = dribbles +
+tackles + genuine 50-50s; beating two men is TWO duels (two contests), not
+two rolls on one touch; a dispossession is a duel lost with a duel won on the
+other side. `exporter.py` already intended all of this (`_mirror_duel`), but
+two streams never named the opponent.
+
+### Measured diagnosis (`tests/duel_audit.py`, 3 matches, seeds 123/223/323)
+| seed | ground: A won vs B lost | ground: B won vs A lost | aerial deltas |
+|---|---|---|---|
+| 123 | 75 vs 143 (−68) | 50 vs 83 (−33) | +6 / +2 |
+| 223 | 76 vs 114 (−38) | 51 vs 75 (−24) | +4 / +3 |
+| 323 | 79 vs 101 (−22) | 45 vs 68 (−23) | +5 / +3 |
+
+Each ground gap equals to the unit that side's `DISPOSSESSED` count (208
+one-sided losses over 3 matches): event_chain emitted dispossessions with NO
+`secondary_player` even though `resolve_dribble` had already named the
+tackler (`_mc_tackler`, `_carry_tackler`). Each aerial gap equals that side's
+headed-`CLEARANCE` count (23 one-sided aerial wins): the exporter credited a
+header won with no loser, and a lost header (`aerial_loss`) logged nothing.
+Everything else paired perfectly; the replay of exporter rules matched the
+shipped ledger exactly.
+
+Volume: 146-193 ground duels attempted per team per match (real Opta ~90-140).
+Tackles (26-31/match), dribbles (16-20), fouls (21-33) and aerials were in
+range. The padding came from two streams: `DISPOSSESSED` 45-101/match (all
+carry races, 32 micro + 43 main in the measured match) and branch-4
+`GROUND_DUEL` 57-66/match won by the carrier 91-96% of the time — presses
+from 6-10 m that never reached contact, so the carrier won by default. One
+touch could roll a micro-carry race, a branch-4 50-50 AND a branch-6 take-on
+against the same man.
+
+### SHIPPED FIX: the ledger is a passive observer
+* **Engine** (`event_chain.py`): the dispossession winner, the contested
+  header's opponent and the branch-4 presser distance are written to event
+  **metadata** (`duel_winner`, `presser_distance`). They are deliberately NOT
+  written to `secondary_player`: `_absorb_chain` (match_engine.py:6970-7054)
+  treats secondaries as on-ball (movement skip, position snap, stamina drain,
+  injury roll). Naming them there — the obvious first fix — restored
+  zero-sum but changed match outcomes (1-3 -> 0-2, 1-4 -> 0-2) and inflated
+  volume to 190-209 duels/team because mirrored winners now counted.
+* **Exporter** (`exporter.py`): `_duel_opponent(e)` reads metadata first;
+  every zero-sum mirror uses it. Duels require a named opponent
+  ("no opponent, no duel"). Volume filters are LEDGER-ONLY: a micro-carry
+  loss stays a dispossession stat but is not a duel (movement layer, not a
+  chosen contest), and a 50-50 with `presser_distance > 3.5 m` is not a duel
+  (no contact). Set-piece aerials carry no distance and always count.
+  Contested headers (attacker inside 2 m, the
+  `clearance_failure_multiplier` threshold) now pair as aerial duels, win or
+  lose; unopposed headers are clearances, not duels.
+
+### Verification (3 matches, seeds 123/223/323, `gate_duel_calib.py --arm legacy`)
+| seed | goals (pre-fix baseline) | ground duels/team | zero-sum ground + aerial |
+|---|---|---|---|
+| 123 | 1-3 (identical) | 107 | 0 / 0 |
+| 223 | 1-4 (identical) | 86 | 0 / 0 |
+| 323 | 0-1 (identical) | 93 | 0 / 0 |
+
+Goals are byte-identical to the pre-fix baseline — no sim feedback. Volume
+is inside the real Opta band. `tests/duel_audit.py` replays the final ledger
+rules and asserts ground AND aerial totals; `tests/gate_duel_calib.py` is
+retained as the record of the REJECTED sim-side calibration (its first two
+paired matches were legacy 0-2/0-2 vs calib 0-7/2-4, possession -4 to -7 pts):
+do NOT enable `PLOFA_DUEL_CALIB` — the levers behind it change match flow.
+
+### Pre-existing bug found, NOT fixed here
+`match_engine._absorb_chain` charges a secondary actor's stamina/injury with
+`event.team` (the PRIMARY actor's team), so cross-team secondaries (tackled
+carriers, fouled players) are booked to the wrong team. Fixing it changes
+match outcomes, so it was reverted to keep the duel change provably inert;
+it deserves its own gate.
+
+### Files
+`tests/duel_audit.py` (ledger census + replay + zero-sum gate),
+`tests/gate_duel_calib.py` (rejected sim-side gate / verification runner),
+`event_chain.py`, `exporter.py`.

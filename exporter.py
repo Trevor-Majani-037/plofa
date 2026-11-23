@@ -919,8 +919,9 @@ class StatAccumulator:
         Opta: for every duel won there is a corresponding duel lost.
         Single-sided engine events (TACKLE_WON alone, standalone
         DRIBBLE_*, GROUND/AERIAL_DUEL) carry the winner on `e.player`
-        and the loser on `e.secondary_player` — mirror att/won so team
-        won == opp lost. No draws.
+        and the loser on `e.secondary_player` or metadata `duel_winner`
+        (the passive-ledger seam) — mirror att/won so team won == opp
+        lost. No draws.
         """
         if not secondary_name:
             return
@@ -942,11 +943,23 @@ class StatAccumulator:
         if possession_lost:
             opp["possession_lost"] += 1
 
+    @staticmethod
+    def _duel_opponent(e: MatchEvent):
+        """Opponent for duel bookkeeping only.
+
+        The ledger is a PASSIVE observer: the engine names duel winners in
+        event metadata, never in `secondary_player`, because _absorb_chain
+        treats secondary players as on-ball (movement, stamina, injuries).
+        Counting a duel must never change the match.
+        """
+        return (e.metadata or {}).get("duel_winner") or e.secondary_player
+
     def _process_event(self, e: MatchEvent):
         """Route each event to its stat update."""
         actor = self.stats.get(e.player)
         if not actor:
             return
+        duel_opp = self._duel_opponent(e)
 
         # ── GOALS & ASSISTS ───────────────────────────────────
         if e.event_type == EventType.GOAL:
@@ -1417,20 +1430,22 @@ class StatAccumulator:
             # to the beaten defender via secondary_player — except when this
             # dribble is already the paired counterpart of a TACKLE_LOST
             # (tackle chain emits both events for one contest).
-            actor["ground_duels_att"] += 1
-            if e.outcome:
-                actor["ground_duels_won"] += 1
             paired_with_tackle = (e.metadata or {}).get("paired_with_tackle", False)
-            if not paired_with_tackle:
+            # A duel needs two participants: no named opponent, no duel.
+            if duel_opp or paired_with_tackle:
+                actor["ground_duels_att"] += 1
                 if e.outcome:
-                    # Attacker beats man: defender gets att + lost + dribbled past
-                    self._mirror_duel(e.secondary_player, "ground", won=False,
-                                      dribbled_past=True)
-                elif e.secondary_player:
-                    # Attacker tackled with no explicit TACKLE_WON logged:
-                    # defender wins the duel
-                    self._mirror_duel(e.secondary_player, "ground", won=True,
-                                      possession_won=True)
+                    actor["ground_duels_won"] += 1
+                if not paired_with_tackle:
+                    if e.outcome:
+                        # Attacker beats man: defender gets att + lost + dribbled past
+                        self._mirror_duel(duel_opp, "ground", won=False,
+                                          dribbled_past=True)
+                    elif duel_opp:
+                        # Attacker tackled with no explicit TACKLE_WON logged:
+                        # defender wins the duel
+                        self._mirror_duel(duel_opp, "ground", won=True,
+                                          possession_won=True)
 
         # ── CROSSES ────────────────────────────────────────────
         elif e.event_type in (EventType.CROSS_ATTEMPT, EventType.CORNER_TAKEN):
@@ -1465,10 +1480,11 @@ class StatAccumulator:
             # Opta: tackle won = ground duel won. Mirror the loss to the
             # tackled carrier (secondary_player) — success emits TACKLE_WON
             # alone, so without this the duel is one-sided.
-            actor["ground_duels_att"] += 1
-            actor["ground_duels_won"] += 1
-            self._mirror_duel(e.secondary_player, "ground", won=False,
-                              possession_lost=True)
+            if duel_opp:
+                actor["ground_duels_att"] += 1
+                actor["ground_duels_won"] += 1
+                self._mirror_duel(duel_opp, "ground", won=False,
+                                  possession_lost=True)
             # Tackle zone tracking (for last man tackles)
             if e.location_x is not None:
                 is_home = self._is_home_player(actor, e)
@@ -1489,7 +1505,8 @@ class StatAccumulator:
             # Opta: failed tackle = ground duel lost — unless a foul wiped
             # the tackle (duel is then FOUL_WON vs FOUL_COMMITTED). No mirror:
             # the attacker's side is the paired DRIBBLE_SUCCESS / FOUL_WON.
-            if id(e) not in getattr(self, "_tackle_wiped_by_foul", set()):
+            if (id(e) not in getattr(self, "_tackle_wiped_by_foul", set())
+                    and duel_opp):
                 actor["ground_duels_att"] += 1
 
         elif e.event_type == EventType.INTERCEPTION:
@@ -1509,9 +1526,19 @@ class StatAccumulator:
 
         elif e.event_type == EventType.CLEARANCE:
             actor["clearances"] += 1
-            if e.metadata.get("headed", False):
+            # Opta: only a CONTESTED header is an aerial duel, and it pairs
+            # with the named attacker (the engine flags him inside 2 m, the
+            # clearance_failure_multiplier threshold). The old rule credited
+            # every headed clearance as a duel WON with no loser — 23
+            # one-sided aerial wins over 3 audit matches. Legacy timelines
+            # without the flag carry no duel credit.
+            if (e.metadata or {}).get("contested_header", False):
                 actor["aerial_duels_att"] += 1
-                actor["aerial_duels_won"] += 1
+                if e.outcome:
+                    actor["aerial_duels_won"] += 1
+                    self._mirror_duel(duel_opp, "aerial", won=False)
+                else:
+                    self._mirror_duel(duel_opp, "aerial", won=True)
 
         elif e.event_type == EventType.BLOCK:
             actor["blocks"] += 1
@@ -1559,39 +1586,48 @@ class StatAccumulator:
 
         # ── AERIAL DUELS ───────────────────────────────────────
         elif e.event_type == EventType.AERIAL_DUEL:
-            actor["aerial_duels_att"] += 1
-            if e.outcome:
-                actor["aerial_duels_won"] += 1
-            # Zero-sum mirror to secondary (closest opponent per Opta).
-            # No dribbled_past here — losing an aerial is not being beaten
-            # on the dribble.
-            self._mirror_duel(e.secondary_player, "aerial",
-                              won=not e.outcome)
+            # Zero-sum mirror to the named opponent. No dribbled_past here —
+            # losing an aerial is not being beaten on the dribble.
+            # A branch-4 "contest" where the presser never got within 3.5 m
+            # is not a duel: the carrier won by default. Set-piece aerials
+            # carry no presser_distance and always count.
+            _pd = (e.metadata or {}).get("presser_distance")
+            if duel_opp and (_pd is None or _pd <= 3.5):
+                actor["aerial_duels_att"] += 1
+                if e.outcome:
+                    actor["aerial_duels_won"] += 1
+                self._mirror_duel(duel_opp, "aerial", won=not e.outcome)
 
         # ── GROUND DUELS ───────────────────────────────────────
         elif e.event_type == EventType.GROUND_DUEL:
-            actor["ground_duels_att"] += 1
-            if e.outcome:
-                actor["ground_duels_won"] += 1
             # Single physics contest (resolve_duel_contest) logged on the
             # carrier — mirror att/loss-win to the presser. No draws.
-            if e.outcome:
-                self._mirror_duel(e.secondary_player, "ground", won=False)
-            else:
-                self._mirror_duel(e.secondary_player, "ground", won=True,
-                                  possession_won=True)
+            # A press from >3.5 m that never reached contact is not a duel.
+            _pd = (e.metadata or {}).get("presser_distance")
+            if duel_opp and (_pd is None or _pd <= 3.5):
+                actor["ground_duels_att"] += 1
+                if e.outcome:
+                    actor["ground_duels_won"] += 1
+                if e.outcome:
+                    self._mirror_duel(duel_opp, "ground", won=False)
+                else:
+                    self._mirror_duel(duel_opp, "ground", won=True,
+                                      possession_won=True)
 
         # ── DISCIPLINE ─────────────────────────────────────────
         elif e.event_type == EventType.FOUL_COMMITTED:
             actor["fouls_committed"] += 1
             # Opta: foul conceded = duel lost (non-aerial). Pair is FOUL_WON.
-            actor["ground_duels_att"] += 1
+            # A foul with no named victim (handball, dissent) is not a duel.
+            if duel_opp:
+                actor["ground_duels_att"] += 1
 
         elif e.event_type == EventType.FOUL_WON:
             actor["fouls_won"] += 1
             # Opta: winning a foul = duel won. Pair is FOUL_COMMITTED.
-            actor["ground_duels_att"] += 1
-            actor["ground_duels_won"] += 1
+            if duel_opp:
+                actor["ground_duels_att"] += 1
+                actor["ground_duels_won"] += 1
 
         elif e.event_type == EventType.YELLOW_CARD:
             # A card always follows its own FOUL_COMMITTED event, so the
@@ -1633,10 +1669,14 @@ class StatAccumulator:
         elif e.event_type == EventType.DISPOSSESSED:
             actor["dispossessed"] += 1
             actor["possession_lost"] += 1
-            # Opta: dispossessed (not attempting to beat man) = duel lost.
-            actor["ground_duels_att"] += 1
-            if e.secondary_player:
-                self._mirror_duel(e.secondary_player, "ground", won=True,
+            # Opta: dispossessed (not attempting to beat man) = duel lost,
+            # but only when the winner is named. A micro-carry is a
+            # movement-layer touch, not a chosen contest: its loss stays a
+            # dispossession stat but is not a duel (32/match of the 75
+            # measured). No winner named -> turnover, not a duel.
+            if duel_opp and not (e.metadata or {}).get("micro_carry", False):
+                actor["ground_duels_att"] += 1
+                self._mirror_duel(duel_opp, "ground", won=True,
                                   possession_won=True)
 
         # ── MISC ───────────────────────────────────────────────

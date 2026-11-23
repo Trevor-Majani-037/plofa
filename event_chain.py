@@ -150,7 +150,15 @@ CB_MICRO_CARRY_RATE_ADV = float(
 
 
 def duel_calib() -> bool:
-    """Duel-volume calibration (2026-11-23, tests/duel_audit.py).
+    """REJECTED sim-side duel-volume experiment (2026-11-23). DO NOT ENABLE.
+
+    The first two paired gate matches regressed GF/GA badly (legacy 0-2,
+    0-2; calib 0-7, 2-4) and possession by 4-7 pts: changing the sim's
+    contest pool changes match flow, not just the ledger. The SHIPPED fix
+    is passive/ledger-only — winners and presser distances ride in event
+    metadata and the exporter filters volume, leaving goals byte-identical
+    to the pre-fix baseline. This toggle is kept off as the record of the
+    rejected approach; see tests/gate_duel_calib.py and AGENTS.md.
 
     The audit measured 146-193 ground duels per team per match (real Opta
     ~90-140) and a branch-4 50-50 the carrier wins 96% of — consequence-free
