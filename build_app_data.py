@@ -47,6 +47,48 @@ def safe_round(val, ndigits=2):
         return 0.0
 
 
+#: Goal situations Opta classes as set-piece deliveries (engine VALUES).
+SETPIECE_GOAL_SITUATIONS = {
+    "corner", "direct_freekick", "crossed_freekick", "throw_in",
+    "set_piece", "free_kick",
+}
+
+
+def _fold_name(value) -> str:
+    import unicodedata
+    text = str(value or "")
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(
+        ch.lower() for ch in text
+        if not unicodedata.combining(ch) and ord(ch) < 128
+    )
+
+
+def goal_assist_ledger(players: dict, goals: list) -> dict:
+    """Opta goal assists from the match's `goals` array.
+
+    Returns ``{player: (open_play, set_piece)}``. Fantasy assists are NOT
+    included — they are a separate column. A player cannot assist himself.
+    """
+    folded = {_fold_name(name): name for name in players}
+    ledger = {}
+    for goal in goals or []:
+        assist = str(goal.get("assist") or "").strip()
+        if not assist:
+            continue
+        scorer = str(goal.get("scorer") or "").strip()
+        if scorer and assist == scorer:
+            continue
+        name = assist if assist in players else folded.get(_fold_name(assist))
+        if not name:
+            continue
+        situation = str(goal.get("situation") or "").lower()
+        bucket = 1 if situation in SETPIECE_GOAL_SITUATIONS else 0
+        rec = ledger.setdefault(name, [0, 0])
+        rec[bucket] += 1
+    return {name: (rec[0], rec[1]) for name, rec in ledger.items()}
+
+
 # â”€â”€â”€ Discover all match JSON files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def discover_matches():
     matches = []
@@ -131,10 +173,12 @@ def parse_match(path: Path):
         away_poss = round(100 - home_poss, 1)
 
     # Player ratings per team
+    assist_ledger = goal_assist_ledger(players, goals)
     home_players_list = []
     away_players_list = []
     for pname, pdata in players.items():
         team = pdata.get("team", "")
+        op_a, sp_a = assist_ledger.get(pname, (0, 0))
         entry = {
             "name": pname,
             "position": pdata.get("position", ""),
@@ -146,7 +190,10 @@ def parse_match(path: Path):
             "rating": pdata.get("rating", 6.0),
             "is_mvp": pdata.get("is_mvp", False),
             "goals": pdata.get("goals", 0),
-            "assists": pdata.get("assists", 0),
+            "assists": op_a + sp_a,
+            "open_play_assists": op_a,
+            "setpiece_assists": sp_a,
+            "fantasy_assists": pdata.get("fantasy_assists", 0),
             "yellow_cards": pdata.get("yellow_cards", 0),
             "red_cards": pdata.get("red_cards", 0),
             "xg": round(pdata.get("xg", 0.0), 3),
@@ -329,6 +376,9 @@ def build_players(season_stats, season_state):
                 "rating": md_data.get("rating", 6.0),
                 "goals": md_data.get("goals", 0),
                 "assists": md_data.get("assists", 0),
+                "open_play_assists": md_data.get("open_play_assists", 0),
+                "setpiece_assists": md_data.get("setpiece_assists", 0),
+                "fantasy_assists": md_data.get("fantasy_assists", 0),
                 "minutes_played": md_data.get("minutes_played", 0),
                 "is_mvp": md_data.get("is_mvp", False),
                 "match_result": md_data.get("match_result", ""),
@@ -364,6 +414,9 @@ def build_players(season_stats, season_state):
                 "starts": totals.get("starts", 0),
                 "goals": totals.get("goals", 0),
                 "assists": totals.get("assists", 0),
+                "open_play_assists": totals.get("open_play_assists", 0),
+                "setpiece_assists": totals.get("setpiece_assists", 0),
+                "fantasy_assists": totals.get("fantasy_assists", 0),
                 "xg": safe_round(totals.get("xg", 0.0), 3),
                 "xa": safe_round(totals.get("xa", 0.0), 3),
                 "npxg": safe_round(totals.get("npxg", 0.0), 3),

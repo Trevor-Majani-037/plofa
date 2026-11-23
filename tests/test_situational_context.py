@@ -144,3 +144,60 @@ def test_assemble_keeps_the_four_block_width():
     vec = sc.assemble(np.zeros(STATE_D), np.zeros(ROLE_D),
                       np.zeros(MEMORY_D), np.zeros(PLAN_D))
     assert vec.shape == (STATE_D + ROLE_D + MEMORY_D + PLAN_D,)
+
+
+# ── the 2026-11-23 regression: the PERCEIVED engine killed the plan block ──
+
+class _PosEngine(_Engine):
+    def get_position(self, name):
+        return 52.5, 34.0
+
+
+def test_perceived_engine_exposes_the_real_cognitive_store():
+    """The scene proxy must not hide `neural_states` from plan_tail.
+
+    Since the scene feed landed (2026-11-16), `situational_decision` builds
+    all four blocks from the perceived engine. `_PerceivedEngine` used to
+    implement only `get_position`, so plan_tail swallowed the AttributeError
+    and returned six zeros for 100% of live CB decisions.
+    """
+    from perception import _PerceivedEngine
+
+    eng = _PosEngine()
+    _adopt(eng.neural_states, "Oxton", plan_id=2)
+    proxy = _PerceivedEngine(eng, {"Tester": (0.0, 0.0)}, 123)
+
+    out = sc.plan_tail(proxy, "Oxton")
+    assert out[-1] == 1.0, "plan block is zeros again through the scene proxy"
+    assert out[:PLAN_D - 2].sum() == 1.0
+
+
+def test_perceived_engine_is_not_a_broad_delegator():
+    """Only the cognitive store crosses; geometry stays on the noisy proxy."""
+    from perception import _PerceivedEngine
+
+    eng = _PosEngine()
+    proxy = _PerceivedEngine(eng, {}, 123)
+    assert not hasattr(proxy, "team_rosters"), (
+        "a __getattr__ catch-all would route geometry to the true engine"
+    )
+    assert proxy.neural_states is eng.neural_states
+
+
+def test_perceived_engine_noisy_position_survives_the_plan_delegation():
+    from perception import _PerceivedEngine
+
+    eng = _PosEngine()
+    proxy = _PerceivedEngine(eng, {"Tester": (2.0, -1.0)}, 123)
+    assert proxy.get_position("Tester") == (54.5, 33.0)
+    assert eng.get_position("Tester") == (52.5, 34.0)
+
+
+def test_legacy_flag_restores_the_dead_plan_block(monkeypatch):
+    from perception import _PerceivedEngine
+
+    eng = _PosEngine()
+    _adopt(eng.neural_states, "Oxton", plan_id=2)
+    proxy = _PerceivedEngine(eng, {}, 123)
+    monkeypatch.setenv("PLOFA_LEGACY_PLAN_FEED", "1")
+    assert np.all(sc.plan_tail(proxy, "Oxton") == 0.0)

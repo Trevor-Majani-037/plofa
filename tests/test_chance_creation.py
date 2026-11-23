@@ -102,9 +102,9 @@ def test_shot_assist_on_saved_shot_not_goal_assist():
     assert p["chances_created"] == 1
 
 
-def test_rebound_tap_in_grants_fantasy_assist():
+def test_rebound_tap_in_grants_fantasy_assist_but_not_an_assist():
     """Shot saved, rebound tapped in by a DIFFERENT player: the original
-    shooter gets a Fantasy Assist and the rebound goal is its own record."""
+    shooter gets a Fantasy Assist (its own column), NOT an Opta assist."""
     tl = [
         evt(EventType.PASS, "Home", "C", secondary_player="D"),
         evt(EventType.BALL_RECEIPT, "Home", "D"),
@@ -121,8 +121,82 @@ def test_rebound_tap_in_grants_fantasy_assist():
     assert rebound.outcome == "goal" and rebound.shooter == "E"
     assert rebound.creator == ""                 # no pass directly to E
     p = ledger.per_player["D"]
-    assert p["fantasy_assists"] == 1 and p["assists"] == 1
+    assert p["fantasy_assists"] == 1
+    assert p["assists"] == 0
+    assert p["open_play_assists"] == 0
     assert ledger.per_player["C"]["chances_created"] == 1
+
+
+def test_self_pass_never_credits_a_self_assist():
+    """A pass recorded with the passer as its own receiver is corrupt data;
+    Opta never credits a player for assisting himself."""
+    tl = [
+        evt(EventType.CROSS_SUCCESS, "Home", "S", secondary_player="S"),
+        evt(EventType.CARRY, "Home", "S"),
+        evt(EventType.SHOT_ON_TARGET, "Home", "S", xg=0.3),
+        evt(EventType.GOAL, "Home", "S", xg=0.3),
+    ]
+    ledger = run(tl)
+    r = ledger.records[0]
+    assert r.outcome == "goal"
+    assert r.creator == ""
+    p = ledger.per_player.get("S")
+    assert p is None or p["assists"] == 0
+
+
+def test_goal_event_assist_is_authoritative_and_splits_open_play():
+    """The GOAL event's secondary_player is the Opta assist, even when the
+    backward scan names someone else."""
+    tl = [
+        evt(EventType.PASS, "Home", "C", secondary_player="S"),
+        evt(EventType.BALL_RECEIPT, "Home", "S"),
+        evt(EventType.SHOT_ON_TARGET, "Home", "S", xg=0.4),
+        evt(EventType.GOAL, "Home", "S", secondary_player="B", xg=0.4),
+    ]
+    ledger = run(tl)
+    r = ledger.records[0]
+    assert r.creator == "B"
+    assert r.is_goal_assist is True
+    assert r.is_open_play is True
+    p = ledger.per_player["B"]
+    assert p["assists"] == 1
+    assert p["open_play_assists"] == 1
+    assert p["setpiece_assists"] == 0
+    # C may still appear as an SCA actor, but must not receive the assist.
+    assert ledger.per_player.get("C", {}).get("assists", 0) == 0
+
+
+def test_set_piece_goal_assist_goes_to_setpiece_column():
+    tl = [
+        evt(EventType.CORNER_TAKEN, "Home", "T", situation=SituationType.CORNER),
+        evt(EventType.SHOT_ON_TARGET, "Home", "S", xg=0.4,
+            situation=SituationType.CORNER),
+        evt(EventType.GOAL, "Home", "S", xg=0.4,
+            situation=SituationType.CORNER, secondary_player="T"),
+    ]
+    ledger = run(tl)
+    p = ledger.per_player["T"]
+    assert p["assists"] == 1
+    assert p["setpiece_assists"] == 1
+    assert p["open_play_assists"] == 0
+
+
+def test_explicit_goalless_assist_blocks_chance_created_supplement():
+    """A GOAL event explicitly recording no assist must not be given one by
+    a CHANCE_CREATED event after the fact."""
+    tl = [
+        evt(EventType.CARRY, "Home", "D"),
+        evt(EventType.CHANCE_CREATED, "Home", "D", secondary_player="S"),
+        evt(EventType.SHOT_ON_TARGET, "Home", "S", xg=0.25),
+        evt(EventType.GOAL, "Home", "S", xg=0.25, secondary_player=""),
+    ]
+    ledger = run(tl)
+    r = ledger.records[0]
+    assert r.outcome == "goal"
+    assert r.creator == ""
+    assert r.no_assist is True
+    p = ledger.per_player.get("D")
+    assert p is None or p["assists"] == 0
 
 
 def test_woodwork_upgraded_to_goal_by_same_player():

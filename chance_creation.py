@@ -41,10 +41,14 @@ path is now causal too. Two things a future reader must not get wrong:
   `chances_created == shot_assists + goal_assists` rests on. Do not add a
   fallback here or in `AttackChain`.
 
-  **THE LEDGER DOES NOT SUPPLY THE ASSIST COLUMN.** `exporter.py`'s Goals
-  sheet and `alltime_db` ASSISTS read the engine's `goal_assistant` / GOAL
-  event `secondary_player`. This module supplies xA and the chance-creation
-  aggregates. See the correction in `PLOFA_ARCHITECTURE_AUDIT.md` F.1.
+  **THE ASSIST COLUMN IS OPTA-ONLY; FANTASY ASSISTS ARE A SEPARATE COLUMN.**
+  `assists` is the final pass to the scorer, split into
+  `open_play_assists` + `setpiece_assists`. A GOAL event's
+  `secondary_player` is authoritative when present (it is the same field the
+  exported `goals[].assist` column carries), so this ledger and the app's
+  goal ledger cannot drift. A player can never assist himself. Rebounds and
+  won fouls remain tracked in `fantasy_assists` and do NOT inflate
+  `assists`, `open_play_assists` or `setpiece_assists`.
 
     Taxonomy implemented (Opta / StatsBomb naming both noted):
         1. Goal Assist        — the final pass to the shooter WHO SCORES.
@@ -75,7 +79,9 @@ path is now causal too. Two things a future reader must not get wrong:
         8. Fantasy Assist     — the attacking contribution that precedes a
                                rebound tap-in (shot saved/blocked then
                                scored by a teammate) or a penalty/direct
-                               free-kick converted after a foul won.
+                               free-kick converted after a foul won. It is
+                               tracked in `fantasy_assists` ONLY; it is not
+                               an Opta assist and never enters `assists`.
 
     Pure module: reads only the timeline, no dependency on the event chain
     or match loop. Trivially unit-testable (mirrors threat_engine.py /
@@ -141,6 +147,12 @@ REBOUND_SCAN_WINDOW: int = 10
 #: Maximum events to look backward for the setup pass before giving up.
 KEY_PASS_SCAN_WINDOW: int = 24
 
+#: Goal situations Opta classes as set-piece deliveries for the assist split.
+#: (Enum NAMES, because `SituationType.CORNER.name == "CORNER"`.)
+SETPIECE_SITUATIONS = {
+    "CORNER", "DIRECT_FREEKICK", "CROSSED_FREEKICK", "THROW_IN",
+}
+
 
 @dataclass
 class ChanceRecord:
@@ -171,6 +183,9 @@ class ChanceRecord:
     pass_event_index: int = -1
     is_goal_assist: bool = False
     is_open_play: bool = True
+    #: True when the GOAL event explicitly says there was no assist. Blocks
+    #: the CHANCE_CREATED supplement from inventing one after the fact.
+    no_assist: bool = False
 
     def as_dict(self) -> Dict:
         return {
@@ -188,6 +203,7 @@ class ChanceRecord:
             "fantasy_assist": self.fantasy_assist,
             "is_goal_assist": self.is_goal_assist,
             "is_open_play": self.is_open_play,
+            "no_assist": self.no_assist,
         }
 
 
@@ -240,10 +256,12 @@ class ChanceCreationLedger:
             "second_assists": 0, "sca": 0,
             "fantasy_assists": 0, "shots_faced_by_creation": 0,
         }
-        # Shots that already have a creator from the setup-pass scan.
+        # Shots that already have a creator from the setup-pass scan, or
+        # whose GOAL event explicitly recorded NO assist. Neither may be
+        # supplemented by a CHANCE_CREATED event after the fact.
         covered: Set[str] = set()
         for r in self.records:
-            if r.creator:
+            if r.creator or r.no_assist:
                 covered.add((r.minute, r.shooter))
         # Build lookup for goal xG values from analyzed shots
         goal_xg: Dict[Tuple[int, str], float] = {}
@@ -334,8 +352,11 @@ class ChanceCreationLedger:
                         EventType.FREEKICK_DIRECT,
                     )):
                 last.goaled = True
+                last.goal_event = e
                 continue
             cand = _ShotCandidate(i, e)
+            if t in (EventType.GOAL, EventType.PENALTY_SCORED):
+                cand.goal_event = e
             shots.append(cand)
             last = cand
         return shots
@@ -376,26 +397,64 @@ class ChanceCreationLedger:
             xg=round(xg, 4), is_big=is_big,
         )
 
-        # ── THE SETUP PASS (Key Pass / Assist) ────────────────
-        setup = self._find_setup_pass(shot.index, team, shooter, situation_str)
-        if setup is not None:
-            pass_evt, pass_idx, is_open_play = setup
-            rec.creator = pass_evt.player or ""
-            rec.pass_x = pass_evt.location_x or 0.0
-            rec.pass_y = pass_evt.location_y or 0.0
-            rec.pass_end_x = pass_evt.end_x if pass_evt.end_x is not None else rec.pass_x
-            rec.pass_end_y = pass_evt.end_y if pass_evt.end_y is not None else rec.pass_y
-            # xA of the delivery = xG of the shot it created.
-            rec.xa = round(xg, 4)
-            rec.pass_event_index = pass_idx
-            rec.is_goal_assist = (outcome == "goal")
-            rec.is_open_play = is_open_play
-            self.shot_assist_event_indexes.add(pass_idx)
+        # ── THE ASSIST (OPTA DEFINITION) ──────────────────────
+        # A goal's assist is the player named on the GOAL event itself
+        # (`secondary_player`) — the same field the exported
+        # `goals[].assist` column carries. Trusting it here keeps the
+        # engine ledger and the app's goal ledger in lockstep.
+        #   None -> not supplied (synthetic / legacy timeline): fall back
+        #           to the backward setup-pass scan.
+        #   ""   -> explicitly unassisted: do NOT reconstruct one.
+        #   name -> that player, unless it is the scorer (no self-assists).
+        official = None
+        goal_event = getattr(shot, "goal_event", None)
+        if outcome == "goal" and goal_event is not None:
+            official = getattr(goal_event, "secondary_player", None)
 
-            # ── SECOND ASSIST (pass to the creator) ───────────
-            rec.second_assist = self._find_second_assist(
-                pass_idx, team, rec.creator
-            )
+        if official is not None:
+            official = str(official).strip()
+            if official and official != shooter:
+                rec.creator = official
+                rec.is_goal_assist = True
+                rec.xa = round(getattr(goal_event, "xg", xg) or xg, 4)
+                rec.is_open_play = not self._is_set_piece(goal_event)
+                # Locate the actual delivery for map geometry only. The
+                # attribution stays the GOAL event's even when the scan
+                # cannot find the pass (self-passes, deflections...).
+                setup = self._find_setup_pass(shot.index, team, shooter, situation_str)
+                if setup is not None and (setup[0].player or "") == official:
+                    pass_evt, pass_idx, _ = setup
+                    rec.pass_x = pass_evt.location_x or 0.0
+                    rec.pass_y = pass_evt.location_y or 0.0
+                    rec.pass_end_x = pass_evt.end_x if pass_evt.end_x is not None else rec.pass_x
+                    rec.pass_end_y = pass_evt.end_y if pass_evt.end_y is not None else rec.pass_y
+                    rec.pass_event_index = pass_idx
+                    rec.second_assist = self._find_second_assist(pass_idx, team, official)
+                    self.shot_assist_event_indexes.add(pass_idx)
+            else:
+                rec.creator = ""
+                rec.no_assist = True
+        else:
+            # ── THE SETUP PASS (Key Pass / Assist) ────────────
+            setup = self._find_setup_pass(shot.index, team, shooter, situation_str)
+            if setup is not None:
+                pass_evt, pass_idx, is_open_play = setup
+                rec.creator = pass_evt.player or ""
+                rec.pass_x = pass_evt.location_x or 0.0
+                rec.pass_y = pass_evt.location_y or 0.0
+                rec.pass_end_x = pass_evt.end_x if pass_evt.end_x is not None else rec.pass_x
+                rec.pass_end_y = pass_evt.end_y if pass_evt.end_y is not None else rec.pass_y
+                # xA of the delivery = xG of the shot it created.
+                rec.xa = round(xg, 4)
+                rec.pass_event_index = pass_idx
+                rec.is_goal_assist = (outcome == "goal")
+                rec.is_open_play = is_open_play
+                self.shot_assist_event_indexes.add(pass_idx)
+
+                # ── SECOND ASSIST (pass to the creator) ───────
+                rec.second_assist = self._find_second_assist(
+                    pass_idx, team, rec.creator
+                )
 
         # ── SHOT-CREATING ACTIONS ────────────────────────────
         rec.sca_players = self._find_sca(shot.index, team, shooter)
@@ -405,6 +464,12 @@ class ChanceCreationLedger:
             shot.index, team, e, outcome
         )
         return rec
+
+    def _is_set_piece(self, event: MatchEvent) -> bool:
+        """True when the event's situation is an Opta set-piece delivery."""
+        situation = getattr(event, "situation", None)
+        name = getattr(situation, "name", None) or str(situation or "").upper()
+        return name in SETPIECE_SITUATIONS
 
     def _find_setup_pass(self, shot_idx: int, team: str, shooter: str,
                           situation: str) -> Optional[Tuple[MatchEvent, int, bool]]:
@@ -439,6 +504,11 @@ class ChanceCreationLedger:
                 return None
             # First completed pass-like by this team going backward.
             receiver = getattr(evt, "secondary_player", None)
+            # A pass recorded as delivered to its own passer is corrupt
+            # data, and Opta never credits a self-assist. Treat it as no
+            # setup pass rather than letting it mask the real assister.
+            if (evt.player or "") == shooter:
+                return None
             if receiver == shooter:
                 is_open = evt.event_type not in (EventType.CORNER_TAKEN, EventType.FREEKICK_CROSS, EventType.THROW_IN)
                 return evt, j, is_open
@@ -555,7 +625,7 @@ class ChanceCreationLedger:
         }
         for r in self.records:
             shots_faced = r.creator or r.fantasy_assist
-            if r.creator:
+            if r.creator and r.creator != r.shooter:
                 p = acc.setdefault(r.creator, dict(blank))
                 if r.is_goal_assist:
                     p["goal_assists"] += 1
@@ -585,10 +655,10 @@ class ChanceCreationLedger:
             for actor in r.sca_players:
                 acc.setdefault(actor, dict(blank))["sca"] += 1
             if r.fantasy_assist:
+                # Fantasy assist is its OWN column. It is not an Opta assist,
+                # so it must not touch assists/open_play_assists/setpiece.
                 p = acc.setdefault(r.fantasy_assist, dict(blank))
                 p["fantasy_assists"] += 1
-                p["assists"] += 1
-                p["open_play_assists"] += 1
             # Even a solo effort (no key pass) counts as SCA for the shooter
             # if the shot was created by their own run.
             if not r.creator and r.sca_players:
@@ -598,12 +668,14 @@ class ChanceCreationLedger:
 
 # Internal shot candidate with mutable "scored" flag.
 class _ShotCandidate:
-    __slots__ = ("index", "event", "goaled")
+    __slots__ = ("index", "event", "goaled", "goal_event")
 
     def __init__(self, index: int, event: MatchEvent):
         self.index = index
         self.event = event
         self.goaled = False
+        #: The GOAL event that finished this shot (upgrade or direct goal).
+        self.goal_event: Optional[MatchEvent] = None
 
     def __getattr__(self, item):
         if item == "goaled":

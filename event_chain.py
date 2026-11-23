@@ -27,6 +27,7 @@ Chain Types:
 """
 
 from __future__ import annotations
+import os
 import random
 import math
 import numpy as np
@@ -132,6 +133,77 @@ SIX_YARD_BOX_DEPTH_M = 6 * 0.9144
 REACH_SPACING_MULT = 1.0
 REACH_SPACING_TARGET = 0.93
 REACH_SPACING_CEIL_M = 30.0
+
+# ── MICRO-CARRY RATE (2026-11-23) ──────────────────────────────────────
+# A micro-carry is the little 2-6 m touch BEFORE the actual action, emitted
+# at `event_chain.py:1683` with metadata `micro_carry=True`. It is authored
+# by the movement layer, NOT chosen by the on-ball brain. The 2026-11-23
+# attribution probe (`tools/diag/_diag_cb_pass_attribution.py`) measured
+# 55 of 57 CB carries in one match as micro-carries: ~28 per CB per match,
+# against a real ball-playing CB's 4-6. The brain itself chose CARRY 0% of
+# the time, so this belongs in the movement layer, not the verb layer.
+MICRO_CARRY_RATE = 0.55
+CB_MICRO_CARRY_RATE_OWN = float(
+    os.environ.get("PLOFA_CB_MICRO_RATE_OWN", "0.18"))
+CB_MICRO_CARRY_RATE_ADV = float(
+    os.environ.get("PLOFA_CB_MICRO_RATE_ADV", "0.30"))
+
+
+def duel_calib() -> bool:
+    """Duel-volume calibration (2026-11-23, tests/duel_audit.py).
+
+    The audit measured 146-193 ground duels per team per match (real Opta
+    ~90-140) and a branch-4 50-50 the carrier wins 96% of — consequence-free
+    stat padding, because the "contest" fired on presses from 6-10 m that
+    never reached contact. Under PLOFA_DUEL_CALIB=1: the 50-50 branch only
+    fires when the presser is inside 3.5 m (a real challenge), a touch that
+    already contested a 50-50 cannot ALSO roll a take-on (one contest per
+    touch), carry races only contest defenders already inside 5 m
+    (engaged_contesters), and the deep recovery never tackles a man who
+    already lost the ball (match_engine). Off = audit incumbent.
+    """
+    return os.environ.get("PLOFA_DUEL_CALIB", "0") == "1"
+
+
+def engaged_contesters(def_players, position_engine, x: float, y: float,
+                       radius: float = 5.0):
+    """DUEL_CALIB: the defenders who can genuinely contest this carry.
+
+    The carry races used to pass EVERY outfield defender into
+    resolve_dribble, so a man closing from 12 m who never reached the touch
+    still "won" the race and stamped a dispossession — 75/match (32 micro +
+    43 main) against a real ~20-30. The dribble branch already requires an
+    ENGAGED defender (~5 m); carries now use the same seam. Only applied
+    under PLOFA_DUEL_CALIB=1; legacy keeps the full pool.
+    """
+    out = []
+    for d in def_players or []:
+        if getattr(d, "position", "") == "GK":
+            continue
+        if position_engine is None:
+            out.append(d)
+            continue
+        pp = position_engine.get_position(d.name)
+        if pp is not None and math.hypot(pp[0] - x, pp[1] - y) <= radius:
+            out.append(d)
+    return out
+
+
+def micro_carry_rate(position: str, x: float, attacks_right: bool) -> float:
+    """The pre-decision touch rate for this carrier at this depth.
+
+    Deliberately a pure function of (role, depth, direction) so it can be
+    pinned by tests without simulating a whole match. Direction-normalised:
+    a CB at x=95 attacking LEFT is in his own third, same as x=10 attacking
+    right.
+    """
+    if os.environ.get("PLOFA_LEGACY_CB_MICRO"):
+        return MICRO_CARRY_RATE
+    if str(position or "") == "CB":
+        nx = float(x) if attacks_right else (105.0 - float(x))
+        return (CB_MICRO_CARRY_RATE_OWN if nx < 70.0
+                else CB_MICRO_CARRY_RATE_ADV)
+    return MICRO_CARRY_RATE
 
 
 def is_goalkeeper_run_out(goal_line_x: float, contact_x: float) -> bool:
@@ -1603,13 +1675,25 @@ class PossessionChain(BaseChain):
                 break
 
             is_final_step = (step == sequence_length - 1)
+            # One contest per touch: a touch that already settled a 50-50
+            # duel cannot also roll a take-on against (often) the same man.
+            _duel_this_step = False
 
             # ── 1. MICRO-CARRY BEFORE ACTION ──────────────────────
             # In real football, players carry the ball 2-6m between
             # receiving and their next action. StatsBomb logs these.
             # Rate: ~55% of actions are preceded by a micro-carry.
             # (Not every action — first touch directly into pass is common)
-            if x > 5 and step > 0 and random.random() < 0.55:
+            # Role-aware micro-carry rate. The historical flat 0.55 gave CBs
+            # ~28 pre-decision dribbles a match (probe: 55 of 57 CB carries
+            # were micro_carry=True, brain CARRY share 0%). This is movement
+            # geometry, not the verb — the brain still selects every action
+            # that follows. One RNG draw in exactly the same place as before,
+            # so non-CB matches keep their seeded behaviour; only the
+            # comparison threshold changes for CBs.
+            _micro_rate = micro_carry_rate(
+                getattr(last_player, "position", ""), x, attacks_right)
+            if x > 5 and step > 0 and random.random() < _micro_rate:
                 carry_dist, adv_ratio = cls._carry_distance_advance(
                     last_player, x, team_profile, is_micro=True
                 )
@@ -1659,13 +1743,16 @@ class PossessionChain(BaseChain):
                 # by geometry on the shared possession clock ("both": the ball
                 # visibly travels AND race-to-ball decides the outcome).
                 micro_lost = False
+                _mc_tackler = None
                 if position_engine is not None:
                     mover = cls._moving_player(last_player, position_engine)
-                    defs = (
-                        [cls._moving_player(d, position_engine) for d in def_players
+                    _pool = (
+                        engaged_contesters(def_players, position_engine, x, y)
+                        if duel_calib() else
+                        [d for d in (def_players or [])
                          if getattr(d, "position", "") != "GK"]
-                        if def_players else []
                     )
+                    defs = [cls._moving_player(d, position_engine) for d in _pool]
                     mc_res = episode.resolve_dribble(
                         Vec2(x, y), Vec2(end_cx, end_cy), mover, defs
                     )
@@ -1693,11 +1780,22 @@ class PossessionChain(BaseChain):
                     }
                 ))
                 if micro_lost:
+                    # Opta duel pairing: the race already named the man who
+                    # won the ball — carry him so the exporter can mirror the
+                    # duel win (a dispossession without an opponent is a
+                    # turnover, not a duel).
                     result.add(cls.make_event(
                         minute, EventType.DISPOSSESSED, attacking_team, last_player.name,
                         phase, game_state,
                         location_x=end_cx, location_y=end_cy,
                         outcome=False,
+                        # Ledger-only: secondary_player drives on-ball
+                        # movement, stamina and injuries in _absorb_chain.
+                        # Name the duel winner in metadata so counting a
+                        # duel NEVER feeds back into the simulation.
+                        metadata={"micro_carry": True,
+                                  "duel_winner": (_mc_tackler.name
+                                                  if _mc_tackler else None)},
                     ))
                     result.possession_lost = True
                     break
@@ -2304,13 +2402,16 @@ class PossessionChain(BaseChain):
                 # decides retention — soul/DNA still shape it through control &
                 # tackle radii and speed inside resolve_dribble.
                 carry_resolution = None
+                _carry_tackler = None
                 if position_engine is not None:
                     mover = cls._moving_player(last_player, position_engine)
-                    defs = (
-                        [cls._moving_player(d, position_engine) for d in def_players
+                    _pool = (
+                        engaged_contesters(def_players, position_engine, x, y)
+                        if duel_calib() else
+                        [d for d in (def_players or [])
                          if getattr(d, "position", "") != "GK"]
-                        if def_players else []
                     )
+                    defs = [cls._moving_player(d, position_engine) for d in _pool]
                     carry_resolution = episode.resolve_dribble(
                         Vec2(x, y), Vec2(new_x, new_y), mover, defs
                     )
@@ -2362,12 +2463,17 @@ class PossessionChain(BaseChain):
                         episode.set_ball(x, y)
                         if position_engine is None:
                             episode.record_ball_move(_from_x, _from_y, x, y, _carry_speed, "carry")
-                    # Lost carry → dispossession or turnover
+                    # Lost carry → dispossession or turnover. The race named
+                    # the winner: carry him so the duel pairs (Opta: every
+                    # duel lost has a duel won on the other side).
                     result.add(cls.make_event(
                         minute, EventType.DISPOSSESSED, attacking_team, last_player.name,
                         phase, game_state,
                         location_x=x, location_y=y,
                         outcome=False,
+                        metadata={"micro_carry": False,
+                                  "duel_winner": (_carry_tackler.name
+                                                  if _carry_tackler else None)},
                     ))
                     result.possession_lost = True
                     break
@@ -3259,8 +3365,21 @@ class PossessionChain(BaseChain):
 
             # ── 4. DUEL (contested possession, ~15% of sequences) ──
             # Ground duels happen when defender challenges carrier
+            # DUEL_CALIB: a 50-50 only exists when the presser is actually
+            # inside the tackle envelope. The audit's 96% carrier win share
+            # was presses from 6-10 m that never reached contact — the
+            # carrier "won" by default. Distance-gate the contest instead of
+            # fudging the race constants.
+            _duel_in_range = True
+            if duel_calib() and position_engine is not None and pressure_player:
+                _pp = position_engine.get_position(pressure_player.name)
+                _duel_in_range = (
+                    _pp is not None
+                    and math.hypot(_pp[0] - x, _pp[1] - y) <= 3.5
+                )
             if (not result.possession_lost and under_pressure
-                    and pressure_player and random.random() < 0.35):
+                    and pressure_player and _duel_in_range
+                    and random.random() < 0.35):
                 duel_type = EventType.AERIAL_DUEL if (
                     random.random() < 0.20 and x > 50
                 ) else EventType.GROUND_DUEL
@@ -3316,6 +3435,15 @@ class PossessionChain(BaseChain):
                     )
                     duel_physics = None
 
+                # Ledger-only contest distance: the exporter ignores 50-50s
+                # where the "presser" was too far to ever reach the ball
+                # (the carrier won by default). No RNG, no sim feedback.
+                _presser_dist = None
+                if position_engine is not None and pressure_player is not None:
+                    _pp = position_engine.get_position(pressure_player.name)
+                    if _pp is not None:
+                        _presser_dist = round(
+                            math.hypot(_pp[0] - x, _pp[1] - y), 2)
                 result.add(cls.make_event(
                     minute, duel_type, attacking_team, last_player.name,
                     phase, game_state,
@@ -3323,8 +3451,10 @@ class PossessionChain(BaseChain):
                     location_x=x, location_y=y,
                     outcome=att_wins,
                     metadata={"duel_type": duel_type.name,
-                              "physics": duel_physics}
+                              "physics": duel_physics,
+                              "presser_distance": _presser_dist}
                 ))
+                _duel_this_step = True
 
                 # ── SECOND PRESSER / TRAP (P3) ──────────────────────
                 # A second defender converging on the carrier's escape lane
@@ -3528,6 +3658,7 @@ class PossessionChain(BaseChain):
             # 4. Lower base attempt rate when defenders aren't pressing
             dribble_zone = x > 45 if attacks_right else x < 60
             if (not result.possession_lost and dribble_zone
+                    and not (duel_calib() and _duel_this_step)
                     and last_player.position in ("LW", "RW", "CAM", "ST", "CF")):
                 
                 # Find NEAREST defender (not just weighted random)
@@ -9422,6 +9553,15 @@ class DefensiveChain(BaseChain):
             if failure_cause == "own_goal":
                 danger_after = 100.0   # the threat was realised — danger PEAKS
 
+            # Opta: only a CONTESTED header is an aerial duel. The physics
+            # layer's contest threshold is an attacker inside 2 m
+            # (clearance_failure_multiplier); use the same seam here and name
+            # him so the exporter can mirror the duel's other side. An
+            # unopposed header is a clearance, not a contest.
+            contested_header = (
+                clearance_kind == "headed" and attacker is not None
+                and opponent_distance is not None and opponent_distance < 2.0
+            )
             result.add(cls.make_event(
                 minute, EventType.CLEARANCE,
                 defending_team, defender.name,
@@ -9434,6 +9574,8 @@ class DefensiveChain(BaseChain):
                 metadata={
                     "clearance_type": clearance_kind,   # "headed" | "foot"
                     "headed": clearance_kind == "headed",
+                    "contested_header": contested_header,
+                    "duel_winner": attacker.name if contested_header else None,
                     "danger_before": round(danger_level, 1),
                     "danger_after": danger_after,
                     "effective": outcome,

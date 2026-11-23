@@ -275,6 +275,32 @@ class _PerceivedEngine:
         self._offsets = offsets
         self._seed = seed
 
+    @property
+    def neural_states(self):
+        """Cognitive state is NOT perceived through a cone.
+
+        This proxy exists to degrade one thing: ``get_position``. The v8
+        situational brain also reads its PLAN block (and the store that
+        carries GRU hidden state) from ``neural_states`` — a team's tactical
+        plan is knowledge, not something a player sees with his eyes.
+
+        Since the 2026-11-16 "one vision gate" change,
+        ``situational_decision.decide`` builds the four blocks from the scene
+        engine. Until now that proxy exposed only ``get_position``, so
+        ``situational_context.plan_tail`` raised AttributeError, swallowed it
+        and returned six zeros for EVERY decision (measured: 100% of CB
+        decisions in the 2026-11-23 attribution probe), while the real store
+        kept the plan and the recurrence. Deliberately narrow: only the
+        cognitive store crosses this boundary. Every geometric method still
+        sees the noisy positions below, so perception is unchanged.
+
+        ``PLOFA_LEGACY_PLAN_FEED=1`` restores the dead-block behaviour for A/B.
+        """
+        import os
+        if os.environ.get("PLOFA_LEGACY_PLAN_FEED"):
+            raise AttributeError("legacy: perceived engine has no neural_states")
+        return self._engine.neural_states
+
     def get_position(self, name: str):
         px, py = self._engine.get_position(name)
         off = self._offsets.get(name)

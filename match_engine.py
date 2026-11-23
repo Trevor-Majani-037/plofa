@@ -2475,6 +2475,32 @@ class MatchEngine:
         defender = away_team if attacker == home_team else home_team
         return attacker, defender
 
+    def _append_ball_point(self, t: float, x: float, y: float,
+                           kind: str, team: str = "") -> None:
+        """Append one global ball-path sample WITHOUT going back in time.
+
+        Three writers used raw / re-derived clocks. The fetch bridge
+        (`_absorb_ball_path`) already clamps against `_last_path_t`, but the
+        dead-time `rest` samples (:4286), the loose-ball scramble (:4335) and
+        the post-goal walk back to the centre spot (:7339 -- which subtracts
+        celebration time on purpose) did not. Measured on calibration seeds
+        1-6 with BOTH 2026-11-23 fixes disabled, so this inversion predates
+        those fixes; the changed RNG stream only moved which seed showed it.
+
+        Clamping the timestamp, not dropping the sample, keeps the replay
+        continuous: a late writer is pushed just past the previous sample
+        instead of being discarded.
+        """
+        last = getattr(self, "_last_path_t", None)
+        if last is not None:
+            t = max(float(t), float(last) + 0.001)
+        self.state.match_ball_path.append({
+            "t": round(float(t), 3),
+            "x": round(float(x), 2), "y": round(float(y), 2),
+            "kind": kind, "team": team or "",
+        })
+        self._last_path_t = float(t)
+
     def _synthesize_ball_path(self, events, start_x: float, start_y: float):
         """Build a continuous, time-ordered ball path for a chain that did NOT
         emit its own ``ball_path`` (every chain except PossessionChain today).
@@ -4283,11 +4309,9 @@ class MatchEngine:
             self._sample_run_tracking(self.state.match_clock_s, home_has_ball)
             self.state.match_clock_s += DT
             if ti % 10 == 0:
-                self.state.match_ball_path.append({
-                    "t": round(self.state.match_clock_s, 3),
-                    "x": round(ball_x, 2), "y": round(ball_y, 2),
-                    "kind": "rest", "team": self.state.possession_team or "",
-                })
+                self._append_ball_point(
+                    self.state.match_clock_s, ball_x, ball_y, "rest",
+                    self.state.possession_team or "")
             if ti % 2 == 0:
                 self._record_player_tick(self.state.match_clock_s, home, away)
             if self.gps is not None:
@@ -4332,11 +4356,10 @@ class MatchEngine:
         # Fold the scramble onto the single global match timeline (#1/#4).
         base = self.state.match_clock_s
         for p in ep.ball_path:
-            self.state.match_ball_path.append({
-                "t": round(base + float(p.get("t", 0.0)), 3),
-                "x": float(p.get("x", sx)), "y": float(p.get("y", sy)),
-                "kind": "loose", "team": team,
-            })
+            self._append_ball_point(
+                base + float(p.get("t", 0.0)),
+                float(p.get("x", sx)), float(p.get("y", sy)),
+                "loose", team)
         self.state.match_clock_s += ep.elapsed
         if ep.ball_path:
             _lp = ep.ball_path[-1]
@@ -6672,6 +6695,14 @@ class MatchEngine:
             fallback="clearance",
             site="recovery",
         )
+        # The turnover already happened: the ball is loose or defensive. A
+        # "tackle"/"interception" here is a phantom contest against a man who
+        # no longer has the ball (duel_audit: a second duel loss for one
+        # steal). The recovery is a get-it-away act, as its docstring says.
+        import os
+        if (os.environ.get("PLOFA_DUEL_CALIB", "0") == "1"
+                and action_type in ("tackle", "interception")):
+            action_type = "clearance"
         own_goal_x = 105.0 if attacks_right else 0.0
         from event_chain import ChainDispatcher
         def_result = ChainDispatcher.defensive_action(
@@ -7328,13 +7359,11 @@ class MatchEngine:
                             self._last_path_x = _cbx
                             self._last_path_y = _cby
                             if _ti % 2 == 0:
-                                self.state.match_ball_path.append({
-                                    "t": round(self.state.match_clock_s
-                                               - celebration_s + _ti * 0.1 + 1e-9, 2),
-                                    "x": round(_cbx, 2), "y": round(_cby, 2),
-                                    "kind": "carry",
-                                    "team": chain_result.goal_team or "",
-                                })
+                                self._append_ball_point(
+                                    self.state.match_clock_s
+                                    - celebration_s + _ti * 0.1 + 1e-9,
+                                    _cbx, _cby, "carry",
+                                    chain_result.goal_team or "")
                 except Exception:
                     pass
                 ce_min, ce_sec = divmod(int(self.state.match_clock_s), 60)

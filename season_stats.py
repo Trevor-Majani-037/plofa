@@ -26,14 +26,33 @@ import os
 import sys
 import json
 import math
+import unicodedata
 from collections import defaultdict
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import date, datetime
 
 
+#: Goal situations Opta classes as set-piece deliveries (engine VALUES).
+SETPIECE_GOAL_SITUATIONS = {
+    "corner", "direct_freekick", "crossed_freekick", "throw_in",
+    # legacy spellings so older exports still bucket correctly
+    "set_piece", "free_kick",
+}
+
+
+def _fold_name(value) -> str:
+    """Accent/case-fold a name so goals[] and players{} keys match."""
+    text = str(value or "")
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(
+        ch.lower() for ch in text
+        if not unicodedata.combining(ch) and ord(ch) < 128
+    )
+
+
 ADDITIVE_STATS = {
     "goals", "assists", "own_goals", "open_play_goals", "headed_goals", "left_foot_goals", "right_foot_goals",
-    "open_play_assists", "setpiece_assists", "pen_goals", "pen_missed",
+    "open_play_assists", "setpiece_assists", "fantasy_assists", "pen_goals", "pen_missed",
     "shots_on_target", "shots_off_target", "shots_blocked_att",
     "hit_woodwork", "shots_inside_box", "shots_outside_box",
     "big_chances_scored", "big_chances_missed", "big_chances_received",
@@ -379,6 +398,7 @@ class SeasonStatsAccumulator:
         if not isinstance(players_data, dict):
             # Some output files (e.g. brain_reports) store players as a list
             return
+        self._reconcile_assists(players_data, data.get("goals") or [])
         for pname, pstats in players_data.items():
             # A named substitute who never entered is not a match
             # participant. Keep unused bench rows out of per-matchday and
@@ -393,6 +413,39 @@ class SeasonStatsAccumulator:
             if not participated:
                 continue
             self._accumulate_player(pname, pstats, md)
+
+    def _reconcile_assists(self, players_data: dict, goals: list) -> None:
+        """Make `assists` the Opta goal-assist count, split open play/set piece.
+
+        The exported `goals[].assist` field is the goal event's
+        `secondary_player` — the one authoritative attribution. Recomputing
+        the season column from it (a) guarantees `assists == open_play +
+        setpiece`, (b) keeps fantasy assists in their own column, and (c) makes
+        `season_stats.json` agree with the app's goal ledger even for old
+        match files whose stored player row was written by an older exporter.
+        """
+        folded = {_fold_name(name): name for name in players_data}
+        ledger: Dict[str, Dict[str, int]] = {}
+        for goal in goals:
+            assist = str(goal.get("assist") or "").strip()
+            if not assist:
+                continue
+            scorer = str(goal.get("scorer") or "").strip()
+            if scorer and assist == scorer:
+                continue  # Opta: no self-assists
+            name = assist if assist in players_data else folded.get(_fold_name(assist))
+            if not name:
+                continue
+            situation = str(goal.get("situation") or "").lower()
+            bucket = "setpiece" if situation in SETPIECE_GOAL_SITUATIONS else "open_play"
+            rec = ledger.setdefault(name, {"open_play": 0, "setpiece": 0})
+            rec[bucket] += 1
+
+        for pname, pstats in players_data.items():
+            rec = ledger.get(pname) or {"open_play": 0, "setpiece": 0}
+            pstats["assists"] = rec["open_play"] + rec["setpiece"]
+            pstats["open_play_assists"] = rec["open_play"]
+            pstats["setpiece_assists"] = rec["setpiece"]
 
     def _accumulate_player(self, name: str, stats: dict, md: int):
         if name not in self.players:
