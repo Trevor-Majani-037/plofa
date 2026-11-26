@@ -37,6 +37,7 @@ Attacking left  (away): x shrinks toward the opponent goal (goal at 0).
 
 from __future__ import annotations
 import math
+import os
 import random
 from dataclasses import dataclass
 from enum import Enum
@@ -125,6 +126,34 @@ CIRCULATION_ROLE_WEIGHT: dict = {
     "CDM": 1.35, "CM": 1.35, "CB": 1.05, "LB": 1.00, "RB": 1.00,
     "CAM": 0.70, "LW": 0.35, "RW": 0.35, "ST": 0.15, "CF": 0.15,
 }
+
+# ── DEEP CIRCULATION (2026-11-26) — flag-gated, default OFF ────────────
+# Possession sides should let CB/CDM/CM own the pass chart the way Dias,
+# Rodri and Busquets did. This is a STRUCTURE knob (who the support pass
+# looks for), never a verb or weight change: the on-ball brain still picks
+# every intent. `TeamStyle` only — PlayingStyle is inert at runtime, and
+# every live style branch in this codebase uses `style_key`.
+DEEP_CIRC_STYLES = frozenset({
+    "tiki_taka", "structured_possession", "vertical_tiki_taka",
+})
+DEEP_CIRC_ROLE_OVERRIDES = {"CB": 1.70, "CDM": 1.60, "CM": 1.60}
+DEEP_CIRC_SUSTAIN_BUMP = 0.08
+DEEP_CIRC_GK_BUMP = 0.05
+
+
+def deep_circulation_weights(style_key: str, enabled: bool = False) -> dict:
+    """Return the circulation table for this engine.
+
+    When disabled (the shipped default) this returns the MODULE dict itself,
+    so behaviour is byte-identical and no caller can mutate the shared table.
+    When enabled for a possession style, a private copy boosts only the deep
+    pivot roles; wide/forward roles are untouched, as is every other style.
+    """
+    if enabled and style_key in DEEP_CIRC_STYLES:
+        out = dict(CIRCULATION_ROLE_WEIGHT)
+        out.update(DEEP_CIRC_ROLE_OVERRIDES)
+        return out
+    return CIRCULATION_ROLE_WEIGHT
 
 
 # ─────────────────────────────────────────────
@@ -227,6 +256,11 @@ class PossessionPhaseEngine:
     ):
         self.gk = gk
         self.style_key = style_key
+        # Read once per engine: no per-touch env lookup, no extra RNG draw,
+        # and default-off keeps the exact shared table (`is` identity is also
+        # how the companion knobs below detect an inactive feature).
+        self._role_weights = deep_circulation_weights(
+            style_key, bool(os.environ.get("PLOFA_DEEP_CIRC")))
         # Carrier intelligence (vision/composite composure, 0-1). Elite
         # playmakers sustain a little less because they spot the vertical
         # ball earlier — circulation is patience, never a cap on ambition.
@@ -530,6 +564,12 @@ class PossessionPhaseEngine:
         base *= 1.20 - 0.45 * self.carrier_iq
         if under_pressure:
             base *= 1.15
+        if self._role_weights is not CIRCULATION_ROLE_WEIGHT:
+            # Deep-circulation sides keep one extra support pass in the web.
+            # Applied AFTER the style/IQ/pressure scaling and BEFORE the same
+            # 0.80 ceiling, so ambition is never capped and default-off is
+            # untouched.
+            base += DEEP_CIRC_SUSTAIN_BUMP
         return min(0.80, base)
 
     def _pick_circulation_target(
@@ -580,7 +620,7 @@ class PossessionPhaseEngine:
                 in_box = (t.x > box_line) if attacks_right else (t.x < box_line)
                 if in_box:
                     continue
-            w = CIRCULATION_ROLE_WEIGHT.get(t.role, 0.8)
+            w = self._role_weights.get(t.role, 0.8)
             w *= 1.0 / (1.0 + d / 9.0)        # short passes dominate
             w *= 1.0 - 0.7 * t.marking         # free men get the ball
             # Feature #2 — pattern flank pull: tempo circulation deliberately
@@ -621,7 +661,7 @@ class PossessionPhaseEngine:
             pool, pool_w = candidates, weights
         return random.choices(pool, weights=pool_w, k=1)[0]
 
-    def _gk_recycle_rate(self) -> float:
+    def _base_gk_recycle_rate(self) -> float:
         """Probability a deep carrier releases the ball to the keeper on a
         given build-up touch, scaled by the team's possession identity."""
         if self.style_key in ("tiki_taka", "vertical_tiki_taka",
@@ -633,6 +673,13 @@ class PossessionPhaseEngine:
             return 0.24
         # route_one, gegenpressing, park_the_bus, ultra_attacking, direct…
         return 0.12
+
+    def _gk_recycle_rate(self) -> float:
+        """The shipped rate, plus the flag-gated deep-circulation bump."""
+        rate = self._base_gk_recycle_rate()
+        if self._role_weights is not CIRCULATION_ROLE_WEIGHT:
+            rate = min(0.85, rate + DEEP_CIRC_GK_BUMP)
+        return rate
 
     def _forward_options(
         self,
